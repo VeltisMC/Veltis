@@ -1,0 +1,18 @@
+diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
+index c767b77..7de5bdd 100644
+--- a/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -285,6 +285,13 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+         long elapsed = Util.getNanos() - levelNanoTime;
+         String time = String.format(Locale.ROOT, "%.3fs", elapsed / 1.0E9);
+         LOGGER.info("Done ({})! For help, type \"help\"", time);
++        try {
++            Class.forName("org.veltismc.veltis.VeltisBootstrap")
++                .getMethod("onMinecraftServerCreated", Object.class)
++                .invoke(null, this);
++        } catch (Exception e) {
++            LOGGER.warn("VeltisMC integration failed", e);
++        }
+         if (properties.announcePlayerAchievements != null) {
+             this.getGameRules().set(GameRules.SHOW_ADVANCEMENT_MESSAGES, properties.announcePlayerAchievements, this);
+         }

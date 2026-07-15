@@ -1,0 +1,36 @@
+Subject: Optimize-Entity-Tracking
+
+Author: VeltisMC Development Team
+Date: 2026-06-19
+
+Reason:
+Vanilla entity tracking uses a distance-based broadcast that checks
+every entity against every nearby player every tick. For servers with
+hundreds of entities and dozens of players, this O(n*m) scan dominates
+tick time. Moonrise's entity tracker replaces this with spatial data
+structures that filter tracking candidates more efficiently.
+
+Impact:
+Dramatically reduced CPU usage for entity tracking on servers with
+high entity counts. More stable TPS during mob grinders, farms, and
+large-scale events.
+
+Migration Note:
+This patch enables Moonrise entity tracker. The spatial tracking
+data structures are injected via mixins.
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index 0000000..0000000 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -0,0 +1,10 @@
++// VeltisMC: Moonrise entity tracking optimization
++//
++// Moonrise replaces vanilla ChunkMap entity tracking with a
++// spatial-index-based approach, reducing the cost of finding
++// which entities need to be sent to which players.
++//
++// Implemented by mixins:
++//   - entity_tracker.ChunkMapMixin
++//   - entity_tracker.EntityMixin
++//   - entity_tracker.TrackedEntityMixin

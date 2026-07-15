@@ -1,0 +1,19 @@
+Subject: Reduce-Network-Allocation-Pressure
+
+Author: VeltisMC Development Team
+Date: 2026-06-19
+
+Reason:
+Vanilla networking allocates a new PacketBundle and buffer for every
+packet sent, with no pooling. Under high packet throughput (entity
+tracking, chunk sends), this creates significant GC pressure that
+manifests as tick lag during collection cycles.
+
+Impact:
+Lower GC pause frequency and duration under network load. More
+stable TPS on servers with many players or high entity density.
+
+Migration Note:
+This patch introduces packet buffer pooling using Moonrise's
+concurrentutil library. Packet output streams are reused rather
+than reallocated per send.

@@ -1,0 +1,37 @@
+# Gradle
+.gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+*.war
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+*.log
+.env
+local.properties
+
+# Build artifacts
+out/
+tmp/
+*.userdata
+run/
+
+# Temp patch files
+*.patch.tmp
+
+# Minecraft pipeline workspace (version-specific artifacts)
+ver/

@@ -1,0 +1,20 @@
+﻿diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
+index 062319d..f815ae4 100644
+--- a/net/minecraft/server/players/PlayerList.java
++++ b/net/minecraft/server/players/PlayerList.java
+@@ -159,6 +159,7 @@ public abstract class PlayerList {
+             player.getY(),
+             player.getZ()
+         );
++        LOGGER.info("{} joined the game", player.getGameProfile().name());
+         LevelData levelData = level.getLevelData();
+         ServerGamePacketListenerImpl playerConnection = new ServerGamePacketListenerImpl(this.server, connection, player, cookie);
+         connection.setupInboundProtocol(
+@@ -305,6 +306,7 @@ public abstract class PlayerList {
+     public void remove(final ServerPlayer player) {
+         ServerLevel level = player.level();
+         player.awardStat(Stats.LEAVE_GAME);
++        LOGGER.info("{} left the game", player.getGameProfile().name());
+         this.save(player);
+         if (player.isPassenger()) {
+             Entity vehicle = player.getRootVehicle();
