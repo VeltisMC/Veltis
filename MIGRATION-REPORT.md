@@ -1,103 +1,128 @@
-# VeltisMC Paper Migration Report
+# VeltisMC De-Paper / De-Bukkit Migration Report
 
-Full architectural migration of the VeltisMC codebase off Paper-specific implementation code,
-classes, utilities, branding, and duplicate vendored sources, while preserving full Bukkit and
-Paper plugin compatibility.
+Final state: VeltisMC is a **bare NMS server**. Every vendored Bukkit, Spigot, and Paper class has
+been removed from the source tree; the runtime no longer implements any plugin API. The server
+boots the patched vanilla `DedicatedServer` plus Moonrise, with no plugin support whatsoever.
 
 ## Summary
 
 - **Verification**: `./gradlew build buildVeltisMC` passes (all modules compile, tests run,
-  `veltismc.jar` packages). MC 26.2 pipeline (download/extract/widen/libraries) ran cleanly.
-- **Net change**: 42 files touched — 30 deleted (moved/renamed), 22 new, 12 modified,
-  +46/-3212 lines. The only remaining `io.papermc.paper` sources are the vendored
-  Paper **API** (compat surface) and one documented binary-compat stub.
+  `veltismc.jar` packages). The packaged jar contains **zero** `io.papermc.*`,
+  `com.destroystokyo.*`, `org.bukkit.*`, `org.spigotmc.*`, or `co.aikar.*` classes.
+- **Net change**: ~1,900 files deleted across two phases (the entire vendored
+  `org.bukkit` tree alone was 1,273 files).
+- The MC 26.2 pipeline (download / extract / widen / libraries) ran cleanly from scratch
+  (`ver/` was regenerated after being cleaned).
 
-## Classes renamed / relocated (old -> new)
+## Phase 1 — Paper implementation migration (completed earlier)
 
-All moved out of `io.papermc.paper.*` into `org.veltismc.veltis.*`:
+Moved the runtime's Paper implementation classes into `org.veltismc.veltis.*`:
 
-| Old (module) | New |
+| Old | New |
 |---|---|
-| `io.papermc.paper.plugin.manager.PaperPluginManagerImpl` (runtime) | `org.veltismc.veltis.plugin.manager.VeltisPluginManager` |
-| `...PaperPluginInstanceManager` (runtime) | `...VeltisPluginInstanceManager` |
-| `...PaperEventManager` (runtime) | `...VeltisEventManager` |
-| `...PaperPermissionManager` (runtime) | `...VeltisPermissionManager` |
-| `...NormalPaperPermissionManager` (runtime) | `...NormalPermissionManager` |
-| `...StupidSPMPermissionManagerWrapper` (runtime) | `...SimplePluginManagerPermissionWrapper` |
-| `...plugin.entrypoint.classloader.group.PaperPluginClassLoaderStorage` (runtime) | `org.veltismc.veltis.plugin.classloader.VeltisPluginClassLoaderStorage` |
-| `...entrypoint.classloader.group.{Global,Locking,SimpleList,Spigot,Static,Singleton,DependencyBased}PluginClassLoaderGroup` (runtime) | `org.veltismc.veltis.plugin.classloader.*` (same names) |
-| `...command.brigadier.bukkit.BukkitBrigForwardingMap` (runtime) | `org.veltismc.veltis.command.brigadier.bukkit.VeltisBrigForwardingMap` |
-| `...plugin.loader.PaperClasspathBuilder` (runtime) | `org.veltismc.veltis.plugin.compat.VeltisClasspathBuilder` |
-| `...plugin.loader.library.PaperLibraryStore` (runtime) | `org.veltismc.veltis.plugin.compat.VeltisLibraryStore` |
-| `io.papermc.paper.SparksFly` (server) | `org.veltismc.veltis.spark.SparksFly` |
-| `io.papermc.paper.SparksFlyHolder` (server) | `org.veltismc.veltis.spark.SparksFlyHolder` |
-| `io.papermc.paper.util.MCUtil` (server) | `org.veltismc.veltis.util.MCUtil` |
-| `org.veltismc.veltis.config.VeltisPaperConfig` (runtime) | `org.veltismc.veltis.config.VeltisConfig` |
-| `org.veltismc.veltis.VeltisPaperScheduledTask` (runtime) | `org.veltismc.veltis.VeltisScheduledTaskImpl` |
+| `io.papermc.paper.plugin.manager.PaperPluginManagerImpl` | `org.veltismc.veltis.plugin.manager.VeltisPluginManager` |
+| `...PaperPluginInstanceManager` | `...VeltisPluginInstanceManager` |
+| `...PaperEventManager` | `...VeltisEventManager` |
+| `...PaperPermissionManager` | `...VeltisPermissionManager` |
+| `...NormalPaperPermissionManager` | `...NormalPermissionManager` |
+| `...StupidSPMPermissionManagerWrapper` | `...SimplePluginManagerPermissionWrapper` |
+| `...entrypoint.classloader.group.PaperPluginClassLoaderStorage` | `org.veltismc.veltis.plugin.classloader.VeltisPluginClassLoaderStorage` |
+| `...entrypoint.classloader.group.{Global,Locking,SimpleList,Spigot,Static,Singleton,DependencyBased}PluginClassLoaderGroup` | `org.veltismc.veltis.plugin.classloader.*` |
+| `...command.brigadier.bukkit.BukkitBrigForwardingMap` | `org.veltismc.veltis.command.brigadier.bukkit.VeltisBrigForwardingMap` |
+| `...plugin.loader.PaperClasspathBuilder` | `org.veltismc.veltis.plugin.compat.VeltisClasspathBuilder` |
+| `...plugin.loader.library.PaperLibraryStore` | `org.veltismc.veltis.plugin.compat.VeltisLibraryStore` |
+| `io.papermc.paper.SparksFly` / `SparksFlyHolder` | `org.veltismc.veltis.spark.SparksFly` / `SparksFlyHolder` |
+| `io.papermc.paper.util.MCUtil` | `org.veltismc.veltis.util.MCUtil` |
 
-## Files deleted
+Also renamed `VeltisPaperConfig` -> `VeltisConfig`, `VeltisPaperScheduledTask` ->
+`VeltisScheduledTaskImpl`; deleted 8 duplicate vendored API copies from the runtime module;
+repointed the `PaperClassLoaderStorage` service file. Phase 1 was verified green before Phase 2
+began.
 
-- 8 duplicate vendored API copies in the runtime module (stripped versions of classes that the
-  `server` module already ships with full javadoc; verified API-supersets before deletion):
-  `PluginLoader`, `PluginClasspathBuilder`, `ClassPathLibrary`, `LibraryStore`,
-  `LibraryLoadingException`, `JarLibrary`, `MavenLibraryResolver`, `ProviderUtil`.
-- 1 dead reflection path removed: `VeltisServer.getDatapackManager()` no longer tries
-  `io.papermc.paper.datapack.PaperDatapackManager` (that class never existed in this tree);
-  the proxy fallback is now the sole implementation.
-- 30 files total deleted as part of the moves above.
+## Phase 2 — Full Paper removal
 
-## Service registrations updated
+Per user direction ("remove io.papermc.paper"), the entire vendored Paper surface was deleted:
 
-- `runtime/src/main/resources/META-INF/services/io.papermc.paper.plugin.provider.classloader.PaperClassLoaderStorage`
-  now points at `org.veltismc.veltis.plugin.classloader.VeltisPluginClassLoaderStorage`.
+- **Server module**: `server/src/main/java/io/` (~441 files), `server/src/main/java/com/destroystokyo/`
+  (~114 files), `org.veltismc/veltis/spark/`, `org/veltismc/veltis/util/MCUtil.java`, the Moonrise
+  `MinecraftServerSparkMixin`, and services `InternalAPIBridge`, `LifecycleEventTypeProvider`,
+  `RegistryAccess`.
+- **Runtime module**: `runtime/src/main/java/io/` (incl. the `PaperPluginClassLoader` stub),
+  `plugin/lifecycle/`, `plugin/classloader/`, `registry/`, `VeltisClassLoaderStorage`,
+  `VeltisScheduledTaskImpl`, `VeltisAsyncScheduler`, `VeltisRegionScheduler`,
+  `VeltisGlobalRegionScheduler`, `VeltisEntityScheduler`, `VeltisServerBuildInfo`,
+  `VeltisInternalAPIBridge`, `VeltisCommandsRegistrar`, `VeltisCommandSourceStack`, and services
+  `PaperClassLoaderStorage`, `ServerBuildInfo`.
 
-## Branding removed
+## Phase 3 — Full Bukkit removal (bare NMS server)
 
-- Thread name `"Paper Async Task Handler Thread - %1$d"` -> `"Veltis Async Task Handler Thread - %1$d"` (MCUtil).
-- spark info URL `docs.papermc.io/paper/profiling` -> `spark.lucko.me` (SparksFly).
-- System property `Paper.DisableClassPrioritization` -> `veltismc.DisableClassPrioritization` (SimpleListPluginClassLoaderGroup).
-- Leftover `paper*` variable/method names in Veltis code renamed (`createScheduledTaskHandle`, `veltisStack`, `registryKey`, `"Bundled spark module available"`).
-- `veltis.preferSparkPlugin` and `veltismc:veltis` brand were already Veltis-owned — unchanged.
+Per user direction ("remove org.bukkit too — no plugin API"), everything remaining of the plugin
+ecosystem was deleted:
+
+- `server/src/main/java/org/bukkit/` (**1,273 files** — the entire vendored API),
+  `server/src/main/java/org/spigotmc/` (4 files), `server/src/main/java/co/` (aikar timings, 19 files).
+- Runtime: `org/bukkit/craftbukkit/command/CraftCommandMap.java` and 30 Bukkit-implementing classes:
+  `VeltisServer`, `VeltisBanList`, `VeltisConsoleSender`, `VeltisMessenger`, `VeltisObjective`,
+  `VeltisOfflinePlayer`, `VeltisPersistentDataContainer`, `VeltisPlayerSender`, `VeltisScore`,
+  `VeltisScoreboard`, `VeltisScoreboardManager`, `VeltisTeam`, `VeltisWorldProxy`,
+  `VeltisInventoryProxy`, `VeltisItemStack(Bridge)`, `VeltisContainerAdapter`, `VeltisEntityProxy`,
+  `VeltisPlayerInventory`, `VeltisDiagnoseCommands`, `VeltisBrigForwardingMap`,
+  `VeltisCommandMap`, `plugin/manager/*` (6 files), `VeltisScheduler`.
+- Dead Paper-API implementations `VeltisClasspathBuilder` / `VeltisLibraryStore` (dangling
+  `io.papermc.paper.plugin.loader.*` imports) — `plugin/compat/` deleted.
+
+## What remains
+
+- **Server module**: Moonrise (`ca.spottedleaf`, 287 files, zero Bukkit/Paper refs) + the NMS
+  entrypoint (`Main`, `MixinAgent`, `MixinServiceVanilla`, `MixinSetup`, `VeltisBlackboard`,
+  `VeltisContainerHandle`, `api/VeltisAPI` + definitions, `moonrise/VeltisPlatformHooks`).
+- **Runtime module**: the Veltis server framework that is self-contained — command framework,
+  config, data, resource, runtime provisioning/loader/controller, lifecycle, metrics, server
+  model, internal scheduler/tick, events, storage, branding — plus a rewritten 35-line
+  `VeltisBootstrap` implementing the NMS patch contract (`boot(String[])` +
+  `onMinecraftServerCreated(Object)`).
+- **NMS patches** (`server/patches/`, `launcher/.../patches/`): untouched; verified zero
+  Bukkit/Paper references. The `Wire-VeltisBootstrap-Integration` patch still calls
+  `VeltisBootstrap.onMinecraftServerCreated(Object)` reflectively.
+- **Pipeline modules** (launcher, builder, patch-engine, build-tools): untouched.
+
+## NMS <-> runtime contract
+
+- `net.minecraft.server.MinecraftServer.SERVER` (added by the branding patch) + the
+  `Veltis-Branding-MinecraftServer.patch` brand strings.
+- `VeltisBootstrap.onMinecraftServerCreated(Object)` invoked by
+  `Wire-VeltisBootstrap-Integration.patch` after the dedicated server finishes booting.
 
 ## Dependencies
 
-- No Maven dependency was removed: the project has **no external paper-api dependency** (the API is
-  vendored in the `server` module by design).
-- `me.lucko:spark-paper:1.10.152` + `me.lucko:spark-api` retained intentionally: they are the spark
-  profiler's official Paper-platform integration powering the bundled profiler, resolve from
-  repo.papermc.io only (the POM declares no transitive deps, so no paper-api leaks in), and provide
-  the `me.lucko.spark.paper.api.*` classes used by `SparksFly`.
+- Removed: `me.lucko:spark-paper:1.10.152`, `me.lucko:spark-api:0.1-...` (spark profiler),
+  the entire Bukkit/Paper API dep block (guava/gson/snakeyaml/joml/fastutil/log4j/slf4j/brigadier/
+  bungeecord-chat/adventure stack/maven-resolver/jspecify/checker-qual) from `server/build.gradle.kts`.
+- Removed repos: hub.spigotmc.org, repo.papermc.io (kept only for **Moonrise artifacts**
+  `ca.spottedleaf:concurrentutil` / `yamlconfig`, which publish there), repo.lucko.me.
+- Kept: Jansi, JetBrains annotations (compileOnly), Moonrise deps, Minecraft libs via the
+  `ver/26.2/libraries` file tree.
 
-## Remaining Paper references (cannot be removed)
+## Remaining "papermc" strings (benign)
 
-| Reference | Reason it stays |
-|---|---|
-| Vendored Paper API under `server/src/main/java/io/papermc/paper/**` and `com/destroystokyo/paper/**` (~500 files) | Compatibility surface; plugins compile/run against these classes (schedulers, registries, ServerBuildInfo, PlayerProfile, ban lists, commands, lifecycle events, etc.). Interfaces/API-only classes are intentionally retained per task rules. |
-| 27 `*Impl` classes inside `server/io/papermc` (BanListTypeImpl, TypedKeyImpl, ReferenceImpl, LifecycleEventTypeProviderImpl, ...) | These are vendored **paper-api** sources (pure Java, no Minecraft/server code; verified) — the API's own implementation layer, referenced by the API itself (e.g. `LifecycleEventTypeProvider.provider()`) and service file `io.papermc.paper.plugin.lifecycle.event.types.LifecycleEventTypeProvider`. |
-| `runtime/.../io/papermc/paper/plugin/entrypoint/classloader/PaperPluginClassLoader.java` (9-line stub) | Binary-compat shim required by the bundled spark-paper jar's `PaperClassSourceLookup`; documented in its header as unused by VeltisMC. |
-| `VeltisConfig` reading `paper-global.yml` / `paper-world-defaults.yml` / `paper-world.yml` | Legacy Paper config-format compatibility (the file format is named after Paper; servers keep their existing configs). |
-| `parsePaperPluginYml`, `getPaperPluginLoader`, `paperPluginLoader` reflection in VeltisPluginInstanceManager | The plugin descriptor format is literally `paper-plugin.yml`; naming describes the format being parsed. |
-| `io.papermc.paper.*` imports throughout Veltis runtime code | All are API interfaces/classes implemented or consumed by Veltis (ScheduledTask, PaperClassLoaderStorage, PluginClasspathBuilder, RegistryAccess, lifecycle events, ...). |
-| `com.destroystokyo.paper.*` imports (PlayerProfile, MobGoals, TargetBlockInfo, Title, SkinParts, events...) | Vendored Paper API, part of the plugin-facing surface. |
-| `me.lucko.spark.paper.api.*` imports in SparksFly | External spark-paper integration library (see Dependencies). |
-| `isBrandCompatible` accepting `papermc:paper` in VeltisServerBuildInfo | Explicit brand-compat bridge so Paper-expecting plugins/update checks recognize VeltisMC. |
+- `maven("https://repo.papermc.io/...")` in the root build script — Moonrise's artifact host
+  (not Paper API).
+- A commented-out test harness inside
+  `server/src/main/java/ca/spottedleaf/moonrise/common/misc/Delayed8WayDistancePropagator2D.java`
+  references `com.destroystokyo.*` — dead text inside `/* */`, not compiled.
 
-## Compatibility impact
+## Feature loss (consequence of the chosen direction)
 
-- Plugin-facing API: unchanged (paper-plugin.yml + plugin.yml loading, libraries via
-  `libraries`/`PluginLoader` — now backed by `VeltisClasspathBuilder` which gained the missing
-  `getContext()` (PluginProviderContext) implementation, loadbefore/softdepend/provides,
-  commands/brigadier, permissions, schedulers, registries, lifecycle events).
-- Service-loader contracts (`PaperClassLoaderStorage`, `LifecycleEventTypeProvider`) unchanged
-  FQN-wise; only the implementing class moved to `org.veltismc`.
-- No public class exposed to plugins changed FQN; every renamed class is a server-side
-  implementation (new `VeltisClasspathBuilder` constructor requires a `PluginProviderContext`,
-  supplied by `VeltisPluginInstanceManager`).
-- spark profiler still bundled and controllable via `veltis.preferSparkPlugin`.
+- No plugin loading (`plugins/` scanning, `plugin.yml`, `paper-plugin.yml`), no plugin commands
+  (`/plugins`, `/veltis`, diagnose suite), no events/permissions/schedulers/registries API.
+- No spark profiler, no Bukkit-style timings (`co.aikar`).
+- Console command handling is vanilla NMS only; branding persists via the NMS patch.
 
 ## Follow-up work
 
-- Rename `SparksFly`/`SparksFlyHolder` (kept for recognizability; not Paper-branded) if desired.
-- Consider migrating `paper-*.yml` legacy config files to `veltis-*.yml` with automatic fallback.
-- The stub `PaperPluginClassLoader` could be dropped if the spark integration is ever replaced.
-- `VeltisServerBuildInfo` brand-compat accept-list could be moved to a config file.
+- Update the launcher/README/start scripts if they still mention plugin folders or spark flags.
+- Decide whether the remaining self-contained runtime framework (config/data/resource/command
+  modules) should be wired into the bare server beyond `VeltisBootstrap` (e.g., load
+  `veltis.yml` defaults, register Veltis-only commands through NMS brigadier directly).
+- `VeltisConfig` still reads Paper-format config file names (`paper-global.yml` etc.);
+  migrate to `veltis-*.yml` when convenient.

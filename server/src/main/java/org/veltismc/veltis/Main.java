@@ -246,10 +246,9 @@ public final class Main {
         System.out.println("[VeltisMC] ╚══════════════════════════════════════════╝");
         System.out.println("[VeltisMC] Moonrise: ACTIVE");
         System.out.println("[VeltisMC] UTF-8 Logging: ACTIVE");
-        System.out.println("[VeltisMC] Plugin Compatibility Layer: ACTIVE");
+        System.out.println("[VeltisMC] Plugin API: NONE (bare NMS server)");
         System.out.println("[VeltisMC] Patch Engine: ACTIVE");
         System.out.println("[VeltisMC] Chunk Optimizations: Moonrise");
-        System.out.println("[VeltisMC] Scheduler: Async + Region");
         System.out.println();
     }
 }

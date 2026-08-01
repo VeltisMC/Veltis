@@ -107,11 +107,10 @@ subprojects {
         mavenCentral()
         maven("https://libraries.minecraft.net/")
         maven("https://maven.fabricmc.net/")
-        maven("https://hub.spigotmc.org/nexus/content/repositories/snapshots/")
+        // Hosts Moonrise artifacts (ca.spottedleaf:concurrentutil/yamlconfig)
         maven("https://repo.papermc.io/repository/maven-public/")
         maven("https://repo.spongepowered.org/repository/maven-public/")
         maven("https://jitpack.io")
-        maven("https://repo.lucko.me/")
     }
 
     dependencies {
@@ -125,8 +124,6 @@ repositories {
     mavenCentral()
     maven("https://libraries.minecraft.net/")
     maven("https://maven.fabricmc.net/")
-    maven("https://hub.spigotmc.org/nexus/content/repositories/snapshots/")
-    maven("https://repo.papermc.io/repository/maven-public/")
 }
 
 dependencies {

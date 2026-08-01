@@ -13,8 +13,6 @@ val minecraftLibsDir = rootProject.projectDir.resolve("ver/$minecraftVersion/lib
 
 logger.lifecycle("server.jar exists: ${minecraftJar.exists()} at ${minecraftJar.canonicalPath}")
 
-val adventureVersion = "4.26.1"
-val bungeeCordChatVersion = "1.21-R0.2-deprecated+build.21"
 val annotationsVersion = "26.0.2"
 
 dependencies {
@@ -22,38 +20,10 @@ dependencies {
     implementation(files(minecraftJar.canonicalPath))
     implementation(fileTree(minecraftLibsDir) { include("**/*.jar") })
 
-    // Bukkit/Paper API dependencies (previously from :api module, using api() for transitive exposure)
-    api("com.google.guava:guava:33.5.0-jre")
-    api("com.google.code.gson:gson:2.13.2")
-    api("org.yaml:snakeyaml:2.2")
-    api("org.joml:joml:1.10.8") { isTransitive = false }
-    api("it.unimi.dsi:fastutil:8.5.18")
-    api("org.apache.logging.log4j:log4j-api:2.25.2")
-    api("org.slf4j:slf4j-api:2.0.17")
-    api("com.mojang:brigadier:1.3.10")
-    api("net.md-5:bungeecord-chat:$bungeeCordChatVersion") {
-        exclude("com.google.guava", "guava")
-    }
-    api(platform("net.kyori:adventure-bom:$adventureVersion"))
-    api("net.kyori:adventure-api")
-    api("net.kyori:adventure-text-minimessage")
-    api("net.kyori:adventure-text-serializer-gson")
-    api("net.kyori:adventure-text-serializer-legacy")
-    api("net.kyori:adventure-text-serializer-plain")
-    api("net.kyori:adventure-text-logger-slf4j")
-    api("org.apache.maven:maven-resolver-provider:3.9.6")
-    api("org.apache.maven.resolver:maven-resolver-connector-basic:1.9.18")
-    api("org.apache.maven.resolver:maven-resolver-transport-http:1.9.18")
-    compileOnly("org.jetbrains:annotations:$annotationsVersion")
-    api("org.jspecify:jspecify:1.0.0")
-    api("org.checkerframework:checker-qual:3.49.2")
-
     // Jansi for native Windows Unicode/ANSI console support
     implementation("org.fusesource.jansi:jansi:2.4.1")
 
-    // Spark profiler dependencies (bundled, Paper-style)
-    implementation("me.lucko:spark-paper:1.10.152")
-    implementation("me.lucko:spark-api:0.1-20240720.200737-2")
+    compileOnly("org.jetbrains:annotations:$annotationsVersion")
 
     // Test dependencies
     testImplementation(project(":runtime"))

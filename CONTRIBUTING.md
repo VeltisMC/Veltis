@@ -155,7 +155,7 @@ build/distributions/veltismc.jar
 build/veltismc-server.jar
 ```
 
-`build/distributions/veltismc.jar` is the standalone VeltisMC jar with the launcher, Veltis runtime, and Bukkit/Paper API dependencies. `build/veltismc-server.jar` is the patched Minecraft runtime jar used by the launcher/runtime pipeline.
+`build/distributions/veltismc.jar` is the standalone VeltisMC jar with the launcher, Veltis runtime, patched Minecraft runtime classes, and Moonrise. It is a bare NMS server: no Bukkit, Spigot, or Paper API is included or supported. `build/veltismc-server.jar` is the patched Minecraft runtime jar used by the launcher/runtime pipeline.
 
 To only rebuild the patched Minecraft runtime jar, run:
 
@@ -165,24 +165,19 @@ To only rebuild the patched Minecraft runtime jar, run:
 
 `buildVeltisMC` downloads Minecraft, decompiles it if needed, generates the source workspace, applies patches, compiles patched classes, packages `build/veltismc-server.jar`, and copies the standalone launcher jar to `build/distributions/veltismc.jar`.
 
-## Testing Plugins
+## Runtime Behavior
 
-VeltisMC scans the `plugins/` folder at startup. Supported descriptor formats are:
+VeltisMC is a bare NMS server: it boots the patched vanilla `DedicatedServer` directly with no plugin API (no Bukkit/Spigot/Paper). Gameplay is vanilla plus the patch set under `server/patches/` and the Moonrise chunk-system optimizations.
 
-- VeltisMC: `VeltisMC-plugin.json` or `VeltisMC-plugin.yml`
-- Bukkit/Spigot: `plugin.yml`
-- Paper: `paper-plugin.yml` or `plugin.yml`
-
-Useful runtime commands:
+Useful runtime commands (vanilla):
 
 ```text
-/plugins
-/plugins reload
-/plugins info <plugin>
-/plugins formats
+help
+list
+stop
 ```
 
-Bukkit, Spigot, and Paper API classes are used as dependencies. Do not copy, fork, or vendor Bukkit/Paper source into this project.
+Do not copy, fork, or vendor Bukkit/Paper source into this project.
 
 ## Pull Request Workflow
 
