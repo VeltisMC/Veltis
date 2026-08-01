@@ -10,7 +10,7 @@ import io.papermc.paper.command.brigadier.BasicCommand;
 import io.papermc.paper.command.brigadier.CommandRegistrationFlag;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
-import io.papermc.paper.command.brigadier.bukkit.BukkitBrigForwardingMap;
+import org.veltismc.veltis.command.brigadier.bukkit.VeltisBrigForwardingMap;
 import io.papermc.paper.plugin.configuration.PluginMeta;
 import io.papermc.paper.plugin.lifecycle.event.LifecycleEventOwner;
 import io.papermc.paper.plugin.lifecycle.event.registrar.PaperRegistrar;
@@ -85,8 +85,8 @@ public class VeltisCommandsRegistrar implements Commands, PaperRegistrar<Lifecyc
         final Set<String> registered = new HashSet<>();
 
         final com.mojang.brigadier.Command<net.minecraft.commands.CommandSourceStack> brigCommand = ctx -> {
-            final VeltisCommandSourceStack paperStack = new VeltisCommandSourceStack(ctx.getSource());
-            basicCommand.execute(paperStack, getArgs(ctx));
+            final VeltisCommandSourceStack veltisStack = new VeltisCommandSourceStack(ctx.getSource());
+            basicCommand.execute(veltisStack, getArgs(ctx));
             return com.mojang.brigadier.Command.SINGLE_SUCCESS;
         };
 
@@ -116,7 +116,7 @@ public class VeltisCommandsRegistrar implements Commands, PaperRegistrar<Lifecyc
             );
 
         final LiteralCommandNode<net.minecraft.commands.CommandSourceStack> node = builder.build();
-        BukkitBrigForwardingMap.INSTANCE.registerInDispatcher(node);
+        VeltisBrigForwardingMap.INSTANCE.registerInDispatcher(node);
         registered.add(label);
 
         for (final String alias : aliases) {
@@ -125,7 +125,7 @@ public class VeltisCommandsRegistrar implements Commands, PaperRegistrar<Lifecyc
                 alias, node.getCommand(), node.getRequirement(),
                 node, node.getRedirectModifier(), node.isFork()
             );
-            BukkitBrigForwardingMap.INSTANCE.registerInDispatcher(aliasNode);
+            VeltisBrigForwardingMap.INSTANCE.registerInDispatcher(aliasNode);
             registered.add(alias);
         }
 

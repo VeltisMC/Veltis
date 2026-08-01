@@ -1,1 +1,1 @@
-io.papermc.paper.plugin.entrypoint.classloader.group.PaperPluginClassLoaderStorage
+org.veltismc.veltis.plugin.classloader.VeltisPluginClassLoaderStorage

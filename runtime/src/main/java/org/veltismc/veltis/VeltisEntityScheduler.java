@@ -54,8 +54,8 @@ public class VeltisEntityScheduler implements EntityScheduler {
 
     @Override
     public @Nullable ScheduledTask runDelayed(@NotNull Plugin plugin, @NotNull Consumer<ScheduledTask> task, @Nullable Runnable retired, long delayTicks) {
-        var wrapper = new VeltisPaperScheduledTask[1];
-        wrapper[0] = new VeltisPaperScheduledTask(plugin, null, false);
+        var wrapper = new VeltisScheduledTaskImpl[1];
+        wrapper[0] = new VeltisScheduledTaskImpl(plugin, null, false);
         TaskHandle handle = delegate.schedule(() -> {
             if (!isEntityAlive()) {
                 if (retired != null) {
@@ -79,8 +79,8 @@ public class VeltisEntityScheduler implements EntityScheduler {
 
     @Override
     public @Nullable ScheduledTask runAtFixedRate(@NotNull Plugin plugin, @NotNull Consumer<ScheduledTask> task, @Nullable Runnable retired, long initialDelayTicks, long periodTicks) {
-        var wrapper = new VeltisPaperScheduledTask[1];
-        wrapper[0] = new VeltisPaperScheduledTask(plugin, null, true);
+        var wrapper = new VeltisScheduledTaskImpl[1];
+        wrapper[0] = new VeltisScheduledTaskImpl(plugin, null, true);
         TaskHandle handle = delegate.scheduleRepeating(() -> {
             if (!isEntityAlive()) {
                 if (retired != null) {

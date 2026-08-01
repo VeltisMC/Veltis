@@ -7,7 +7,7 @@ import io.papermc.paper.plugin.lifecycle.event.LifecycleEventOwner;
 import io.papermc.paper.plugin.lifecycle.event.LifecycleEventRunner;
 import io.papermc.paper.plugin.lifecycle.event.registrar.ReloadableRegistrarEvent;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
-import io.papermc.paper.plugin.manager.PaperPluginManagerImpl;
+import org.veltismc.veltis.plugin.manager.VeltisPluginManager;
 
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
@@ -40,8 +40,8 @@ import org.veltismc.veltis.registry.VeltisRegistryAccess;
 import org.veltismc.veltis.server.scheduler.VeltisScheduler;
 import org.veltismc.veltis.server.tick.DefaultTickEngine;
 import org.veltismc.veltis.server.tick.TickEngine;
-import io.papermc.paper.SparksFly;
-import io.papermc.paper.SparksFlyHolder;
+import org.veltismc.veltis.spark.SparksFly;
+import org.veltismc.veltis.spark.SparksFlyHolder;
 
 public final class VeltisBootstrap {
 
@@ -62,7 +62,7 @@ public final class VeltisBootstrap {
     static {
         // Initialize the holder class so SparksFlyHolder.instance is available
         try {
-            Class.forName("io.papermc.paper.SparksFlyHolder", true, VeltisBootstrap.class.getClassLoader());
+            Class.forName("org.veltismc.veltis.spark.SparksFlyHolder", true, VeltisBootstrap.class.getClassLoader());
         } catch (final ClassNotFoundException e) {
             // Should not happen
         }
@@ -122,7 +122,7 @@ public final class VeltisBootstrap {
         var homeDir = detectHomeDirectory(args);
         HOME_DIR = homeDir;
         ensureDirectories(homeDir);
-        org.veltismc.veltis.config.VeltisPaperConfig.load(homeDir);
+        org.veltismc.veltis.config.VeltisConfig.load(homeDir);
 
         taskScheduler = new org.veltismc.veltis.server.scheduler.DefaultTaskScheduler();
 
@@ -131,7 +131,7 @@ public final class VeltisBootstrap {
         // Load plugins early (discovery + instantiation) — before NMS starts,
         // matching Paper's plugin-loads-before-world behavior.
         // Enabling happens later in onMinecraftServerCreated().
-        if (bukkitPluginManager instanceof PaperPluginManagerImpl ppm) {
+        if (bukkitPluginManager instanceof VeltisPluginManager ppm) {
             var pluginsDir = HOME_DIR.resolve("plugins").toFile();
             if (pluginsDir.isDirectory()) {
                 ppm.loadPlugins(pluginsDir);
@@ -148,7 +148,7 @@ public final class VeltisBootstrap {
             bukkitScheduler = createBukkitScheduler();
             bukkitServicesManager = createBukkitServicesManager();
 
-            var veltisPluginManager = new PaperPluginManagerImpl(null, (SimpleCommandMap) bukkitCommandMap, null);
+            var veltisPluginManager = new VeltisPluginManager(null, (SimpleCommandMap) bukkitCommandMap, null);
             bukkitPluginManager = veltisPluginManager;
 
             var veltisServer = new VeltisServer(
@@ -191,11 +191,11 @@ public final class VeltisBootstrap {
             var commandsObj = server.getClass().getMethod("getCommands").invoke(server);
             var nmsDispatcher = (com.mojang.brigadier.CommandDispatcher<net.minecraft.commands.CommandSourceStack>)
                 commandsObj.getClass().getMethod("getDispatcher").invoke(commandsObj);
-            var brigeMap = io.papermc.paper.command.brigadier.bukkit.BukkitBrigForwardingMap.INSTANCE;
+            var brigeMap = org.veltismc.veltis.command.brigadier.bukkit.VeltisBrigForwardingMap.INSTANCE;
             brigeMap.initBridge(nmsDispatcher);
 
             // Enable plugins (instances already loaded during boot()) now that the world is ready
-            if (bukkitPluginManager instanceof PaperPluginManagerImpl ppm) {
+            if (bukkitPluginManager instanceof VeltisPluginManager ppm) {
                 for (var plugin : ppm.getPlugins()) {
                     ppm.enablePlugin(plugin);
                 }
@@ -375,7 +375,7 @@ public final class VeltisBootstrap {
         return veltisScheduler;
     }
 
-    private static org.veltismc.veltis.server.scheduler.TaskHandle createPaperScheduledTaskHandle() {
+    private static org.veltismc.veltis.server.scheduler.TaskHandle createScheduledTaskHandle() {
         return new org.veltismc.veltis.server.scheduler.TaskHandle() {
             private volatile org.veltismc.veltis.server.scheduler.ScheduledTask.TaskState state =
                 org.veltismc.veltis.server.scheduler.ScheduledTask.TaskState.SCHEDULED;
@@ -405,8 +405,8 @@ public final class VeltisBootstrap {
                         case "runNow":
                             if (args != null && args.length >= 2 && args[1] instanceof java.util.function.Consumer c
                                 && args[0] instanceof Plugin plugin) {
-                                var handle = createPaperScheduledTaskHandle();
-                                var task = new VeltisPaperScheduledTask(plugin, handle, false);
+                                var handle = createScheduledTaskHandle();
+                                var task = new VeltisScheduledTaskImpl(plugin, handle, false);
                                 var t = new Thread(() -> {
                                     task.onStart();
                                     c.accept(task);
@@ -436,8 +436,8 @@ public final class VeltisBootstrap {
                         case "run":
                             if (args != null && args.length >= 2 && args[1] instanceof java.util.function.Consumer c
                                 && args[0] instanceof Plugin plugin) {
-                                var handle = createPaperScheduledTaskHandle();
-                                var task = new VeltisPaperScheduledTask(plugin, handle, false);
+                                var handle = createScheduledTaskHandle();
+                                var task = new VeltisScheduledTaskImpl(plugin, handle, false);
                                 task.onStart();
                                 c.accept(task);
                                 task.onFinish();
@@ -468,8 +468,8 @@ public final class VeltisBootstrap {
                         case "run":
                             if (args != null && args.length >= 3 && args[2] instanceof java.util.function.Consumer c
                                 && args[0] instanceof Plugin plugin) {
-                                var handle = createPaperScheduledTaskHandle();
-                                var task = new VeltisPaperScheduledTask(plugin, handle, false);
+                                var handle = createScheduledTaskHandle();
+                                var task = new VeltisScheduledTaskImpl(plugin, handle, false);
                                 task.onStart();
                                 c.accept(task);
                                 task.onFinish();

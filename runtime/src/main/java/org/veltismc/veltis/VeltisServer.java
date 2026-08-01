@@ -980,23 +980,8 @@ public class VeltisServer implements Server {
     @Override
     public @Nullable DatapackManager getDatapackManager() {
         if (datapackManager == null) {
-            // Try to create a real PaperDatapackManager from the server's pack repository
-            var s = mcServer();
-            if (s != null) {
-                try {
-                    var packRepo = s.getClass().getMethod("getPackRepository").invoke(s);
-                    if (packRepo != null) {
-                        var dpmClass = Class.forName("io.papermc.paper.datapack.PaperDatapackManager");
-                        datapackManager = (DatapackManager) dpmClass.getConstructor(
-                            Class.forName("net.minecraft.server.packs.repository.PackRepository")
-                        ).newInstance(packRepo);
-                        return datapackManager;
-                    }
-                } catch (Exception ignored) {
-                    LOG.log(System.Logger.Level.DEBUG, "Failed to create PaperDatapackManager, using proxy fallback");
-                }
-            }
-            // Fallback: proxy with basic functionality
+            // Veltis does not ship a PaperDatapackManager implementation; a lightweight
+            // proxy with basic functionality is provided instead.
             datapackManager = (DatapackManager) Proxy.newProxyInstance(
                 DatapackManager.class.getClassLoader(),
                 new Class<?>[]{DatapackManager.class},

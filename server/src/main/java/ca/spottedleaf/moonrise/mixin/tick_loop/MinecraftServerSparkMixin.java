@@ -1,6 +1,6 @@
 package ca.spottedleaf.moonrise.mixin.tick_loop;
 
-import io.papermc.paper.SparksFlyHolder;
+import org.veltismc.veltis.spark.SparksFlyHolder;
 import net.minecraft.server.MinecraftServer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;

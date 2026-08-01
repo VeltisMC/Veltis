@@ -130,15 +130,15 @@ public final class VeltisRegistryAccess implements RegistryAccess {
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
-    private <T extends Keyed> org.bukkit.Registry<T> buildRegistry(RegistryKey<?> paperKey) {
+    private <T extends Keyed> org.bukkit.Registry<T> buildRegistry(RegistryKey<?> registryKey) {
         var server = serverRef;
         if (server == null) {
             throw new IllegalStateException("Minecraft server not initialized yet");
         }
-        var adventureKey = paperKey.key();
+        var adventureKey = registryKey.key();
         var mcRegistryKey = ResourceKey.createRegistryKey(
             Identifier.fromNamespaceAndPath(adventureKey.namespace(), adventureKey.value()));
         Registry mcRegistry = server.registryAccess().lookupOrThrow(mcRegistryKey);
-        return new VeltisBukkitRegistry<>(mcRegistry, (RegistryKey<T>) paperKey);
+        return new VeltisBukkitRegistry<>(mcRegistry, (RegistryKey<T>) registryKey);
     }
 }

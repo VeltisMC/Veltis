@@ -26,7 +26,7 @@ public class VeltisAsyncScheduler implements AsyncScheduler {
 
     @Override
     public @NotNull ScheduledTask runNow(@NotNull Plugin plugin, @NotNull Consumer<ScheduledTask> task) {
-        var wrapperTask = new VeltisPaperScheduledTask(plugin, null, false);
+        var wrapperTask = new VeltisScheduledTaskImpl(plugin, null, false);
         var handleHolder = new org.veltismc.veltis.server.scheduler.TaskHandle[1];
         handleHolder[0] = delegate.schedule(() -> {
             wrapperTask.onStart();
@@ -46,7 +46,7 @@ public class VeltisAsyncScheduler implements AsyncScheduler {
 
     @Override
     public @NotNull ScheduledTask runDelayed(@NotNull Plugin plugin, @NotNull Consumer<ScheduledTask> task, long delay, @NotNull TimeUnit unit) {
-        var wrapperTask = new VeltisPaperScheduledTask(plugin, null, false);
+        var wrapperTask = new VeltisScheduledTaskImpl(plugin, null, false);
         var handleHolder = new org.veltismc.veltis.server.scheduler.TaskHandle[1];
         handleHolder[0] = delegate.schedule(() -> {
             wrapperTask.onStart();
@@ -66,7 +66,7 @@ public class VeltisAsyncScheduler implements AsyncScheduler {
 
     @Override
     public @NotNull ScheduledTask runAtFixedRate(@NotNull Plugin plugin, @NotNull Consumer<ScheduledTask> task, long initialDelay, long period, @NotNull TimeUnit unit) {
-        var wrapperTask = new VeltisPaperScheduledTask(plugin, null, true);
+        var wrapperTask = new VeltisScheduledTaskImpl(plugin, null, true);
         var handleHolder = new org.veltismc.veltis.server.scheduler.TaskHandle[1];
         handleHolder[0] = delegate.scheduleRepeating(() -> {
             wrapperTask.onStart();

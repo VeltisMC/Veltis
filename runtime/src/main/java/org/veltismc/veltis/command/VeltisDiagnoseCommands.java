@@ -301,7 +301,7 @@ public final class VeltisDiagnoseCommands {
             }
         });
 
-        test(results, "PaperSparkModule available", () -> {
+        test(results, "Bundled spark module available", () -> {
             try {
                 Class.forName("me.lucko.spark.paper.api.PaperSparkModule");
                 return true;

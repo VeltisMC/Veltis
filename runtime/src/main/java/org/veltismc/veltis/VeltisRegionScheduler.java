@@ -40,8 +40,8 @@ public class VeltisRegionScheduler implements RegionScheduler {
 
     @Override
     public @NotNull ScheduledTask runDelayed(@NotNull Plugin plugin, @NotNull World world, int chunkX, int chunkZ, @NotNull Consumer<ScheduledTask> task, long delayTicks) {
-        var wrapper = new VeltisPaperScheduledTask[1];
-        wrapper[0] = new VeltisPaperScheduledTask(plugin, null, false);
+        var wrapper = new VeltisScheduledTaskImpl[1];
+        wrapper[0] = new VeltisScheduledTaskImpl(plugin, null, false);
         TaskHandle handle = delegate.schedule(() -> {
             wrapper[0].onStart();
             try {
@@ -60,8 +60,8 @@ public class VeltisRegionScheduler implements RegionScheduler {
 
     @Override
     public @NotNull ScheduledTask runAtFixedRate(@NotNull Plugin plugin, @NotNull World world, int chunkX, int chunkZ, @NotNull Consumer<ScheduledTask> task, long initialDelayTicks, long periodTicks) {
-        var wrapper = new VeltisPaperScheduledTask[1];
-        wrapper[0] = new VeltisPaperScheduledTask(plugin, null, true);
+        var wrapper = new VeltisScheduledTaskImpl[1];
+        wrapper[0] = new VeltisScheduledTaskImpl(plugin, null, true);
         TaskHandle handle = delegate.scheduleRepeating(() -> {
             wrapper[0].onStart();
             try {
