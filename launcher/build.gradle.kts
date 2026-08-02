@@ -42,7 +42,7 @@ tasks.register("uberJar", Jar::class) {
         include("**/*.patch")
     }
 
-    // 2. Server module classes (Main.class, API, Moonrise)
+    // 2. Server module classes (Main.class, API)
     from(zipTree(project(":server").tasks.named("jar").map { (it as Jar).archiveFile.get().asFile }))
     // 3. Runtime module classes (VeltisBootstrap, plugin system)
     from(zipTree(project(":runtime").tasks.named("jar").map { (it as Jar).archiveFile.get().asFile }))

@@ -37,7 +37,6 @@ public final class Main {
             System.setProperty("log4j.configurationFile", log4jConfig.toExternalForm());
         }
         // Mixin MUST be initialized before any Minecraft class is loaded
-        MixinSetup.initialize();
         printBanner();
         printDiagnostics();
         printUnicodeValidation();
@@ -244,11 +243,10 @@ public final class Main {
         System.out.println("[VeltisMC] ╔══════════════════════════════════════════╗");
         System.out.println("[VeltisMC] ║         Performance Subsystems          ║");
         System.out.println("[VeltisMC] ╚══════════════════════════════════════════╝");
-        System.out.println("[VeltisMC] Moonrise: ACTIVE");
         System.out.println("[VeltisMC] UTF-8 Logging: ACTIVE");
         System.out.println("[VeltisMC] Plugin API: NONE (bare NMS server)");
         System.out.println("[VeltisMC] Patch Engine: ACTIVE");
-        System.out.println("[VeltisMC] Chunk Optimizations: Moonrise");
+        System.out.println("[VeltisMC] Chunk Optimizations: Vanilla");
         System.out.println();
     }
 }

@@ -14,7 +14,6 @@ public final class CacheValidator {
 
     private static final String CACHE_DIR = "patch-engine.cache";
     private static final String PATCH_HASHES = "patch-hashes.sha256";
-    private static final String MOONRISE_HASHES = "moonrise-hashes.sha256";
     private static final String COMPAT_HASHES = "compatibility-hashes.sha256";
     private static final String VANILLA_JAR_HASH = "vanilla-jar.sha256";
     private static final String MAPPINGS_HASH = "mappings.sha256";
@@ -31,7 +30,6 @@ public final class CacheValidator {
         if (!Files.isRegularFile(marker)) return true;
 
         if (!compareHash(cacheDir.resolve(PATCH_HASHES), computePatchHashes(homeDir))) return true;
-        if (!compareHash(cacheDir.resolve(MOONRISE_HASHES), computeMoonriseHashes(homeDir))) return true;
         if (!compareHash(cacheDir.resolve(COMPAT_HASHES), computeCompatibilityHashes(homeDir))) return true;
         if (!compareHash(cacheDir.resolve(VANILLA_JAR_HASH), computeVanillaJarHash(homeDir, version))) return true;
         if (!compareHash(cacheDir.resolve(MAPPINGS_HASH), computeMappingsHash(homeDir))) return true;
@@ -47,7 +45,6 @@ public final class CacheValidator {
             var cacheDir = homeDir.resolve("versions").resolve(version).resolve(CACHE_DIR);
             Files.createDirectories(cacheDir);
             writeHash(cacheDir.resolve(PATCH_HASHES), computePatchHashes(homeDir));
-            writeHash(cacheDir.resolve(MOONRISE_HASHES), computeMoonriseHashes(homeDir));
             writeHash(cacheDir.resolve(COMPAT_HASHES), computeCompatibilityHashes(homeDir));
             writeHash(cacheDir.resolve(VANILLA_JAR_HASH), computeVanillaJarHash(homeDir, version));
             writeHash(cacheDir.resolve(MAPPINGS_HASH), computeMappingsHash(homeDir));
@@ -136,12 +133,6 @@ public final class CacheValidator {
         return result.toString();
     }
 
-    private static String computeMoonriseHashes(Path homeDir) {
-        var serverSrc = homeDir.resolve("server").resolve("src");
-        if (!Files.isDirectory(serverSrc)) return "";
-        return sha256TreeFiltered(serverSrc, f -> f.toString().endsWith(".java") && f.toString().contains("moonrise"));
-    }
-
     private static String computeCompatibilityHashes(Path homeDir) {
         var runtimeSrc = homeDir.resolve("runtime").resolve("src");
         if (!Files.isDirectory(runtimeSrc)) return "";
@@ -164,21 +155,6 @@ public final class CacheValidator {
             try (var walk = Files.walk(dir)) {
                 walk.filter(Files::isRegularFile)
                     .filter(f -> extension == null || f.toString().endsWith(extension))
-                    .sorted()
-                    .forEachOrdered(f -> digestFile(digester, f));
-            }
-            return HexFormat.of().formatHex(digester.digest());
-        } catch (Exception e) {
-            return "";
-        }
-    }
-
-    private static String sha256TreeFiltered(Path dir, java.util.function.Predicate<Path> filter) {
-        try {
-            var digester = newDigester();
-            try (var walk = Files.walk(dir)) {
-                walk.filter(Files::isRegularFile)
-                    .filter(filter)
                     .sorted()
                     .forEachOrdered(f -> digestFile(digester, f));
             }

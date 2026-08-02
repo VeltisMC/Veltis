@@ -155,7 +155,7 @@ build/distributions/veltismc.jar
 build/veltismc-server.jar
 ```
 
-`build/distributions/veltismc.jar` is the standalone VeltisMC jar with the launcher, Veltis runtime, patched Minecraft runtime classes, and Moonrise. It is a bare NMS server: no Bukkit, Spigot, or Paper API is included or supported. `build/veltismc-server.jar` is the patched Minecraft runtime jar used by the launcher/runtime pipeline.
+`build/distributions/veltismc.jar` is the standalone VeltisMC jar with the launcher, Veltis runtime, and patched Minecraft runtime classes. It is a bare NMS server: no Bukkit, Spigot, or Paper API is included or supported. `build/veltismc-server.jar` is the patched Minecraft runtime jar used by the launcher/runtime pipeline.
 
 To only rebuild the patched Minecraft runtime jar, run:
 
@@ -167,7 +167,7 @@ To only rebuild the patched Minecraft runtime jar, run:
 
 ## Runtime Behavior
 
-VeltisMC is a bare NMS server: it boots the patched vanilla `DedicatedServer` directly with no plugin API (no Bukkit/Spigot/Paper). Gameplay is vanilla plus the patch set under `server/patches/` and the Moonrise chunk-system optimizations.
+VeltisMC is a bare NMS server: it boots the patched vanilla `DedicatedServer` directly with no plugin API (no Bukkit/Spigot/Paper). Gameplay is vanilla plus the patch set under `server/patches/`.
 
 Useful runtime commands (vanilla):
 

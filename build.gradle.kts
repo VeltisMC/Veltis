@@ -107,8 +107,6 @@ subprojects {
         mavenCentral()
         maven("https://libraries.minecraft.net/")
         maven("https://maven.fabricmc.net/")
-        // Hosts Moonrise artifacts (ca.spottedleaf:concurrentutil/yamlconfig)
-        maven("https://repo.papermc.io/repository/maven-public/")
         maven("https://repo.spongepowered.org/repository/maven-public/")
         maven("https://jitpack.io")
     }
@@ -344,7 +342,7 @@ val extractServerJar by tasks.registering {
 }
 
 // ---------------------------------------------------------------------------
-// Access Widener: widen Minecraft server jar access for Moonrise compilation
+// Access Widener: widen Minecraft server jar access for module compilation
 // ---------------------------------------------------------------------------
 val widenServerJarAccess by tasks.registering(JavaExec::class) {
     description = "Widens class/field/method access in Mojang-mapped server jar"

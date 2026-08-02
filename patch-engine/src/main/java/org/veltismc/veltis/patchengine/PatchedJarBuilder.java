@@ -521,7 +521,7 @@ public class PatchedJarBuilder {
                 log.info("Incremental compile: " + filesToCompile.size() + " changed of " + allPatchTargets.size() + " total");
             }
 
-            // Also scan for any files not tracked by patches (Moonrise compat source changes)
+            // Also scan for any files not tracked by patches (untracked source changes)
             var extraSources = findUntrackedSourceChanges(patchedSourceDir, previousFingerprints);
             if (!extraSources.isEmpty()) {
                 filesToCompile.addAll(extraSources);

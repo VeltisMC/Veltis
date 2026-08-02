@@ -27,37 +27,6 @@ dependencies {
 
     // Test dependencies
     testImplementation(project(":runtime"))
-
-    // Moonrise dependencies (internal, not exposed transitively)
-    implementation("ca.spottedleaf:concurrentutil:0.0.10")
-    implementation("ca.spottedleaf:yamlconfig:1.2.0")
-    implementation("net.fabricmc:sponge-mixin:0.15.2+mixin.0.8.7")
-    implementation("io.github.llamalad7:mixinextras-fabric:0.4.1")
-}
-
-// Exclude client-side files that reference net.minecraft.client.* (not in server jar)
-// and clothconfig2-dependent GUI files
-sourceSets {
-    main {
-        java {
-            exclude("ca/spottedleaf/moonrise/common/config/ui/ConfigWalker.java")
-            exclude("ca/spottedleaf/moonrise/common/config/MoonriseConfigScreen.java")
-            exclude("ca/spottedleaf/moonrise/patches/render/VisibilityGraph.java")
-            exclude("ca/spottedleaf/moonrise/patches/command/MoonriseCommand.java")
-            exclude("ca/spottedleaf/moonrise/mixin/starlight/multiplayer/ClientPacketListenerMixin.java")
-            exclude("ca/spottedleaf/moonrise/mixin/serverlist/ServerSelectionListMixin.java")
-            exclude("ca/spottedleaf/moonrise/mixin/serverlist/ServerAddressResolverMixin.java")
-            exclude("ca/spottedleaf/moonrise/mixin/serverlist/ClientConnectionMixin.java")
-            exclude("ca/spottedleaf/moonrise/mixin/render/SectionRenderDispatcherMixin.java")
-            exclude("ca/spottedleaf/moonrise/mixin/profiler/MinecraftMixin.java")
-            exclude("ca/spottedleaf/moonrise/mixin/config/MinecraftMixin.java")
-            exclude("ca/spottedleaf/moonrise/mixin/collisions/FluidRendererMixin.java")
-            exclude("ca/spottedleaf/moonrise/mixin/collisions/ParticleMixin.java")
-            exclude("ca/spottedleaf/moonrise/mixin/chunk_system/OptionsMixin.java")
-            exclude("ca/spottedleaf/moonrise/mixin/chunk_system/ClientLevelMixin.java")
-            exclude("ca/spottedleaf/moonrise/mixin/command/CommandsMixin.java")
-        }
-    }
 }
 
 tasks.named("compileJava") {

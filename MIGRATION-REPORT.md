@@ -2,7 +2,7 @@
 
 Final state: VeltisMC is a **bare NMS server**. Every vendored Bukkit, Spigot, and Paper class has
 been removed from the source tree; the runtime no longer implements any plugin API. The server
-boots the patched vanilla `DedicatedServer` plus Moonrise, with no plugin support whatsoever.
+boots the patched vanilla `DedicatedServer`, with no plugin support whatsoever.
 
 ## Summary
 
@@ -73,9 +73,10 @@ ecosystem was deleted:
 
 ## What remains
 
-- **Server module**: Moonrise (`ca.spottedleaf`, 287 files, zero Bukkit/Paper refs) + the NMS
-  entrypoint (`Main`, `MixinAgent`, `MixinServiceVanilla`, `MixinSetup`, `VeltisBlackboard`,
-  `VeltisContainerHandle`, `api/VeltisAPI` + definitions, `moonrise/VeltisPlatformHooks`).
+- **Server module**: `ca.spottedleaf` (Moonrise, 287 files) and the Moonrise mixin bootstrap
+  (`Main`, `MixinAgent`, `MixinServiceVanilla`, `MixinSetup`, `VeltisBlackboard`,
+  `VeltisContainerHandle`, `moonrise/VeltisPlatformHooks`) were removed in a follow-up cleanup;
+  what remains is the NMS entrypoint (`Main`, `api/VeltisAPI` + definitions).
 - **Runtime module**: the Veltis server framework that is self-contained — command framework,
   config, data, resource, runtime provisioning/loader/controller, lifecycle, metrics, server
   model, internal scheduler/tick, events, storage, branding — plus a rewritten 35-line
@@ -98,18 +99,13 @@ ecosystem was deleted:
 - Removed: `me.lucko:spark-paper:1.10.152`, `me.lucko:spark-api:0.1-...` (spark profiler),
   the entire Bukkit/Paper API dep block (guava/gson/snakeyaml/joml/fastutil/log4j/slf4j/brigadier/
   bungeecord-chat/adventure stack/maven-resolver/jspecify/checker-qual) from `server/build.gradle.kts`.
-- Removed repos: hub.spigotmc.org, repo.papermc.io (kept only for **Moonrise artifacts**
-  `ca.spottedleaf:concurrentutil` / `yamlconfig`, which publish there), repo.lucko.me.
-- Kept: Jansi, JetBrains annotations (compileOnly), Moonrise deps, Minecraft libs via the
+- Removed repos: hub.spigotmc.org, repo.papermc.io, repo.lucko.me.
+- Kept: Jansi, JetBrains annotations (compileOnly), Minecraft libs via the
   `ver/26.2/libraries` file tree.
 
 ## Remaining "papermc" strings (benign)
 
-- `maven("https://repo.papermc.io/...")` in the root build script — Moonrise's artifact host
-  (not Paper API).
-- A commented-out test harness inside
-  `server/src/main/java/ca/spottedleaf/moonrise/common/misc/Delayed8WayDistancePropagator2D.java`
-  references `com.destroystokyo.*` — dead text inside `/* */`, not compiled.
+None. The Moonrise artifact host was removed together with Moonrise itself.
 
 ## Feature loss (consequence of the chosen direction)
 

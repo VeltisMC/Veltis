@@ -272,7 +272,7 @@ public final class VeltisLauncher {
                      .forEach(urls::add);
             }
 
-            // Launcher jar last — VeltisMC-specific classes (Main, API, Moonrise, Mixin)
+            // Launcher jar last — VeltisMC-specific classes (Main, API, runtime)
             urls.add(locationOf(VeltisLauncher.class));
         } catch (Exception e) {
             throw new RuntimeException("Failed to build classpath", e);
