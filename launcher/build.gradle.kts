@@ -5,26 +5,34 @@ plugins {
 description = "VeltisMC Launcher"
 
 application {
-    mainClass = "org.veltismc.veltis.launcher.VeltisLauncher"
+    mainClass = "org.veltismc.launcher.VeltisLauncher"
 }
 
 dependencies {
     implementation(project(":patch-engine"))
     // Gson for JSON parsing (version manifest, library metadata)
     implementation("com.google.code.gson:gson:2.12.1")
-    // Jansi for native Windows Unicode/ANSI console support
-    implementation("org.fusesource.jansi:jansi:2.4.1")
+    // The one logging system (Log4j2): api comes via patch-engine; core and
+    // the JUL bridge are here so a standalone `gradlew :launcher:run` logs the
+    // same way the packaged uber jar does (the jar also gets them via :server).
+    implementation("org.apache.logging.log4j:log4j-core:2.25.2")
+    implementation("org.apache.logging.log4j:log4j-jul:2.25.2")
 }
 
 tasks.register("uberJar", Jar::class) {
-    dependsOn(":patch-engine:jar", ":server:jar", ":runtime:jar")
+    dependsOn(
+        ":patch-engine:jar",
+        ":server:jar",
+        ":runtime:jar",
+        ":world:jar"
+    )
     archiveBaseName.set("veltismc")
     archiveClassifier.set("")
     archiveVersion.set("1.0")
 
     manifest {
         attributes(
-            "Main-Class" to "org.veltismc.veltis.launcher.VeltisLauncher",
+            "Main-Class" to "org.veltismc.launcher.VeltisLauncher",
             "Multi-Release" to "true"
         )
     }
@@ -46,6 +54,8 @@ tasks.register("uberJar", Jar::class) {
     from(zipTree(project(":server").tasks.named("jar").map { (it as Jar).archiveFile.get().asFile }))
     // 3. Runtime module classes (VeltisBootstrap, plugin system)
     from(zipTree(project(":runtime").tasks.named("jar").map { (it as Jar).archiveFile.get().asFile }))
+    // 3b. World engine core + version-pinned NMS integration classes
+    from(zipTree(project(":world").tasks.named("jar").map { (it as Jar).archiveFile.get().asFile }))
 
     // 4. Server module runtime dependencies (excluding Minecraft server jar and its libraries)
     from(project(":server").configurations.runtimeClasspath.map { config ->

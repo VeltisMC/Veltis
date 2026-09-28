@@ -1,8 +1,8 @@
-﻿diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
-index c767b77..dc559f8 100644
+diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
+index 62adce2..c1ea72b 100644
 --- a/net/minecraft/server/dedicated/DedicatedServer.java
 +++ b/net/minecraft/server/dedicated/DedicatedServer.java
-@@ -480,6 +480,7 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+@@ -432,6 +432,7 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
      public void handleConsoleInputs() {
          while (!this.consoleInput.isEmpty()) {
              ConsoleInput input = this.consoleInput.remove(0);

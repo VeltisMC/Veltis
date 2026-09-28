@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Test-only Log4j2 config: the server's pattern, warnings and errors only,
+     so test and benchmark output stays clean while failures remain visible. -->
+<Configuration status="OFF">
+    <Appenders>
+        <Console name="TerminalConsole" target="SYSTEM_OUT">
+            <PatternLayout pattern="[%d{HH:mm:ss} %level]: %msg%n" charset="UTF-8"/>
+        </Console>
+    </Appenders>
+    <Loggers>
+        <Root level="WARN">
+            <AppenderRef ref="TerminalConsole"/>
+        </Root>
+    </Loggers>
+</Configuration>
