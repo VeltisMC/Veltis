@@ -35,3 +35,13 @@ run/
 
 # Minecraft pipeline workspace (version-specific artifacts)
 ver/
+
+# Launcher server home (booting from the repo root pollutes it; prefer
+# `java -jar veltismc.jar --home run`, whose output is already ignored above)
+/eula.txt
+/server.properties
+/logs/
+/config/
+/vanilla/
+/libraries/
+/versions/

@@ -1,7 +1,4 @@
 import org.gradle.jvm.toolchain.JavaLanguageVersion
-import java.nio.file.FileSystems
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 plugins {
     java
@@ -24,17 +21,16 @@ subprojects {
     }
 }
 
-group = "org.veltismc.veltis"
+group = "org.veltismc"
 version = "1.0.0-SNAPSHOT"
 
 // ---------------------------------------------------------------------------
 // Minecraft pipeline configuration
 // ---------------------------------------------------------------------------
 val minecraftVersion = providers.gradleProperty("minecraftVersion")
-    .orElse("26.2").get()
+    .orElse("26.3").get()
 val verDir = layout.projectDirectory.dir("ver/${minecraftVersion}")
 val serverPatchesDir = layout.projectDirectory.dir("server/patches")
-val apiPatchesDir = layout.projectDirectory.dir("patches/api")
 val minecraftSourceDir = verDir.dir("minecraft-source")
 val patchedSourceDir = verDir.dir("patched-source")
 val minecraftClassesDir = verDir.dir("classes")
@@ -42,7 +38,7 @@ val minecraftLibDir = verDir.dir("libraries")
 val pipelineClasspath by configurations.creating
 
 fun patchedMinecraftSourceFiles(): List<File> {
-    return listOf(serverPatchesDir.asFile, apiPatchesDir.asFile)
+    return listOf(serverPatchesDir.asFile)
         .asSequence()
         .filter { it.isDirectory }
         .flatMap { patchDir ->
@@ -86,10 +82,12 @@ subprojects {
     }
 
     // Modules that need the Mojang-mapped server jar at compile time
-    val minecraftModules = setOf("server", "runtime")
+    val minecraftModules = setOf("server", "world")
     if (name in minecraftModules) {
         tasks.named("compileJava") {
-            dependsOn(":extractServerJar")
+            // downloadMinecraft materialises ver/<version>/server.jar; the
+            // modules' own build files additionally pull in downloadLibraries.
+            dependsOn(":downloadMinecraft")
         }
     }
 
@@ -131,10 +129,20 @@ dependencies {
 tasks.jar {
     manifest {
         attributes(
-            "Main-Class" to "org.veltismc.veltis.launcher.VeltisLauncher"
+            "Main-Class" to "org.veltismc.launcher.VeltisLauncher"
         )
     }
 }
+
+// Pipeline entrypoints execute build-tools code compiled for the toolchain
+// release (26), so they must run on a matching JVM rather than Gradle's own.
+val java26Launcher = javaToolchains.launcherFor {
+    languageVersion = JavaLanguageVersion.of(26)
+}
+
+// The root project hosts compileMinecraft; it must use the same toolchain as
+// the subprojects, otherwise javac (Gradle's JDK 21) rejects --release 26.
+java.toolchain.languageVersion.set(JavaLanguageVersion.of(26))
 
 // ---------------------------------------------------------------------------
 // Pipeline helper: register and configure a JavaExec pipeline task
@@ -148,7 +156,8 @@ fun pipelineTask(
         description = "Minecraft build pipeline: $step"
         group = "minecraft"
         classpath = pipelineClasspath
-        mainClass = "org.veltismc.veltis.buildtools.PipelineRunner"
+        mainClass = "org.veltismc.buildtools.PipelineRunner"
+        javaLauncher.set(java26Launcher)
         args(step, minecraftVersion, rootDir.absolutePath)
         dependsOn(":build-tools:classes")
         dependsOn(deps.toList())
@@ -219,7 +228,7 @@ val patchedMinecraftSources: FileCollection = files(provider {
 val compileMinecraft = tasks.register<JavaCompile>("compileMinecraft") {
     description = "Compiles patched Minecraft source files"
     group = "minecraft"
-    dependsOn(applyPatches, downloadLibraries, extractServerJar)
+    dependsOn(applyPatches, downloadLibraries, downloadMinecraft)
 
     source(patchedMinecraftSources)
     classpath = files(verDir.file("server.jar")) + minecraftClasspath
@@ -275,29 +284,32 @@ val verifyPatches = pipelineTask(
 val buildServer = tasks.register<JavaExec>("buildServer") {
     description = "Builds veltismc-server.jar using VeltisBuilder"
     group = "minecraft"
-    mainClass = "org.veltismc.veltis.builder.VeltisBuilder"
-    classpath = project(":builder").sourceSets.main.get().runtimeClasspath
+    mainClass = "org.veltismc.buildtools.builder.VeltisBuilder"
+    classpath = pipelineClasspath
+    javaLauncher.set(java26Launcher)
     args("build", "--home", rootDir.absolutePath, "--version", minecraftVersion)
-    dependsOn(":builder:classes")
+    dependsOn(":build-tools:classes")
     dependsOn(":downloadMinecraft", ":downloadLibraries")
 }
 
 val validateBuild = tasks.register<JavaExec>("validateBuild") {
     description = "Validate the build cache"
     group = "minecraft"
-    mainClass = "org.veltismc.veltis.builder.VeltisBuilder"
-    classpath = project(":builder").sourceSets.main.get().runtimeClasspath
+    mainClass = "org.veltismc.buildtools.builder.VeltisBuilder"
+    classpath = pipelineClasspath
+    javaLauncher.set(java26Launcher)
     args("validate", "--home", rootDir.absolutePath, "--version", minecraftVersion)
-    dependsOn(":builder:classes")
+    dependsOn(":build-tools:classes")
 }
 
 val cleanBuild = tasks.register<JavaExec>("cleanBuild") {
     description = "Clean build artifacts"
     group = "minecraft"
-    mainClass = "org.veltismc.veltis.builder.VeltisBuilder"
-    classpath = project(":builder").sourceSets.main.get().runtimeClasspath
+    mainClass = "org.veltismc.buildtools.builder.VeltisBuilder"
+    classpath = pipelineClasspath
+    javaLauncher.set(java26Launcher)
     args("clean", minecraftVersion, "--home", rootDir.absolutePath)
-    dependsOn(":builder:classes")
+    dependsOn(":build-tools:classes")
 }
 
 // ---------------------------------------------------------------------------
@@ -312,32 +324,7 @@ tasks.register("buildVeltisMC") {
         packageVeltisMC
     )
     doLast {
-        logger.lifecycle("=== VeltisMC build pipeline complete ===")
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Extract the Mojang-mapped server jar from the bundler format for IDE support
-// ---------------------------------------------------------------------------
-val extractServerJar by tasks.registering {
-    description = "Extracts the Mojang-mapped server jar from the bundler format"
-    group = "minecraft"
-    val bundlerJar = file("runtime/minecraft/$minecraftVersion/server.jar")
-    val outputJar = verDir.file("server.jar").asFile
-    outputs.file(outputJar)
-    // Bundler jar may not exist yet (downloaded at runtime by the launcher);
-    // skip this task if absent rather than failing at configuration time.
-    onlyIf { bundlerJar.exists() }
-    doLast {
-        outputJar.parentFile.mkdirs()
-        val fs = FileSystems.newFileSystem(bundlerJar.toPath(), null as ClassLoader?)
-        try {
-            val innerPath = fs.getPath("/META-INF/versions/$minecraftVersion/server-$minecraftVersion.jar")
-            Files.copy(innerPath, outputJar.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        } finally {
-            fs.close()
-        }
-        logger.lifecycle("Extracted Mojang-mapped server jar to $outputJar")
+        logger.lifecycle("VeltisMC build completed")
     }
 }
 
@@ -351,13 +338,13 @@ val widenServerJarAccess by tasks.registering(JavaExec::class) {
     val outputJar = verDir.file("server-widened.jar").asFile
     outputs.file(outputJar)
     classpath = pipelineClasspath
-    mainClass = "org.veltismc.veltis.buildtools.AccessWidener"
+    mainClass = "org.veltismc.buildtools.AccessWidener"
+    javaLauncher.set(java26Launcher)
     args(inputJar.absolutePath, outputJar.absolutePath)
     dependsOn(":build-tools:classes")
-    dependsOn(":extractServerJar")
-    // Input may not exist yet; only run when extractServerJar produces it
-    onlyIf { inputJar.exists() }
-    doLast { logger.lifecycle("Widened access: ${outputJar.absolutePath}") }
+    // downloadMinecraft produces ver/<version>/server.jar (extraction from the
+    // bundler format happens inside that pipeline step).
+    dependsOn(":downloadMinecraft")
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +353,5 @@ val widenServerJarAccess by tasks.registering(JavaExec::class) {
 tasks.register("ensurePatchDirs") {
     doLast {
         serverPatchesDir.asFile.mkdirs()
-        apiPatchesDir.asFile.mkdirs()
     }
 }

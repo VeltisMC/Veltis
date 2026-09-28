@@ -1,4 +1,4 @@
-﻿diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
+diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
 index 062319d..f815ae4 100644
 --- a/net/minecraft/server/players/PlayerList.java
 +++ b/net/minecraft/server/players/PlayerList.java
@@ -10,7 +10,7 @@ index 062319d..f815ae4 100644
          LevelData levelData = level.getLevelData();
          ServerGamePacketListenerImpl playerConnection = new ServerGamePacketListenerImpl(this.server, connection, player, cookie);
          connection.setupInboundProtocol(
-@@ -305,6 +306,7 @@ public abstract class PlayerList {
+@@ -306,6 +307,7 @@ public abstract class PlayerList {
      public void remove(final ServerPlayer player) {
          ServerLevel level = player.level();
          player.awardStat(Stats.LEAVE_GAME);

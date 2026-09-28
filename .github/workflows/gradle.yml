@@ -30,7 +30,10 @@ jobs:
       - name: Make Gradle Wrapper Executable
         run: chmod +x gradlew
 
-      - name: Build VeltisMC
+      - name: Build and Test
+        run: ./gradlew build --stacktrace --no-daemon
+
+      - name: Package VeltisMC
         run: ./gradlew buildVeltisMC --stacktrace --no-daemon
 
       - name: Upload Build Artifacts
@@ -38,5 +41,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: VeltisMC
-          path: |
-            **/build/libs/*.jar
+          path: build/distributions/*.jar

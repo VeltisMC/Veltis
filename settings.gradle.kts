@@ -6,7 +6,7 @@ include(
     ":launcher",
     ":build-tools",
     ":patch-engine",
-    ":builder",
     ":server",
-    ":runtime"
+    ":runtime",
+    ":world"
 )
