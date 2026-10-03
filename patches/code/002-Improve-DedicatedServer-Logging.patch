@@ -1,0 +1,11 @@
+diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
+--- a/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -432,6 +432,7 @@
+     public void handleConsoleInputs() {
+         while (!this.consoleInput.isEmpty()) {
+             ConsoleInput input = this.consoleInput.remove(0);
++            LOGGER.info("CONSOLE issued server command: {}", input.msg);
+             this.getCommands().performPrefixedCommand(input.source, input.msg);
+         }
+     }

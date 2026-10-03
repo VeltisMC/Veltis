@@ -30,11 +30,27 @@ tmp/
 *.userdata
 run/
 
-# Temp patch files
-*.patch.tmp
+# The Minecraft pipeline workspace. Everything here is reproducible with
+# `./gradlew prepareMinecraft`, and none of it belongs in version control. The
+# development layout lives under `build/`, which is already ignored above.
+#
+# A server install started from the repository root — `java -jar server.jar`
+# with the checkout as the working directory — lays out Vanilla/ and Veltis/
+# beside it, exactly as it would beside a real server. Ignored here for the same
+# reason: generated, reproducible, not source.
+/Vanilla/
+/Veltis/
 
-# Minecraft pipeline workspace (version-specific artifacts)
-ver/
+# Staging files left behind by an interrupted write. They are always deleted
+# before a run continues, so seeing one committed would mean a broken run.
+# There are exactly two, both derived from the target file's own name rather
+# than generated, so a crashed run leaves one predictable path to look at:
+#   .writing   a patched file being replaced
+#   .widening  the access-widened jar being built
+#   .building  a patch file being renumbered (deleted if the run is interrupted)
+*.writing
+*.widening
+*.building
 
 # Launcher server home (booting from the repo root pollutes it; prefer
 # `java -jar veltismc.jar --home run`, whose output is already ignored above)
@@ -42,6 +58,3 @@ ver/
 /server.properties
 /logs/
 /config/
-/vanilla/
-/libraries/
-/versions/

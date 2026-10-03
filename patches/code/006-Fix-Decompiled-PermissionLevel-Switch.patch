@@ -1,0 +1,23 @@
+diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
+--- a/net/minecraft/server/players/PlayerList.java
++++ b/net/minecraft/server/players/PlayerList.java
+@@ -579,13 +579,12 @@
+ 
+     public void sendPlayerPermissionLevel(final ServerPlayer player, final LevelBasedPermissionSet permissions) {
+         if (player.connection != null) {
+-            byte eventId = switch (<unrepresentable>.$SwitchMap$net$minecraft$server$permissions$PermissionLevel[permissions.level().ordinal()]) {
+-                case 1 -> 24;
+-                case 2 -> 25;
+-                case 3 -> 26;
+-                case 4 -> 27;
+-                case 5 -> 28;
+-                default -> throw new MatchException(null, null);
++            byte eventId = switch (permissions.level()) {
++                case ALL -> 24;
++                case MODERATORS -> 25;
++                case GAMEMASTERS -> 26;
++                case ADMINS -> 27;
++                case OWNERS -> 28;
+             };
+             player.connection.send(new ClientboundEntityEventPacket(player, eventId));
+         }

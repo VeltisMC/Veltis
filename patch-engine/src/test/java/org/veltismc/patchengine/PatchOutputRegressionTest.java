@@ -3,21 +3,18 @@ package org.veltismc.patchengine;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
+import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Byte-for-byte output regression for the patch pipeline.
  *
  * <p>The corpus below exercises the production path end to end: patch files on
- * disk -> {@link PatchDiscovery} -> {@link RuntimePatchApplier} (grouping,
- * ordering, parallel application) -> written source files. It covers:
+ * disk in {@code patches/code} -> {@link PatchDiscovery} ->
+ * {@link VeltisPatcher} (grouping, ordering, parallel application) -> written
+ * source files. It covers:
  *
  * <ul>
  *   <li>two patches chained on one source file (deterministic order),</li>
@@ -165,19 +162,21 @@ class PatchOutputRegressionTest {
         "",
         "class Bravo {",
         "    int x = 1;",
-        "    int y = 2;",
+        "    int  y = 2;",
         "    // trailing context",
         "    int z = 3;",
         "}",
         "");
 
+    // The file ends with a newline, so the trailing line break is part of the
+    // content and patching must not eat it.
     static final String EXPECTED_CRLF = ("package demo;\r\n"
         + "\r\n"
         + "class Crlf {\r\n"
         + "    int p = 1;\r\n"
         + "\r\n"
         + "    int q = 22;\r\n"
-        + "}");
+        + "}\r\n");
 
     static final String EXPECTED_ZULU = String.join("\n",
         "class ZuluNew {",
@@ -186,83 +185,47 @@ class PatchOutputRegressionTest {
         "");
 
     // ------------------------------------------------------------------
-    // Test
+    // Tests
     // ------------------------------------------------------------------
 
     @Test
-    void patchedOutputMatchesGoldenFiles() throws Exception {
-        var first = runPipeline();   // fresh workspace
-        var second = runPipeline();  // fresh workspace again - determinism
+    void patchedOutputMatchesGoldenFiles() {
+        var fixture = corpus();
+        var stats = fixture.applyReporting(4);
+        assertEquals(5, stats.patchesApplied, "discovery must find all five patches");
 
-        for (var entry : first.entrySet()) {
-            var a = entry.getValue();
-            var b = second.get(entry.getKey());
-            assertArrayEquals(a.getBytes(StandardCharsets.UTF_8),
-                b.getBytes(StandardCharsets.UTF_8),
-                "non-deterministic output for " + entry.getKey());
-        }
-
-        assertEquals(EXPECTED_ALPHA, first.get("src/Alpha.java"));
-        assertEquals(EXPECTED_BRAVO, first.get("src/beta/Bravo.java"));
-        assertEquals(EXPECTED_CRLF, first.get("src/Crlf.java"));
-        assertEquals(EXPECTED_ZULU, first.get("src/ZuluNew.java"));
-        assertEquals(4, first.size(), "unexpected output file count");
+        var tree = fixture.patchedTree();
+        assertEquals(EXPECTED_ALPHA, tree.get("src/Alpha.java"));
+        assertEquals(EXPECTED_BRAVO, tree.get("src/beta/Bravo.java"));
+        assertEquals(EXPECTED_CRLF, tree.get("src/Crlf.java"));
+        assertEquals(EXPECTED_ZULU, tree.get("src/ZuluNew.java"));
+        assertEquals(4, tree.size(), "unexpected output file count");
     }
 
-    /**
-     * Writes pristine sources + patch files, then runs the production
-     * discovery + application path. Returns relative path -> exact file content.
-     */
-    private java.util.Map<String, String> runPipeline() throws Exception {
-        var root = Files.createTempDirectory(tmp, "regression-");
-        var pristine = root.resolve("pristine");
-        var workspace = root.resolve("workspace");
-        var patchesDir = root.resolve("patches");
-        Files.createDirectories(workspace);
-        Files.createDirectories(patchesDir);
-
-        write(pristine.resolve("src").resolve("Alpha.java"), ALPHA);
-        write(pristine.resolve("src").resolve("beta").resolve("Bravo.java"), BRAVO);
-        write(pristine.resolve("src").resolve("Crlf.java"), CRLF);
-        Files.createDirectories(workspace.resolve("src").resolve("beta"));
-        Files.copy(pristine.resolve("src").resolve("Alpha.java"),
-            workspace.resolve("src").resolve("Alpha.java"));
-        Files.copy(pristine.resolve("src").resolve("beta").resolve("Bravo.java"),
-            workspace.resolve("src").resolve("beta").resolve("Bravo.java"));
-        Files.copy(pristine.resolve("src").resolve("Crlf.java"),
-            workspace.resolve("src").resolve("Crlf.java"));
-
-        write(patchesDir.resolve("001-Alpha-first.patch"), ALPHA_PATCH_1);
-        write(patchesDir.resolve("003-Alpha-second.patch"), ALPHA_PATCH_2);
-        write(patchesDir.resolve("002-Bravo-strategy.patch"), BRAVO_PATCH);
-        write(patchesDir.resolve("005-Crlf-empty-context.patch"), CRLF_PATCH);
-        write(patchesDir.resolve("004-Zulu-new.patch"), ZULU_PATCH);
-
-        var stats = new PatchStats();
-        var patches = PatchDiscovery.fromDirectory(patchesDir, stats);
-        assertEquals(5, patches.size(), "discovery must find all five patches");
-
-        var targets = new RuntimePatchApplier().applyPatches(patches, workspace, stats);
-        assertEquals(List.of(
-            "src/Alpha.java",
-            "src/beta/Bravo.java",
-            "src/Crlf.java",
-            "src/ZuluNew.java"), targets,
-            "groups must be ordered by first patch and never merge distinct files");
-
-        var result = new java.util.TreeMap<String, String>();
-        try (var walk = Files.walk(workspace)) {
-            for (var file : walk.filter(Files::isRegularFile).toList()) {
-                var rel = workspace.relativize(file).toString().replace('\\', '/');
-                result.put(rel, Files.readString(file, StandardCharsets.UTF_8));
+    @Test
+    void everyWorkerCountProducesIdenticalBytes() {
+        Map<String, String> reference = null;
+        for (var workers : new int[] {1, 4, 8}) {
+            var fixture = corpus();
+            fixture.apply(workers);
+            var tree = fixture.patchedTree();
+            if (reference == null) {
+                reference = tree;
+            } else {
+                assertEquals(reference, tree, "output differs with " + workers + " workers");
             }
         }
-        assertTrue(result.containsKey("src/ZuluNew.java"), "new file must be created");
-        return result;
     }
 
-    private static void write(Path file, String content) throws Exception {
-        Files.createDirectories(file.getParent());
-        Files.writeString(file, content, StandardCharsets.UTF_8);
+    private TestWorkspace corpus() {
+        return TestWorkspace.create(tmp.resolve("regression-" + System.nanoTime()))
+            .source("src/Alpha.java", ALPHA)
+            .source("src/beta/Bravo.java", BRAVO)
+            .source("src/Crlf.java", CRLF)
+            .patch(PatchCategory.CODE, "001-Alpha-first.patch", ALPHA_PATCH_1)
+            .patch(PatchCategory.CODE, "002-Bravo-strategy.patch", BRAVO_PATCH)
+            .patch(PatchCategory.CODE, "003-Alpha-second.patch", ALPHA_PATCH_2)
+            .patch(PatchCategory.CODE, "004-Zulu-new.patch", ZULU_PATCH)
+            .patch(PatchCategory.CODE, "005-Crlf-empty-context.patch", CRLF_PATCH);
     }
 }

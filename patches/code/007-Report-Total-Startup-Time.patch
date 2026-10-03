@@ -1,0 +1,22 @@
+diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
+--- a/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -252,6 +252,18 @@
+         }
+         long elapsed = Util.getNanos() - levelNanoTime;
+         String time = String.format(Locale.ROOT, "%.3fs", elapsed / 1.0E9);
++        try {
++            // Veltis owns the server's only Done line. The number it prints is
++            // measured from the moment the launcher process started, so it
++            // covers the whole lifecycle - download, decompile, patch, compile,
++            // package, load, world preparation and Veltis initialization -
++            // rather than only the level preparation vanilla measures.
++            time = (String) Class.forName("org.veltismc.launcher.VeltisStartup")
++                .getMethod("formatDone", double.class)
++                .invoke(null, elapsed / 1.0E9);
++        } catch (ReflectiveOperationException | LinkageError ignored) {
++            // Started without the Veltis launcher: keep vanilla's own number.
++        }
+         LOGGER.info("Done ({})! For help, type \"help\"", time);
+         if (properties.announcePlayerAchievements != null) {
+             this.getGameRules().set(GameRules.SHOW_ADVANCEMENT_MESSAGES, properties.announcePlayerAchievements, this);

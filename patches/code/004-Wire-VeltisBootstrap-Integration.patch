@@ -1,0 +1,17 @@
+diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
+--- a/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -243,6 +243,13 @@
+         this.services.nameToIdCache().resolveOfflineUsers(!this.usesAuthentication());
+         LOGGER.info("Preparing level \"{}\"", this.getLevelIdName());
+         this.loadLevel();
++        try {
++            Class.forName("org.veltismc.runtime.VeltisBootstrap")
++                .getMethod("onMinecraftServerCreated", Object.class)
++                .invoke(null, this);
++        } catch (Exception e) {
++            LOGGER.warn("VeltisMC integration failed", e);
++        }
+         long elapsed = Util.getNanos() - levelNanoTime;
+         String time = String.format(Locale.ROOT, "%.3fs", elapsed / 1.0E9);
+         LOGGER.info("Done ({})! For help, type \"help\"", time);
