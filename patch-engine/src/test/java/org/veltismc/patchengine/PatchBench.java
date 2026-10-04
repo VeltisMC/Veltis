@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -23,15 +24,14 @@ import java.util.TreeMap;
  *
  * <pre>
  * PatchBench &lt;repoRoot&gt; &lt;mode&gt; [options]
- *   mode:  patch-only | scale | git | all | e2e
+ *   mode:  patch-only | scale | git | all
  *   options:
- *     --iterations N        timed runs per corpus (default: patch-only 11, scale 6)
- *     --files N --lines N --patches N   scale corpus shape (default 300/400/600)
- *     --git-per-patch       time a git process pair per patch (build-time style)
- *     --save FILE           write metrics to FILE
- *     --compare FILE        print metrics next to a previously saved FILE
- *     --home DIR            (e2e) server home directory
- *     --keep-build-files --skip-decompile --skip-compile --no-force   (e2e)
+ *     --iterations N                       timed runs per corpus (default 11 / 6)
+ *     --files N --lines N --patches N      scale corpus shape (default 300/400/600)
+ *     --workers N                          patch workers (default 4)
+ *     --git-per-patch                      time a git process pair per patch
+ *     --save FILE                          write metrics to FILE
+ *     --compare FILE                       print metrics next to a saved FILE
  * </pre>
  *
  * <p>Every timed run restores pristine inputs first (untimed), then measures
@@ -56,16 +56,15 @@ public final class PatchBench {
 
         switch (mode) {
             case "patch-only" -> runReal(repo, opts, all, true, false);
-            case "scale" -> runScale(repo, opts, all, true, false);
+            case "scale" -> runScale(opts, all, true, false);
             case "git" -> {
                 runReal(repo, opts, all, false, true);
-                runScale(repo, opts, all, false, true);
+                runScale(opts, all, false, true);
             }
             case "all" -> {
                 runReal(repo, opts, all, true, true);
-                runScale(repo, opts, all, true, true);
+                runScale(opts, all, true, true);
             }
-            case "e2e" -> runE2E(repo, opts);
             default -> usage();
         }
 
@@ -83,10 +82,9 @@ public final class PatchBench {
     private static void usage() {
         System.out.println("""
             Usage: PatchBench <repoRoot> <mode> [options]
-              mode: patch-only | scale | git | all | e2e
-              --iterations N | --files N | --lines N | --patches N
-              --git-per-patch | --save FILE | --compare FILE
-              e2e: --home DIR [--keep-build-files] [--skip-decompile] [--skip-compile] [--no-force]""");
+              mode: patch-only | scale | git | all
+              --iterations N | --files N | --lines N | --patches N | --workers N
+              --git-per-patch | --save FILE | --compare FILE""");
     }
 
     private static Map<String, String> parseOpts(String[] args, int from) {
@@ -114,63 +112,65 @@ public final class PatchBench {
     // Corpora
     // ------------------------------------------------------------------
 
-    /** A prepared input: pristine sources, patch files, workspace, expected output. */
+    /**
+     * A prepared input: pristine sources, patch files, a workspace and the
+     * expected output, so a timed run measures only the pipeline itself.
+     */
     static final class Corpus {
         final String label;
-        final Path pristine;       // pristine copies of every target file (may be a real source tree)
-        final Path workspace;      // patches are applied here
-        final Path patchesDir;     // *.patch files
-        final Path discoveryHome;  // home whose server/patches/features == patchesDir
+        final Path pristine;        // pristine copies of every target file
+        final Path patched;         // the real workspace, which patches are applied to
+        final VeltisWorkspace workspace;
+        final Path patchesRoot;     // the Shulker/ directory
         final List<String> targets;          // relative paths of patched files
-        final Map<String, String> expected;  // rel path -> EOL-normalized sha256 of expected output (may be empty)
+        final Map<String, String> expected;  // rel path -> sha256 of the expected output
         final int patchCount;
-        /** true = measure production discovery (discover(home)); false = fromDirectory(patchesDir). */
-        final boolean productionDiscovery;
+        /** A workspace needs the pristine tree mirrored in before the first run. */
+        boolean mirrored;
 
-        Corpus(String label, Path pristine, Path workspace, Path patchesDir,
-               Path discoveryHome, List<String> targets, Map<String, String> expected,
-               int patchCount, boolean productionDiscovery) {
+        Corpus(String label, Path pristine, Path patched, VeltisWorkspace workspace,
+               Path patchesRoot, List<String> targets, Map<String, String> expected,
+               int patchCount) {
             this.label = label;
             this.pristine = pristine;
+            this.patched = patched;
             this.workspace = workspace;
-            this.patchesDir = patchesDir;
-            this.discoveryHome = discoveryHome;
+            this.patchesRoot = patchesRoot;
             this.targets = targets;
             this.expected = expected;
             this.patchCount = patchCount;
-            this.productionDiscovery = productionDiscovery;
         }
 
-        /** Untimed: puts pristine inputs back into the workspace. */
+        /** Untimed: puts the pristine inputs back, by mirroring or copying. */
         void restore() throws IOException {
+            if (mirrored) {
+                // What the pipeline does: a fresh copy of the baseline. Exactly
+                // the state a real run starts from, and exactly what the patcher
+                // is written to expect.
+                VeltisPatcher.mirrorPristineSource(pristine, patched);
+                return;
+            }
             for (var target : targets) {
                 var src = pristine.resolve(target);
-                var dst = workspace.resolve(target);
+                var dst = patched.resolve(target);
                 Files.createDirectories(dst.getParent());
                 Files.copy(src, dst, StandardCopyOption.REPLACE_EXISTING);
             }
         }
 
-        /** sha256 (strict bytes) and sha256 (CR removed) of every target in the workspace. */
-        Hashes hashes() throws IOException {
-            var strict = new TreeMap<String, String>();
-            var normalized = new TreeMap<String, String>();
+        /** sha256 of every target in the workspace, exact bytes. */
+        Map<String, String> hashes() throws IOException {
+            var out = new TreeMap<String, String>();
             for (var target : targets) {
-                var f = workspace.resolve(target);
-                if (!Files.isRegularFile(f)) {
-                    strict.put(target, "<missing>");
-                    normalized.put(target, "<missing>");
-                    continue;
-                }
-                var bytes = Files.readAllBytes(f);
-                strict.put(target, sha256(bytes));
-                normalized.put(target, sha256(normalizeEol(bytes)));
+                var file = patched.resolve(target);
+                out.put(target, Files.isRegularFile(file)
+                    ? sha256(Files.readAllBytes(file)) : "<missing>");
             }
-            return new Hashes(strict, normalized);
+            return out;
         }
 
         List<Path> patchFiles() throws IOException {
-            try (var s = Files.list(patchesDir)) {
+            try (var s = Files.walk(patchesRoot)) {
                 return s.filter(p -> p.getFileName().toString().endsWith(".patch"))
                     .sorted()
                     .toList();
@@ -178,89 +178,86 @@ public final class PatchBench {
         }
     }
 
-    /** sha256 of workspace targets: exact bytes, and with CR removed for oracle comparison. */
-    record Hashes(Map<String, String> strict, Map<String, String> normalized) {}
-
-    /** Removes CR bytes so LF and CRLF variants of the same content hash identically. */
-    static byte[] normalizeEol(byte[] bytes) {
-        var out = new byte[bytes.length];
-        int n = 0;
-        for (var b : bytes) {
-            if (b != (byte) 13) {
-                out[n++] = b;
-            }
-        }
-        return java.util.Arrays.copyOf(out, n);
-    }
-
-    /** Real corpus: server/patches/features against the decompiled 26.3 workspace. */
+    /**
+     * Real corpus: the project's own patch set against its decompiled workspace.
+     * Requires {@code ./gradlew applyVeltisPatches} to have been run.
+     */
     static Corpus realCorpus(Path repo) throws IOException {
-        var verRoot = repo.resolve("ver");
-        Path verDir = null;
-        if (Files.isDirectory(verRoot)) {
-            try (var s = Files.list(verRoot)) {
-                verDir = s.filter(Files::isDirectory).sorted().findFirst().orElse(null);
-            }
+        var patchesRoot = repo.resolve("Shulker");
+        if (!Files.isDirectory(patchesRoot)) {
+            throw new IOException("Shulker/ missing - run from a VeltisMC checkout");
         }
-        if (verDir == null) {
-            throw new IOException("ver/<version> missing - run ./gradlew downloadMinecraft decompileMinecraft first");
-        }
-        var source = verDir.resolve("minecraft-source");
-        var patched = verDir.resolve("patched-source");
-        var patchesDir = repo.resolve("server").resolve("patches").resolve("features");
+        var version = resolveWorkspace(repo);
+        var source = version.resolve("source");
         if (!Files.isDirectory(source)) {
             throw new IOException(source + " missing - run ./gradlew decompileMinecraft first");
         }
 
-        var stats = new PatchStats();
-        var patches = PatchDiscovery.fromDirectory(patchesDir, stats);
+        var patches = PatchDiscovery.discover(patchesRoot, "26.3", new PatchStats());
         if (patches.isEmpty()) {
-            throw new IOException("no patches in " + patchesDir);
-        }
-        var targets = new ArrayList<String>();
-        for (var p : patches) {
-            var target = resolveTarget(p.lines());
-            if (target != null && !targets.contains(target)) {
-                targets.add(target);
-            }
+            throw new IOException("no patches in " + patchesRoot);
         }
 
-        var tmp = Files.createTempDirectory("veltis-bench");
-        var workspace = tmp.resolve("workspace");
-        Files.createDirectories(workspace);
+        var targets = new ArrayList<String>();
+        for (var patch : patches) {
+            for (var target : patch.targets()) {
+                if (!targets.contains(target)) {
+                    targets.add(target);
+                }
+            }
+        }
 
         var expected = new LinkedHashMap<String, String>();
-        for (var t : targets) {
-            var f = patched.resolve(t);
-            if (Files.isRegularFile(f)) {
-                // The oracle was produced by build-time `git apply` on Windows, so it may
-                // carry CRLF; compare line-ending-normalized content (see Hashes).
-                expected.put(t, sha256(normalizeEol(Files.readAllBytes(f))));
+        for (var target : targets) {
+            var pristine = readOrNull(source.resolve(target));
+            var current = readOrNull(version.resolve("patched").resolve(target));
+            if (pristine == null && current != null) {
+                expected.put(target, sha256(current.getBytes(StandardCharsets.UTF_8)));
             }
         }
-        return new Corpus("patch-only", source, workspace, patchesDir, repo,
-            targets, expected, patches.size(), true);
+        return new Corpus("patch-only", source, version.resolve("patched"),
+            VeltisWorkspace.of(repo, TestWorkspace.VERSION), patchesRoot,
+            targets, expected, patches.size());
     }
 
-    /** Scale corpus: generated files/patches, expected output computed by the generator. */
+    /** The first {@code build/minecraft/<version>} directory present. */
+    private static Path resolveWorkspace(Path repo) throws IOException {
+        var root = repo.resolve(VeltisWorkspace.BUILD_DIRECTORY)
+            .resolve(VeltisWorkspace.MINECRAFT_DIRECTORY);
+        if (!Files.isDirectory(root)) {
+            throw new IOException(root + " missing - run ./gradlew decompileMinecraft first");
+        }
+        try (var s = Files.list(root)) {
+            return s.filter(Files::isDirectory).sorted().findFirst().orElseThrow(
+                () -> new IOException("no Minecraft version prepared under " + root));
+        }
+    }
+
+    /**
+     * Scale corpus: generated files and patches, expected output computed by the
+     * generator as it evolves the file contents in application order.
+     */
     static Corpus scaleCorpus(Map<String, String> opts) throws IOException {
         var files = optInt(opts, "files", 300);
         var lines = optInt(opts, "lines", 400);
         var patches = optInt(opts, "patches", 600);
 
-        var tmp = Files.createTempDirectory("veltis-bench-scale");
-        var pristine = tmp.resolve("src");
-        var workspace = tmp.resolve("ws");
-        var home = tmp.resolve("home");
-        var patchesDir = home.resolve("server").resolve("patches").resolve("features");
-        Files.createDirectories(pristine);
-        Files.createDirectories(workspace);
-        Files.createDirectories(patchesDir);
+        var root = Files.createTempDirectory("veltis-bench-scale");
+        // The corpus lives in a real workspace so the benchmark exercises the same
+        // paths the build does, rather than a shortcut the production code never
+        // takes.
+        var workspace = VeltisWorkspace.of(root, TestWorkspace.VERSION).createDirectories();
+        var pristine = workspace.sourceDirectory();
+        var patched = workspace.patchedDirectory();
+        var patchesRoot = workspace.shulkerDirectory().resolve("code");
+        Files.createDirectories(patchesRoot);
 
-        // Current content per file; evolves as patch files are generated in application order.
+        // Current content per file; evolves as patch files are generated in
+        // application order, which is the order discovery will return them in.
         var contents = new ArrayList<List<String>>();
+        var targets = new ArrayList<String>();
         for (int f = 0; f < files; f++) {
-            var content = new ArrayList<String>(lines);
+            var content = new ArrayList<String>();
             content.add("package gen;");
             content.add("// generated file " + f);
             content.add("class Gen" + f + " {");
@@ -269,31 +266,25 @@ public final class PatchBench {
             }
             content.add("}");
             contents.add(content);
-            writeLines(pristine.resolve("gen").resolve("Gen" + f + ".java"), content);
-        }
-
-        var targets = new ArrayList<String>();
-        for (int f = 0; f < files; f++) {
             targets.add("gen/Gen" + f + ".java");
+            writeLines(pristine.resolve(targets.get(f)), content);
         }
 
         for (int p = 0; p < patches; p++) {
-            var f = p % files;
+            int f = p % files;
             var cur = contents.get(f);
-            var pos = 8 + ((f * 7 + p * 13) % Math.max(1, cur.size() - 20));
-            var rel = "gen/Gen" + f + ".java";
+            int pos = 8 + ((f * 7 + p * 13) % Math.max(1, cur.size() - 20));
+            var rel = targets.get(f);
 
             var before = List.copyOf(cur);
             var removed = cur.get(pos);
             var added = List.of(removed, removed + " // patched " + p, removed + " // end " + p);
 
-            var patchName = String.format("%03d-Scale-P%03d.patch", p, p);
             var sb = new StringBuilder();
             sb.append("diff --git a/").append(rel).append(" b/").append(rel).append('\n');
             sb.append("--- a/").append(rel).append('\n');
             sb.append("+++ b/").append(rel).append('\n');
-            var oldStart = pos - 2;  // 1-based line number of hunk start
-            sb.append("@@ -").append(oldStart).append(",7 +").append(oldStart).append(",9 @@\n");
+            sb.append("@@ -").append(pos - 2).append(",7 +").append(pos - 2).append(",9 @@\n");
             for (int i = pos - 3; i < pos; i++) {
                 sb.append(' ').append(before.get(i)).append('\n');
             }
@@ -304,37 +295,37 @@ public final class PatchBench {
             for (int i = pos + 1; i <= pos + 3; i++) {
                 sb.append(' ').append(before.get(i)).append('\n');
             }
-            Files.writeString(patchesDir.resolve(patchName), sb.toString(), StandardCharsets.UTF_8);
+            Files.writeString(patchesRoot.resolve(String.format("%03d-Scale-P%03d.patch", p, p)),
+                sb.toString(), StandardCharsets.UTF_8);
 
             cur.remove(pos);
             cur.addAll(pos, added);
         }
 
         var expected = new LinkedHashMap<String, String>();
-        // Expected output = the generator's final content, hashed from actual bytes.
         for (int f = 0; f < files; f++) {
-            var tmpOut = Files.createTempFile("veltis-expected", ".java");
-            writeLines(tmpOut, contents.get(f));
-            expected.put(targets.get(f), sha256(Files.readAllBytes(tmpOut)));
-            Files.deleteIfExists(tmpOut);
+            expected.put(targets.get(f),
+                sha256(String.join("\n", contents.get(f)).concat("\n")
+                    .getBytes(StandardCharsets.UTF_8)));
         }
 
-        return new Corpus("scale", pristine, workspace, patchesDir, home,
-            targets, expected, patches, false);
-    }
-
-    private static String resolveTarget(List<String> patchLines) {
-        for (var line : patchLines) {
-            if (line.startsWith("+++ b/")) {
-                return line.substring(6);
-            }
-        }
-        return null;
+        var corpus = new Corpus("scale", pristine, patched, workspace, workspace.shulkerDirectory(),
+            targets, expected, patches);
+        corpus.mirrored = true;
+        return corpus;
     }
 
     private static void writeLines(Path file, List<String> lines) throws IOException {
         Files.createDirectories(file.getParent());
         Files.writeString(file, String.join("\n", lines) + "\n", StandardCharsets.UTF_8);
+    }
+
+    private static String readOrNull(Path path) {
+        try {
+            return Files.isRegularFile(path) ? Files.readString(path) : null;
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -353,36 +344,33 @@ public final class PatchBench {
         System.out.println(corpusSection(corpus, optInt(opts, "iterations", 11)));
         Map<String, String> javaStrict = null;
         if (runJava) {
-            var res = benchVeltis(corpus, optInt(opts, "iterations", 11));
+            var res = benchVeltis(corpus, optInt(opts, "iterations", 11),
+                optInt(opts, "workers", 4));
             javaStrict = res.strictOutput;
             printVeltis(corpus, res, out);
         }
         if (runGit) {
             benchGit(corpus, optInt(opts, "iterations", 11), opts, out, javaStrict);
         }
-        try {
-            deleteRecursively(corpus.workspace.getParent());
-        } catch (Exception ignored) {
-        }
+        // Nothing is deleted: this corpus is the project's own workspace, and the
+        // benchmark is a read-only measurement of it once the runs finish.
     }
 
-    static void runScale(Path repo, Map<String, String> opts, Map<String, Double> out,
+    static void runScale(Map<String, String> opts, Map<String, Double> out,
                          boolean runJava, boolean runGit) throws IOException {
         var corpus = scaleCorpus(opts);
         System.out.println(corpusSection(corpus, optInt(opts, "iterations", 6)));
         Map<String, String> javaStrict = null;
         if (runJava) {
-            var res = benchVeltis(corpus, optInt(opts, "iterations", 6));
+            var res = benchVeltis(corpus, optInt(opts, "iterations", 6),
+                optInt(opts, "workers", 4));
             javaStrict = res.strictOutput;
             printVeltis(corpus, res, out);
         }
         if (runGit) {
             benchGit(corpus, optInt(opts, "iterations", 6), opts, out, javaStrict);
         }
-        try {
-            deleteRecursively(corpus.workspace.getParent());
-        } catch (Exception ignored) {
-        }
+        PatchBench.deleteRecursively(corpus.workspace.projectDirectory());
     }
 
     private static String corpusSection(Corpus c, int iterations) {
@@ -392,21 +380,23 @@ public final class PatchBench {
 
     /** One Veltis run: restore (untimed) -> discover + apply (timed) -> verify (untimed). */
     static final class RunResult {
-        final List<double[]> phases = new ArrayList<>();   // [disc, parse, match, io, total, prep]
-        final List<int[]> counters = new ArrayList<>();    // [read, written, changed, applied, hunks]
+        /** Per iteration: {@code [discovery, parse, match, io, total, prep]} in ms. */
+        final List<double[]> phases = new ArrayList<>();
+        /** Per iteration: {@code [read, written, changed, applied, hunks, unchanged]}. */
+        final List<int[]> counters = new ArrayList<>();
         final List<Double> alloc = new ArrayList<>();
         long gcCount;
         long gcMs;
         boolean verified = true;
         int verifyFailures;
-        Map<String, String> strictOutput;   // exact bytes of the last run (for git cross-check)
+        Map<String, String> strictOutput;
     }
 
-    static RunResult benchVeltis(Corpus c, int iterations) throws IOException {
+    static RunResult benchVeltis(Corpus c, int iterations, int workers) throws IOException {
         var res = new RunResult();
         var gcBefore = gcCount();
         var gcTimeBefore = gcMs();
-        Map<String, String> pinnedStrict = null;
+        Map<String, String> pinned = null;
 
         for (int i = 0; i < iterations; i++) {
             var alloc0 = allocatedBytes();
@@ -416,20 +406,20 @@ public final class PatchBench {
 
             var stats = new PatchStats();
             long t0 = System.nanoTime();
-            var patches = c.productionDiscovery
-                ? PatchDiscovery.discover(c.discoveryHome, stats)
-                : PatchDiscovery.fromDirectory(c.patchesDir, stats);
-            new RuntimePatchApplier().applyPatches(patches, c.workspace, stats);
-            long t2 = System.nanoTime();
+            var patches = PatchDiscovery.discover(c.patchesRoot, "26.3", stats);
+            // The patcher returns its own counters, so the two halves of the run
+            // have to be folded together before anything is reported.
+            stats.merge(new VeltisPatcher(workers, "26.3").apply(c.workspace, patches));
+            long t1 = System.nanoTime();
 
-            // Verification (untimed): byte-strict determinism run-to-run, plus an
-            // EOL-normalized match against the oracle (build-time git output may be CRLF).
+            // Verification (untimed): byte-strict determinism run-to-run, plus a
+            // match against the oracle for the files the oracle knows about.
             var h = c.hashes();
-            if (pinnedStrict == null) {
-                pinnedStrict = h.strict();
+            if (pinned == null) {
+                pinned = h;
             } else {
                 for (var target : c.targets) {
-                    if (!pinnedStrict.get(target).equals(h.strict().get(target))) {
+                    if (!pinned.get(target).equals(h.get(target))) {
                         res.verified = false;
                         res.verifyFailures++;
                     }
@@ -437,19 +427,19 @@ public final class PatchBench {
             }
             for (var target : c.targets) {
                 var oracle = c.expected.get(target);
-                if (oracle != null && !oracle.equals(h.normalized().get(target))) {
+                if (oracle != null && !oracle.equals(h.get(target))) {
                     res.verified = false;
                     res.verifyFailures++;
                 }
             }
-            res.strictOutput = h.strict();
+            res.strictOutput = h;
 
             res.phases.add(new double[] {
                 stats.discoveryNanos / 1e6,
                 stats.parseNanos / 1e6,
                 stats.matchNanos / 1e6,
                 (stats.readNanos + stats.writeNanos) / 1e6,
-                (t2 - t0) / 1e6,
+                (t1 - t0) / 1e6,
                 prep,
             });
             res.counters.add(new int[] {
@@ -487,12 +477,13 @@ public final class PatchBench {
         System.out.println("input preparation (excluded): " + fmt(avg[5]) + " ms/run"
             + "   | phases are summed across parallel workers");
         System.out.printf(
-            "counters: %d patches applied, %d hunks, %d files read, %d written, %d changed, %d unchanged (not rewritten) per run%n",
+            "counters: %d patches applied, %d hunks, %d files read, %d written, %d changed,"
+                + " %d unchanged (not rewritten) per run%n",
             counters[3], counters[4], counters[0], counters[1], counters[2], counters[5]);
         System.out.println(memoryLine(r));
         System.out.println(r.verified
             ? "verification: OK - byte-identical across runs"
-                + (!c.expected.isEmpty() ? " and matches the build-time oracle (EOL-normalized)" : "")
+                + (!c.expected.isEmpty() ? " and matches the oracle" : "")
             : "verification: FAILED on " + r.verifyFailures + " mismatch(es)");
 
         put(out, prefix + ".cold.discovery.ms", cold[0]);
@@ -507,11 +498,12 @@ public final class PatchBench {
         put(out, prefix + ".warm.total.ms", avg[4]);
         put(out, prefix + ".warm.min.total.ms", warmMinTotal);
         put(out, prefix + ".prep.ms", avg[5]);
-        put(out, prefix + ".patches", (double) counters[3]);
-        put(out, prefix + ".files.read", (double) counters[0]);
-        put(out, prefix + ".files.written", (double) counters[1]);
-        put(out, prefix + ".files.unchanged", (double) counters[5]);
-        var alloc = r.alloc.stream().filter(v -> v >= 0).mapToDouble(Double::doubleValue).average().orElse(-1);
+        put(out, prefix + ".patches", counters[3]);
+        put(out, prefix + ".files.read", counters[0]);
+        put(out, prefix + ".files.written", counters[1]);
+        put(out, prefix + ".files.unchanged", counters[5]);
+        var alloc = r.alloc.stream().filter(v -> v >= 0)
+            .mapToDouble(Double::doubleValue).average().orElse(-1);
         if (alloc >= 0) {
             put(out, prefix + ".alloc.mb", alloc / 1024.0);
         }
@@ -527,10 +519,11 @@ public final class PatchBench {
         }
         var rt = Runtime.getRuntime();
         var heap = (rt.totalMemory() - rt.freeMemory()) / (1024.0 * 1024.0);
-        var alloc = r.alloc.stream().filter(v -> v >= 0).mapToDouble(Double::doubleValue).average().orElse(-1);
-        return "memory: heap after GC %.1f MB | allocated per run %s | GC %d collections / %d ms".formatted(
-            heap, alloc >= 0 ? String.format("%.1f MB", alloc / 1024.0) : "n/a",
-            r.gcCount, r.gcMs);
+        var alloc = r.alloc.stream().filter(v -> v >= 0)
+            .mapToDouble(Double::doubleValue).average().orElse(-1);
+        return "memory: heap after GC %.1f MB | allocated per run %s | GC %d collections / %d ms"
+            .formatted(heap, alloc >= 0 ? String.format("%.1f MB", alloc / 1024.0) : "n/a",
+                r.gcCount, r.gcMs);
     }
 
     // ------------------------------------------------------------------
@@ -540,9 +533,6 @@ public final class PatchBench {
     static void benchGit(Corpus c, int iterations, Map<String, String> opts,
                          Map<String, Double> out, Map<String, String> javaStrict)
             throws IOException {
-        if (opts.containsKey("no-git")) {
-            return;
-        }
         if (!gitAvailable()) {
             System.out.println("git not found on PATH - skipping git comparison");
             return;
@@ -552,18 +542,14 @@ public final class PatchBench {
             return;
         }
         var perPatch = opts.containsKey("git-per-patch");
-        // git apply works on a working tree; initialise one (untimed) for parity with
-        // the build-time flow, which always runs inside a repository.
-        git(c.workspace, null, "init", "-q");
-        // Batch mode feeds every patch through stdin: one process, no command-line
-        // length limits, identical bytes to the files on disk.
+        git(c.patched, null, "init", "-q");
         byte[] batchInput = null;
         if (!perPatch) {
             var buf = new java.io.ByteArrayOutputStream(1 << 16);
             for (var p : patchFiles) {
-                var bytes = Files.readAllBytes(p);
-                buf.write(bytes);
-                if (bytes.length == 0 || bytes[bytes.length - 1] != '\n') {
+                var patchBytes = Files.readAllBytes(p);
+                buf.write(patchBytes);
+                if (patchBytes.length == 0 || patchBytes[patchBytes.length - 1] != '\n') {
                     buf.write('\n');
                 }
             }
@@ -576,78 +562,60 @@ public final class PatchBench {
         for (int i = 0; i < iterations; i++) {
             c.restore();
             long t0 = System.nanoTime();
-            try (var s = Files.list(c.patchesDir)) {
-                s.filter(p -> p.getFileName().toString().endsWith(".patch")).sorted().toList();
-            }
-            long t1 = System.nanoTime();
             int rc;
             if (perPatch) {
                 rc = 0;
                 for (var p : patchFiles) {
                     // Mirrors the build-time flow: reverse-check first, then apply.
-                    git(c.workspace, null, "apply", "--check", "--reverse", p.toString());
-                    var apply = git(c.workspace, null, "apply", p.toString());
+                    git(c.patched, null, "apply", "--check", "--reverse", p.toString());
+                    var apply = git(c.patched, null, "apply", p.toString());
                     if (apply != 0) {
                         rc = apply;
                     }
                 }
             } else {
-                rc = git(c.workspace, batchInput, "apply", "-");
+                rc = git(c.patched, batchInput, "apply", "-");
             }
-            long t2 = System.nanoTime();
+            long t1 = System.nanoTime();
             if (rc != 0) {
                 System.out.println("git apply failed (exit " + rc + ")");
                 return;
             }
             var h = c.hashes();
             if (javaStrict != null) {
-                // Strongest check: git output must be byte-identical to the Veltis output.
+                // Strongest check: git output must be byte-identical to ours.
                 for (var target : c.targets) {
-                    if (!javaStrict.get(target).equals(h.strict().get(target))) {
+                    if (!javaStrict.get(target).equals(h.get(target))) {
                         verified = false;
                     }
                 }
-            } else if (c.expected.isEmpty()) {
-                if (pinned == null) {
-                    pinned = h.strict();
-                } else {
-                    for (var target : c.targets) {
-                        if (!pinned.get(target).equals(h.strict().get(target))) {
-                            verified = false;
-                        }
-                    }
-                }
+            } else if (pinned == null) {
+                pinned = h;
             } else {
                 for (var target : c.targets) {
-                    var oracle = c.expected.get(target);
-                    if (oracle != null && !oracle.equals(h.normalized().get(target))) {
+                    if (!pinned.get(target).equals(h.get(target))) {
                         verified = false;
                     }
                 }
             }
-            totals.add(new double[] { (t1 - t0) / 1e6, (t2 - t0) / 1e6 });
+            totals.add(new double[] {(t1 - t0) / 1e6});
         }
 
-        var avgList = totals.stream().skip(1).mapToDouble(t -> t[1]).average()
-            .orElse(totals.get(0)[1]);
-        var avgListMs = totals.stream().skip(1).mapToDouble(t -> t[0]).average()
-            .orElse(totals.get(0)[0]);
+        var avg = totals.stream().skip(1).mapToDouble(t -> t[0])
+            .average().orElse(totals.get(0)[0]);
         var check = javaStrict != null ? "byte-identical to Veltis output"
-            : (!c.expected.isEmpty() ? "matches oracle (EOL-normalized)" : "deterministic across runs");
+            : (!c.expected.isEmpty() ? "matches oracle" : "deterministic across runs");
         System.out.printf(
-            "git apply%s: discovery(list) %.3f ms | total %.3f ms avg of %d runs | output %s%n",
+            "git apply%s: total %.3f ms avg of %d runs | output %s%n",
             perPatch ? " (2 processes per patch)" : " (1 process, all patches)",
-            avgListMs, avgList, totals.size(),
-            verified ? check : "MISMATCH");
-        put(out, c.label + ".git." + (perPatch ? "perpatch" : "batch") + ".discovery.ms", avgListMs);
-        put(out, c.label + ".git." + (perPatch ? "perpatch" : "batch") + ".total.ms", avgList);
+            avg, totals.size(), verified ? check : "MISMATCH");
+        put(out, c.label + ".git." + (perPatch ? "perpatch" : "batch") + ".total.ms", avg);
 
-        if (out.containsKey(c.label + ".warm.total.ms")) {
-            var veltis = out.get(c.label + ".warm.total.ms");
-            var ratio = veltis <= 0 ? 0 : avgList / veltis;
+        var veltis = out.get(c.label + ".warm.total.ms");
+        if (veltis != null && veltis > 0) {
             System.out.printf(
-                "comparison (same corpus): Veltis %.3f ms vs git apply %.3f ms -> git is %.1fx the Veltis time%n",
-                veltis, avgList, ratio);
+                "comparison (same corpus): Veltis %.3f ms vs git apply %.3f ms"
+                    + " -> git is %.1fx the Veltis time%n", veltis, avg, avg / veltis);
         }
         System.out.println();
     }
@@ -684,40 +652,6 @@ public final class PatchBench {
     }
 
     // ------------------------------------------------------------------
-    // End-to-end builder run
-    // ------------------------------------------------------------------
-
-    static void runE2E(Path repo, Map<String, String> opts) throws Exception {
-        var home = Path.of(required(opts, "home")).toAbsolutePath().normalize();
-        // Same default as VeltisLauncher; override with --version when needed.
-        var version = opts.getOrDefault("version", "26.3");
-        var patchesDir = repo.resolve("server").resolve("patches").resolve("features");
-        var config = new PatchEngineConfig(version, home, patchesDir);
-        var builder = new PatchedJarBuilder(config, opts.containsKey("keep-build-files"));
-        builder.setLog(new PatchedJarBuilder.PrintStream() {
-            @Override public void info(String msg) { System.out.println(msg); }
-            @Override public void warn(String msg) { System.out.println("[WARN] " + msg); }
-            @Override public void error(String msg) { System.err.println(msg); }
-        });
-        builder.setForceRebuild(!opts.containsKey("no-force"));
-        if (opts.containsKey("skip-decompile")) builder.setSkipDecompile(true);
-        if (opts.containsKey("skip-compile")) builder.setSkipCompile(true);
-
-        var t0 = System.nanoTime();
-        var jar = builder.build();
-        var total = (System.nanoTime() - t0) / 1e6;
-        System.out.printf("E2E wall time: %.1f ms -> %s%n", total, jar);
-    }
-
-    private static String required(Map<String, String> opts, String key) {
-        var v = opts.get(key);
-        if (v == null) {
-            throw new IllegalArgumentException("--" + key + " is required");
-        }
-        return v;
-    }
-
-    // ------------------------------------------------------------------
     // Baseline save / compare
     // ------------------------------------------------------------------
 
@@ -731,14 +665,15 @@ public final class PatchBench {
         System.out.println("baseline saved to " + file.toAbsolutePath());
     }
 
-    private static void compareMetrics(Path baselineFile, Map<String, Double> current) throws IOException {
+    private static void compareMetrics(Path baselineFile, Map<String, Double> current)
+            throws IOException {
         var baseline = new Properties();
         try (var in = Files.newBufferedReader(baselineFile, StandardCharsets.UTF_8)) {
             baseline.load(in);
         }
         System.out.printf("%n%-42s %12s %12s %10s%n", "metric", "baseline", "current", "change");
         System.out.println("-".repeat(78));
-        var keys = new ArrayList<String>(baseline.stringPropertyNames());
+        var keys = new ArrayList<>(baseline.stringPropertyNames());
         for (var k : current.keySet()) {
             if (!keys.contains(k)) {
                 keys.add(k);
@@ -746,21 +681,20 @@ public final class PatchBench {
         }
         java.util.Collections.sort(keys);
         for (var k : keys) {
-            var b = baseline.containsKey(k) ? Double.parseDouble(baseline.getProperty(k)) : Double.NaN;
+            var b = baseline.containsKey(k) ? Double.parseDouble(baseline.getProperty(k))
+                : Double.NaN;
             var c = current.getOrDefault(k, Double.NaN);
             var delta = (Double.isNaN(b) || b == 0) ? Double.NaN : (c - b) / b * 100.0;
             System.out.printf("%-42s %12s %12s %9s%%%n", k, fmt(b), fmt(c),
                 Double.isNaN(delta) ? "n/a" : (delta > 0 ? "+" : "") + fmt(delta));
         }
         for (var k : List.of("patch-only.warm.total.ms", "patch-only.cold.total.ms",
-                             "scale.warm.total.ms", "scale.cold.total.ms")) {
+                "scale.warm.total.ms", "scale.cold.total.ms")) {
             var b = baseline.getProperty(k);
             var c = current.get(k);
-            if (b != null && c != null) {
-                var bv = Double.parseDouble(b);
-                if (bv > 0) {
-                    System.out.printf("Improvement (%s): %.1f%%%n", k, (bv - c) / bv * 100.0);
-                }
+            if (b != null && c != null && Double.parseDouble(b) > 0) {
+                System.out.printf("Improvement (%s): %.1f%%%n", k,
+                    (Double.parseDouble(b) - c) / Double.parseDouble(b) * 100.0);
             }
         }
     }
@@ -834,6 +768,7 @@ public final class PatchBench {
                 return any ? sum : -1;
             }
         } catch (Throwable ignored) {
+            // Not supported on this JVM; allocation numbers are simply omitted.
         }
         return -1;
     }
@@ -843,10 +778,11 @@ public final class PatchBench {
             return;
         }
         try (var walk = Files.walk(root)) {
-            walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
                 try {
                     Files.deleteIfExists(p);
                 } catch (IOException ignored) {
+                    // Best effort: a leftover temp directory is harmless.
                 }
             });
         }

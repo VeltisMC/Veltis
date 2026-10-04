@@ -1,81 +1,205 @@
 # VeltisMC
 
 A bare-NMS Minecraft server for **Minecraft 26.3**, with a region-based world
-simulation engine and a runtime patch pipeline.
+simulation engine and a build-time patch pipeline.
 
 ## What is VeltisMC?
 
 VeltisMC boots the patched vanilla `DedicatedServer` directly. There is **no plugin
 API** — no Bukkit, Spigot or Paper. Gameplay is vanilla plus the patch set in
-`server/patches/features/`.
+`Shulker/`.
 
-Every Minecraft change is a unified-diff patch file. VeltisMC ships only a launcher;
-on first run it downloads the vanilla jar from Mojang, decompiles it, applies the
-patches, compiles the changed sources and packages `veltismc-server.jar` in the
-server directory. That keeps distribution EULA-compliant: no modified Minecraft code
-is ever distributed.
+Every Minecraft change is a git-style unified-diff patch file. VeltisMC ships one
+jar — `server.jar`, with no Minecraft code inside it — plus the patch set
+packaged in it.
 
-Two entry paths use the same patch engine:
+`java -jar server.jar --nogui` does everything from that one file: it resolves the
+Minecraft version against Mojang, downloads and SHA-1 verifies `Vanilla/<version>/vanilla-server.jar`
+and its libraries, applies the bytecode patch set packaged inside the jar, writes
+`Veltis/<version>/veltis-server.jar`, and only then starts Minecraft. A second
+start skips all of it: it validates the jar it already has and launches. Nothing
+touches the network on that path.
 
-- **Runtime** — `java -jar veltismc.jar` patches and packages the server on the
-  player's machine (first run only; later runs use a validated cache).
-- **Build time** — Gradle drives the same pipeline for development (`applyPatches`,
-  `rebuildPatches`, `compileMinecraft`).
+That path never widens, decompiles or compiles, and it cannot: the distributable
+ships neither a decompiler nor `javac`. Producing the patch set is a build-time
+job — `./gradlew buildVeltisMC` widens access, decompiles, applies the source
+patches in `Shulker/` and compiles the result before cutting the bytecode patch
+set the jar carries. An operator's directory holds no source and needs no
+toolchain.
+
+Two things follow from that, and both are deliberate. The distribution still
+carries no Mojang bytes, so it stays EULA-compliant — Minecraft is fetched from
+Mojang at run time, verified against Mojang's own SHA-1, and never redistributed.
+And the server directory stays a deployment: no hidden state directory, no
+source tree, no class output. Just the two artifacts, the world and the usual
+`server.properties`.
 
 ## Project Structure
 
 ```text
 VeltisMC/
 ├── .github/            CI workflow (build + test + package)
-├── build-tools/        Gradle-invoked pipeline: download, decompile, patch, verify
-├── launcher/           standalone entry point; assembles veltismc.jar
-├── patch-engine/       download / decompile / unified-diff apply / compile / package
-├── runtime/            the Veltis server framework (pure JDK)
-├── server/             vanilla boundary: Main, console/EULA/config setup
-│   └── patches/features/   the single source of truth for Minecraft patches
-├── world/              world simulation engine + its NMS boundary
+├── launcher/           the entry point; assembles veltismc.jar
+├── patch-engine/       download / widen / decompile / diff apply / diff generate / patch,
+│                       the workspace layout and the runtime that builds and loads it
+├── server/             everything inside Minecraft's classloader: the NMS entrypoint,
+│                       the Veltis framework and the world engine
+├── Shulker/            code/ data/ modules/ — the single source of truth
 ├── gradle/             Gradle wrapper
-├── build.gradle.kts    pipeline tasks (downloadMinecraft, applyPatches, …)
-├── settings.gradle.kts the six modules
+├── build.gradle.kts    the pipeline and the `minecraft` source set
+├── settings.gradle.kts the three modules
 └── README.md           this file
 ```
 
 | Module | Packages | Contains |
 |---|---|---|
-| `:launcher` | `org.veltismc.launcher` | entry point, jar assembly, server-jar provisioning |
-| `:build-tools` | `org.veltismc.buildtools` | build-time pipeline (`PipelineRunner`, `AccessWidener`, `VeltisBuilder`), patch rebuild |
-| `:patch-engine` | `org.veltismc.patchengine` | `PatchedJarBuilder`, `RuntimePatchApplier`, `UnifiedDiffPatcher`, `VanillaJarDownloader`, `RuntimeDecompiler`, `CacheValidator` |
-| `:server` | `org.veltismc.server` | `Main`: logging, config + EULA generation, reflective runtime boot |
-| `:runtime` | `org.veltismc.runtime.*` | lifecycle, events, scheduler, tick engine, services, containers, `VeltisConfig`, `VeltisBootstrap` |
-| `:world` | `org.veltismc.world.*`, `org.veltismc.world.nms` | simulation engine (pure JDK) + version-pinned NMS glue |
+| `:launcher` | `org.veltismc.launcher` | `VeltisLauncher`, argument handling, the startup clock, uber-jar assembly |
+| `:patch-engine` | `org.veltismc.patchengine` | `MojangMetadata`, `MinecraftDownloader`, `MinecraftDecompiler`, `UnifiedDiffPatcher`, `DiffGenerator`, `PatchDiscovery`, `VeltisPatcher`, `PatchRebuilder`, `AccessWidener`, `VeltisRuntime`, `VeltisWorkspace`, `PipelineRunner` |
+| `:server` | `org.veltismc.server`, `org.veltismc.runtime.*`, `org.veltismc.world.*` | `Main` (logging, config + EULA, reflective runtime boot); lifecycle, events, scheduler, tick engine, services, containers, `VeltisConfig`, `VeltisBootstrap`; the simulation engine and its `org.veltismc.world.nms` boundary |
 
-Generated paths (all gitignored, regenerated by the build):
+Three modules, and each name answers to a real boundary: an operator runs
+`:launcher`, the pipeline is `:patch-engine`, and everything that compiles against
+Minecraft's classes lives in `:server`. Two modules were removed for the same
+reason — `:build-tools` held one class whose callers already depended on
+`:patch-engine`, and `:runtime`/`:world` were never depended on from outside the
+repository and were always packaged into one jar in a fixed order by a list in
+`launcher/build.gradle.kts`.
+
+### The workspace
+
+A contributor's checkout and a server installation use the same engine with two
+different layouts, and the difference is where the intermediate work tree lives.
+
+A checkout keeps everything, because the IDE navigates it and
+`rebuildVeltisPatches` diffs it:
 
 ```text
-ver/<version>/            pipeline workspace: server.jar, server-widened.jar,
-                          libraries/, minecraft-source/, patched-source/
-build/distributions/      packaged veltismc.jar
+build/minecraft/<version>/
+├── metadata/    cached Mojang version.json + library coordinate list
+├── vanilla/     server.jar (bundler), server-classes.jar, server-widened.jar
+├── libraries/   Mojang's declared library jars, SHA-1 verified
+├── source/      pristine decompile — the baseline patches apply to
+├── patched/     source/ + the patch set (the IDE source root)
+├── classes/     javac output for the patched sources
+├── resources/   the data and modules patch delta
+└── build/       patch-targets.txt, decompile marker inputs
 ```
+
+A server installation keeps nothing but what a launch needs to repeat itself, and
+the work tree lives under the system temporary directory for the length of one
+build:
+
+```text
+<server>/
+├── Vanilla/<version>/vanilla-server.jar    Mojang's artifact, SHA-1 verified
+├── libraries/**                            the jars Minecraft links against,
+│                                            one root shared by every version
+└── Veltis/<version>/veltis-server.jar      the patched runtime
+```
+
+That is the whole persistent surface. There is no `.vlt`, no marker file, no
+metadata directory and no source tree: what produced `veltis-server.jar` is
+recorded *inside* it (see `META-INF/veltis/runtime.properties`), because a file
+next to a jar can be left behind by an installation the jar does not match.
+
+In both layouts there are **no temporary or per-run directories** — no `temp/`,
+no UUID directories. Each step reads and writes fixed, named locations, so a
+rerun after a failure resumes from a known state instead of from leftover scratch
+space.
+
+`source/` is the single baseline: `rebuildVeltisPatches` diffs `source/<file>`
+against `patched/<file>`. There is no third copy of the decompiled tree.
 
 ## Architecture
 
 ### Module graph
 
 ```text
-launcher ──> patch-engine ──> server ──> runtime ──> world
-                    └──> build-tools (build time only)
+launcher ──> patch-engine
+launcher ──> server ──> patch-engine
 ```
 
-Minecraft's jar is a compile dependency of `:server` and `:world` only — `:runtime`
-stays pure JDK.
+Minecraft's jar is a compile dependency of `:server` only, contributed by the
+root build from the one workspace declaration, so no module defines its own view
+of it. The launcher jar carries all three modules plus the patch set, which is
+what makes `java -jar server.jar` self-sufficient.
+
+### Acquisition
+
+Minecraft comes from Mojang's official endpoints, resolved at build time from a
+single `minecraftVersion` property. There are no hardcoded per-version URLs and no
+third-party mirrors anywhere in the codebase.
+
+```text
+version_manifest_v2.json → version metadata → server jar + library list
+                                                  │
+                                    every artifact SHA-1 verified
+```
+
+A cached artifact that fails verification is proven bad, discarded and re-fetched,
+so one corrupt entry costs a re-download rather than a broken build. A cached
+source tree is only reused when its marker proves it is the decompile of the
+requested version, server jar and library set.
+
+### The patch engine
+
+`patch-engine` is Veltis's own orchestration over a tool every checkout already has:
+**Git applies the set** with `git apply`, and **Git renders rebuilds** with
+`git diff --no-index`. Patches are git-style unified diffs. Veltis keeps everything
+Git does not decide — category, order, numbering, slot mapping, validation and the
+failure report — while `UnifiedDiffPatcher` and `DiffGenerator` stay in the tree as
+a reference implementation the tests exercise, not as the engine the build runs.
+
+- **Categories** are exactly `Shulker/code`, `Shulker/data`, `Shulker/modules`.
+  They determine apply order (`code` → `data` → `modules`) and which source set the
+  target lands in (`minecraft`, `minecraftResources`, `minecraftModules`). Within a
+  category, patches apply in file-name order.
+- **Application** snapshots each distinct target once, copies the set into a scratch
+  tree, runs a single `git apply` over all of it, then writes back only the files
+  whose bytes actually changed. The real workspace is never half-patched: a
+  rejection rewinds the scratch, reports the patch that refused, and leaves the
+  workspace exactly as it was.
+- **Determinism** is pinned rather than assumed. Every Git call carries
+  `-c core.autocrlf=false -c core.eol=lf`, so a machine's global `core.autocrlf`
+  cannot change what lands on disk, and Veltis fixes the order the patches go in.
+- **Concurrency** is deliberately absent: one `git apply` takes the whole set in one
+  call, so there is no thread pool whose scheduling could influence the result. The
+  `patchWorkers` property is still declared and passed down, but it no longer
+  partitions anything.
+- **Failures** name the patch, category, target, location and reason, and stop the
+  build:
+
+  ```text
+  [VeltisPatch] Failed to apply patch
+    Patch: 005-Wire-VeltisBootstrap-Shutdown.patch
+    Category: code
+    Target: net/minecraft/server/MinecraftServer.java
+    Location: patch 1 of 1, hunk #2
+    Reason: the file does not hold the context the patch requires; Git matches context exactly, so the patch and the source must be identical line for line, line endings included
+    expected context (from the patch):
+      - @Override
+      - public void safeShutdown(boolean waitForShutdown) {
+    actual source lines 652-660 (around the expected position):
+      + @Override
+      + public void shutdown(boolean waitForShutdown) {
+    Minecraft: 26.3
+    Patch revision: 894b9815255046c7c474dd303cd3bd17ede8fbcdaaad1cd168dab631b7d92b7c
+  ```
+
+  Git decides that the patch does not apply; Veltis turns Git's verdict into the
+  patch, category, target, location and reason above. A missing target and a
+  CRLF/LF mismatch get their own explanations instead of a context diff, because
+  quoting lines that are equal once terminators are stripped would send you looking
+  in the wrong place. The revision is the SHA-256 of the patch file's bytes, so the
+  message identifies the exact patch content rather than just its name.
 
 ### Runtime boot
 
 ```text
-VeltisLauncher ──(provisions veltismc-server.jar)──> org.veltismc.server.Main
-                                                        │ Class.forName
-                                                        ▼
-VeltisBootstrap.boot()                              [runtime]
+VeltisLauncher ──(locates the prebuilt jar)──> org.veltismc.server.Main
+                                                     │ Class.forName
+                                                     ▼
+VeltisBootstrap.boot()                          [runtime]
  ├─ VeltisConfig.load(home)
  └─ DefaultServerRuntime
       ├─ PlayerContainer / WorldContainer, SimpleEventBus
@@ -84,9 +208,14 @@ VeltisBootstrap.boot()                              [runtime]
       └─ DefaultServiceRegistry ──> WorldEngineService ──> WorldEngines.create()
 ```
 
-Patch 016 wires the same entry point into the patched `DedicatedServer`
+The launcher asks `VeltisRuntime` to prepare whatever it is missing — a warm
+start validates `Veltis/<version>/veltis-server.jar`, hashes the vanilla artifact
+and launches without touching anything else; a cold start builds the whole runtime
+through that same call the Gradle pipeline uses.
+
+Patch `004` wires the same entry point into the patched `DedicatedServer`
 (`VeltisBootstrap.onMinecraftServerCreated`), so the vanilla boot path stays
-identical to the one `Main` uses. Patch 017 wires the matching shutdown hook
+identical to the one `Main` uses. Patch `005` wires the matching shutdown hook
 (`VeltisBootstrap.onServerStopping`) into the vanilla stop path, just before
 `Saving worlds`.
 
@@ -97,27 +226,29 @@ Everything on the lifecycle path runs synchronously on one thread — no
 deterministic:
 
 ```text
-1. Launcher       provision veltismc-server.jar (first run: download -> decompile
-                  -> apply patches -> compile -> package; later runs: validated cache)
-2. Server Main    Log4j2 config, server.properties, eula.txt
-3. Vanilla init   version, properties, keypair, port bind, level prepare + spawn
-4. Patch 016      VeltisBootstrap.onMinecraftServerCreated: config -> event bus
+1. Launcher       VeltisStartup.begin(): the instant the Done line is measured from
+2. Prepare         resolve version -> validate or build the runtime (cold: download,
+                   widen, decompile, patch, compile, package; warm: verify only)
+3. Server Main    Log4j2 config, server.properties, eula.txt
+4. Vanilla init   version, properties, keypair, port bind, level prepare + spawn
+5. Patch 004      VeltisBootstrap.onMinecraftServerCreated: config -> event bus
                   -> lifecycle -> scheduler -> tick engine -> metrics -> services
-                  (world engine) -> runtime started
-5. Vanilla Done   Done (Xs)! - the elapsed time includes the Veltis initialization
+                  -> (world engine) -> runtime started
+6. Guard          verifyPatchedClasses: every patched class really came from
+                   Veltis/<version>/veltis-server.jar, with the compiled bytes
+7. Done (X.XXXs)! the whole of 1-6, printed once
 ```
 
 Shutdown mirrors it:
 
 ```text
-stop -> Stopping server -> Saving players -> [patch 017] Stopping VeltisMC ->
+stop -> Stopping server -> Saving players -> [patch 005] Stopping VeltisMC ->
 VeltisMC stopped -> Saving worlds -> process exit
 ```
 
 Every phase logs a start line and a completion line carrying its real elapsed
-time (`Applying VeltisMC patches` → `Applied 5 patches to 4 files (13ms)`;
-`42ms` under a second, `12.423s` after). There are no fake completions, no
-banners/tables, and no duplicated vanilla messages.
+time. There are no fake completions, no banners/tables, and no duplicated vanilla
+messages.
 
 ### Logging
 
@@ -125,61 +256,131 @@ VeltisMC has exactly **one** logging system: Log4j2, the same one Minecraft
 uses.
 
 - Console and `logs/latest.log` share the pattern `[HH:mm:ss LEVEL]: msg`;
-  Veltis messages carry a `[VeltisMC]` prefix.
-- The launcher forces `log4j.configurationFile` to VeltisMC's own config before
-  the first log statement — Mojang's classpath carries a competing config, which
-  is what used to produce mixed patterns and the `Queue`/`Listener`/`Tracy`
-  appender errors.
+  Veltis messages carry a `[VeltisMC]` or `[Veltis]` prefix.
+- `VeltisConsole.configureLog4j` sets the `log4j2.configurationFile` system
+  property to VeltisMC's own config before the first log statement. The property
+  (not `Configurator.initialize`) is what makes this reliable: the launcher runs
+  the server in a child class loader, and a JVM-wide property is the only thing
+  both Log4j2 instances consult. Mojang's classpath carries a competing
+  `log4j2.xml` in `com.mojang:logging`, and when that one wins it emits the
+  `Queue`/`Listener`/`ServerGuiConsole`/`Tracy` appender errors. Verified gone:
+  a `--nogui` start produces no `ERROR` lines on stderr.
 - `java.util.logging` (and therefore `System.getLogger`) is bridged into
-  Log4j2, so nothing writes to the console out-of-band. The console is switched
-  to UTF-8 with a plain `chcp` child process: no native libraries. (Jansi was
-  removed for this reason — see below.)
-- Diagnostics (jar/classpath details, javac notes, decompiler chatter) run at
-  DEBUG and appear only with `--verbose`.
+  Log4j2, so nothing writes to the console out-of-band.
+- Diagnostics (jar/classpath details, decompiler chatter) run at DEBUG and appear
+  only with `--verbose`.
 
-JDK 24+ prints two benign warnings that come from **Mojang's own libraries**,
-not from VeltisMC code:
+JDK 24+ prints two warnings that come from **Mojang's own libraries**, not from
+VeltisMC code:
 
 - `sun.misc.Unsafe` — `org.joml` 1.10.9 is pinned by Mojang's library manifest.
 - `System::load` — vanilla's `NativeModuleLister` uses JNA, and Mojang ships
   `net.java.dev.jna` 5.17.0 in `libraries/`.
 
-Both are upstream and cannot be fixed from this repository (Jansi, which was
-*our* source of the same warning, has been removed entirely). To silence the
-remaining two, start the server with:
+Both are upstream, and both are printed by the JVM itself, so nothing in the
+server can silence them after the fact — and redirecting stderr to hide them
+would hide real failures along with them. `java -jar server.jar` therefore
+re-starts itself once with the options that were missing:
 
 ```bash
 java --enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow \
      -jar server.jar --nogui
 ```
 
-### Build-time pipeline
+If you already pass either flag (including `--sun-misc-unsafe-memory-access=warn`
+rather than `allow`), yours is used and no second start happens. Every other JVM
+option — `-Xmx`, agents, `--add-opens` — is carried across unchanged, and this
+restart merges with the `--home` working-directory restart into a single one, so
+a launch that needs both still starts exactly two JVMs.
+
+## Build-time pipeline
 
 ```text
-downloadMinecraft → downloadLibraries → decompileMinecraft
-      → generateSourceWorkspace → applyPatches → compileMinecraft
-      → packageVeltisMC (build/distributions/veltismc.jar)
+downloadMinecraft ──> widenServerJarAccess ──> downloadLibraries
+        │                                        │
+        └──────────────> decompileMinecraft <────┘
+                              │
+                         applyVeltisPatches
+                              │
+              ┌───────────────┴───────────────┐
+   compileMinecraftJava            processMinecraftResources
+              └───────────────┬───────────────┘
+                              │
+        prepareVeltisRuntime ──> build/minecraft/<v>/veltis-server.jar
+        packageVeltisMC      ──> build/distributions/veltismc.jar
 ```
 
-`ver/<version>/minecraft-source/` holds the pristine decompile,
-`ver/<version>/patched-source/` the workspace patches are applied to;
-`rebuildPatches` regenerates patch files from the diff between them.
+Two outputs, and they are deliberately different:
+
+| Artifact | Contents | Purpose |
+|---|---|---|
+| `build/distributions/veltismc.jar` | the launcher, the engine and the **bytecode patch set**, no Minecraft code | the distributable; the one file an operator needs |
+| `Veltis/<version>/veltis-server.jar` | Mojang's classes jar with only the entries the patch set names replaced or removed, plus the record of what produced it | the runtime the server loads classes from |
+
+`veltis-server.jar` contains Minecraft code, so it is produced on the machine that
+runs it, not redistributed — which is also why its identity is recorded *inside*
+it rather than next to it. What ships in `veltismc.jar` is the difference between
+that jar and vanilla: whole classes where a patch changed one, both SHA-1s on
+every entry, and nothing else. No source, no decompiler, no compiler.
+
+### Compile scope
+
+Decompiling Minecraft does not produce sources that compile as a whole, and
+compiling all ~15 000 of them to discover that is not useful. The compile task is
+scoped to the files the patch set actually addresses, recorded in
+`build/patch-targets.txt` by the patcher itself. Unpatched classes are carried
+over from Mojang's own jar untouched, so the compiled output is exactly the delta
+the patches introduce — and that delta is what the bytecode patch set is cut
+from, rather than a jar rebuilt from scratch.
+
+`compileMinecraftJava` compiles only the `code` targets into
+`build/minecraft/<v>/classes` against a classpath of the compiled classes, the
+widened jar and the library tree. `processMinecraftResources` copies only the
+`data` and `modules` targets.
+
+Scoping the compile is also what makes the decompiler's known defects survivable —
+see [Known limitations](#known-limitations).
+
+### Intellij
+
+`minecraft` is a real Gradle source set whose root is `build/minecraft/<v>/patched`.
+The root is declared unconditionally, so an IDE opened before the first pipeline
+run still has the right folder registered; it simply stays empty until the
+pipeline fills it. There is no `Mark Sources Root` step and no ad-hoc IDE files.
+The root project's IDEA exclusion lists `build/`'s children one at a time and
+leaves `build/minecraft` off the list: excluding a directory that contains a
+source root makes the IDE lose the source root, and that is exactly how this used
+to need a manual mark in every checkout. The same block passes the source set's
+root to the `.iml` writer, because Gradle's Idea plugin reads only the main and
+test source sets when it writes those files and would otherwise emit a root
+module with no source roots in it.
+
+IntelliJ IDEA is the recommended IDE: run `./gradlew prepareMinecraft` once, then
+`./gradlew idea` (or just build) and the decompiled sources are navigable with
+autocomplete.
 
 ### Reflective couplings — keep in sync
 
 These strings are load-bearing and deliberately not compile-time references:
 
 - `server/.../Main.java` → `org.veltismc.runtime.VeltisBootstrap`
-  (patches `016-*.patch` and `017-*.patch` wire the same class into vanilla)
+  (the `Wire-VeltisBootstrap-Integration` and `Wire-VeltisBootstrap-Shutdown`
+  patches wire the same class into vanilla)
 - `launcher/.../VeltisLauncher.java` → `org.veltismc.server.Main`
-- Gradle `mainClass` strings: `org.veltismc.buildtools.PipelineRunner`,
-  `org.veltismc.buildtools.AccessWidener`, `org.veltismc.launcher.VeltisLauncher`
+- Gradle `mainClass` strings: `org.veltismc.patchengine.PipelineRunner`,
+  `org.veltismc.launcher.VeltisLauncher`
+- `DedicatedServer` (the `Report-Total-Startup-Time` patch) →
+  `org.veltismc.launcher.VeltisStartup`, so the
+  server's only `Done` line reports the whole launch
 
-Renaming any of these classes means updating every string above.
+Renaming any of these classes means updating every string above. Patch *numbers*
+are deliberately not quoted here: `rebuildPatches` renumbers the set, so the
+descriptions are the stable reference.
 
 ### Design rules
 
-- Six modules. Adding one needs a strong technical reason.
+- Three modules (`launcher`, `patch-engine`, `server`), each a boundary something
+  actually depends on. Adding one needs a strong technical reason.
 - Shallow packages: `org.veltismc.<module>`, one level below at most.
 - No `I*`/`Impl` interface pairs with a single implementation.
 - No Manager/Service/Controller/Provider chains to move logic around.
@@ -187,19 +388,82 @@ Renaming any of these classes means updating every string above.
 - Delete dead code instead of keeping it "just in case" (search first; never delete a
   test to make the build green).
 
+## Known limitations
+
+Three things are not solved, and each is stated with what it costs and what to do
+about it.
+
+### 1. Vineflower emits a non-compiling placeholder for synthetic switch maps
+
+When javac compiles a `switch` over an enum, it synthesises a
+`$SwitchMap$…` lookup array. Vineflower inlines the lookup as a field that does not
+exist in the source language, and marks it `<unrepresentable>`:
+
+```java
+byte eventId = switch (<unrepresentable>.$SwitchMap$net$minecraft$server$permissions$PermissionLevel[permissions.level().ordinal()]) {
+    case 1 -> 24;
+    …
+```
+
+`<unrepresentable>` is not a Java expression, so any file containing it fails to
+compile. 111 of the 5037 decompiled files contain one; only the four files the patch
+set addresses are ever handed to javac, and one of those needed a repair.
+
+This is currently harmless **only** because the compile is scoped to the patch
+targets (§ [Compile scope](#compile-scope)) — the other 110 files are never handed
+to javac. It becomes real the moment one of them is added as a target.
+
+When that happens, add a small `Shulker/code` patch that rewrites the switch to the
+enum constants themselves. `Fix-Decompiled-PermissionLevel-Switch.patch` is the
+worked example: it turns the switch above into
+
+```java
+byte eventId = switch (permissions.level()) {
+    case ALL -> 24;
+    case MODERATORS -> 25;
+    case GAMEMASTERS -> 26;
+    case ADMINS -> 27;
+    case OWNERS -> 28;
+};
+```
+
+Derive the mapping from the bytecode, not from the decompiled labels —
+`javap -c` on `PlayerList$2.<clinit>` in `vanilla/server-classes.jar` gives the
+`$SwitchMap` values and `javap -c` on the method gives the case bodies. The
+recompiled result was checked against the original Mojang bytecode and is
+instruction-identical, constant-pool indices included.
+
+### 2. `patchWorkers` changes nothing
+
+Application is a single `git apply` over the whole set, so there is no work left to
+partition: `-PpatchWorkers=8` and `-PpatchWorkers=1` produce identical bytes, and
+the apply step reports no worker count because it starts no workers. The property
+stays declared in `gradle.properties` and passed down to the pipeline, and
+`PatchOutputRegressionTest` still applies the set at 1, 4 and 8 workers — a guard
+against the setting quietly starting to matter again.
+
+### 3. The current patch set touches four vanilla files
+
+`Shulker/code` addresses `Commands`, `MinecraftServer`, `DedicatedServer` and
+`PlayerList`. That is what the runtime hooks (bootstrap, shutdown, console/command
+logging) need, and it keeps the compile scope small enough to avoid the
+`<unrepresentable>` problem above — but it means VeltisMC is currently a platform
+*around* vanilla rather than one that has replaced parts of it. Growing the patch
+set means growing the compile scope, and limitation 1 becomes the thing that
+blocks you.
+
 ## World Engine
 
-`:world` contains a region-based world simulation engine and its NMS boundary in one
-module:
+The world engine lives in `:server`, beside the runtime framework it serves:
 
 ```text
-world/src/main/java/org/veltismc/world/
+server/src/main/java/org/veltismc/world/
 ├── api/        WorldEngine, WorldConfig, WorldEngines (runtime-facing entry point)
 ├── core/       regions, chunks, entities, simulation loop
 ├── chunk/      chunk state machine
 ├── scheduler/  simulation scheduling
 ├── util/       lock-free queue, object pool
-└── nms/        NMS adapters — the only code allowed to touch net.minecraft.*
+└── nms/        NMS adapters — the only engine code allowed to touch net.minecraft.*
 ```
 
 **Design rule:** Minecraft (NMS) owns *gameplay* logic; Veltis owns *execution* —
@@ -208,8 +472,10 @@ piece of mutable world state. Veltis never re-implements vanilla mechanics (mob 
 pathfinding, physics, fluids, redstone, generation); it schedules them.
 
 The engine outside `nms/` is pure JDK and must stay compilable with no Minecraft jar
-on the classpath. Only `org.veltismc.world.nms` may reference `net.minecraft.*`, and
-it is compiled against `ver/<version>/server-widened.jar`.
+on the classpath. The only classes in the repository that reference `net.minecraft.*`
+are `org.veltismc.server.Main` (which hands the process over to vanilla) and
+`org.veltismc.world.nms`, and both are compiled against
+`build/minecraft/<v>/vanilla/server-widened.jar`.
 
 How it works:
 
@@ -242,93 +508,51 @@ and inputs produce the same simulation regardless of worker count.
 
 ## Performance
 
-The patch-processing pipeline is benchmarked and regression-tested inside
-`:patch-engine`.
-
-**What is measured** — the patch stage only, never decompilation or javac
-compilation (those are reported separately so they are not confused with patching):
-
-| Phase | Meaning |
-|---|---|
-| discovery | locating and reading patch files (jar / filesystem / classpath) |
-| parsing | unified-diff header and hunk parsing |
-| application | context matching and hunk application |
-| I/O | reading target sources and writing changed results |
-| total | end-to-end wall time |
-
-**Scenarios** — *cold* (first application onto a freshly prepared tree), *warm*
-(repeated runs against the same inputs), *patch-only* (the real
-`server/patches/features` set against the decompiled 26.3 workspace) and *scale*
-(a generated corpus of hundreds of patches over hundreds of files to expose
-grouping, parallelism and I/O behaviour). Metrics: phase times, total time,
-files read/written, patches applied, heap used.
-
-**How to run it:**
+The patch engine is benchmarked and regression-tested inside `:patch-engine`.
 
 ```bash
 ./gradlew :patch-engine:benchmark
 ```
 
-The benchmark prints a phase table plus before/after comparison when given a
-baseline (`--save <file>` to record one, `--compare <file>` to diff against it),
-so improvements are demonstrated with measurements rather than claimed.
-Because cold numbers depend on ambient machine state, a baseline should be
-recorded in the same session as the run it is compared against.
-
-**Measured results** — one session, `--iterations 11`, optimized engine vs the
-pre-optimization engine run against the identical corpora minutes apart (the
-baseline was recorded by pointing the same harness at the old engine classes;
-an earlier baseline captured under different ambient conditions was discarded):
-
-*patch-only* — the real `server/patches/features` set (4 patches / 3 files):
-
-| Metric | Before | After | Δ |
-|---|---:|---:|---:|
-| warm total | 11.03 ms | 8.43 ms | −23.6% |
-| warm application | 6.45 ms | 0.64 ms | −90.0% |
-| cold application | 25.59 ms | 3.44 ms | −86.6% |
-| cold I/O | 33.36 ms | 7.93 ms | −76.2% |
-| files read / written | 4 / 4 | 3 / 3 | −25% |
-
-*scale* — generated corpus (600 patches / 300 target files):
-
-| Metric | Before | After | Δ |
-|---|---:|---:|---:|
-| warm total | 458.99 ms | 174.59 ms | −62.0% |
-| cold total | 443.14 ms | 191.49 ms | −56.8% |
-| warm application | 48.40 ms | 9.27 ms | −80.8% |
-| cold application | 212.24 ms | 24.10 ms | −88.6% |
-| warm discovery | 215.14 ms | 22.42 ms | −89.6% |
-| files read / written | 600 / 600 | 300 / 300 | −50% |
-| allocated per run | 0.081 MB | 0.056 MB | −31% |
-
-Against `git apply` on the identical input tree and patch set (output
-byte-identical to Veltis in both runs): **scale** — Veltis 174.6 ms vs git
-apply 822.5 ms (4.7×); **patch-only** — Veltis 8.4 ms vs git apply 73.8 ms
-(8.8×).
-
-Honest caveats: phase times are summed across parallel workers and can exceed
-the wall-clock total; patch-only *cold total* is unchanged within noise
-(44.2 vs 46.0 ms — on a 4-patch corpus the first run is dominated by one-time
-class loading, and the discovery phase itself is identical: 20.9 vs 20.6 ms);
-the scale discovery gain comes from reading patches in parallel, which cannot
-show up on a 4-patch corpus.
+The benchmark reports discovery, parsing, application, I/O and wall time
+separately so decompilation and javac are never conflated with patching, and it
+supports `--save`/`--compare` baselines so improvements are shown with
+measurements rather than claimed.
 
 **Methodology rules:**
 
 - Same machine, same JVM, same filesystem, same corpus for every comparison.
 - Never compare a warm cache against a cold one; cold and warm runs are labelled.
-- Patch application is compared against `git apply` on the *identical* input tree
-  and patch set (the tool Paper-class builds use), verified byte-for-byte.
+- Phase times are summed across parallel workers and can exceed the wall-clock
+  total, so the total is the number to compare.
 - Correctness is checked independently of speed: applying the patch set to
-  `ver/<version>/minecraft-source/` must reproduce `ver/<version>/patched-source/`
-  byte-for-byte.
+  `build/minecraft/<v>/source/` must reproduce `build/minecraft/<v>/patched/`
+  byte-for-byte, at every worker count.
 
-**Regression protection:** `PatchOutputRegressionTest` (byte-identical output),
-`UnifiedDiffPatcherTest` (hunk semantics, input validation and failure
-diagnostics), `LineSplitTest` (line splitting stays equivalent to the regex it
-replaced) and `PatchPerformanceTest` (structural I/O counters plus a throughput
-floor) run on every `./gradlew build`.
+**Regression protection** (all run on `./gradlew build`):
+
+| Suite | Property |
+|---|---|
+| `PatchOutputRegressionTest` | byte-identical output at workers 1/4/8 |
+| `UnifiedDiffPatcherTest` | hunk semantics, input validation, failure diagnostics |
+| `LineSplitTest` | line splitting stays equivalent to the regex it replaced |
+| `PatchPerformanceTest` | structural I/O counters plus a throughput floor |
+| `GradlePipelineTest` | real pipeline invariants (cache invalidation, rebuild isolation, library fetch, module jars in the server artifact) |
+
+The test suite passes with `./gradlew clean build`.
+
+The guard is verifiable rather than asserted:
+
+```bash
+./gradlew verifyVeltisRuntime -PveltisGuardCanary=true   # must FAIL
+./gradlew verifyVeltisRuntime                            # must pass
+```
+
+The canary builds a class loader that resolves the vanilla classes jar *first*,
+so the loader hands out vanilla's version of every patched class. The guard then
+reports the first class whose bytes are not the ones recorded when
+`veltis-server.jar` was packaged, and refuses to start. The ordering is not a
+stylistic preference: with a classpath that has both, whichever comes first wins.
 
 ## Build Instructions
 
@@ -344,59 +568,106 @@ build, and the Gradle wrapper in this repository (`gradlew.bat` on Windows,
 ./gradlew buildVeltisMC
 ```
 
-Both work on a fresh clone: the `server`/`world` compile tasks pull in
-`downloadMinecraft` and `downloadLibraries` themselves.
+Both work on a fresh clone: the `server` compile task pulls in the pipeline
+itself, and the first run downloads Minecraft once.
 
-The packaged launcher is `build/distributions/veltismc.jar`. Run it from the
-directory that should hold the server data (or pass `--home`, which restarts the
-launcher there):
+The distributable is `build/distributions/veltismc.jar`. Copy it anywhere as
+`server.jar` and start it; it builds whatever it is missing in that directory:
 
 ```bash
-java -jar build/distributions/veltismc.jar --home server-data --nogui
+cp build/distributions/veltismc.jar /path/to/server/server.jar
+cd /path/to/server
+java -jar server.jar --nogui
 ```
 
-On first run it downloads the vanilla jar, applies the patches, compiles the changed
-sources and generates `eula.txt` (set `eula=true`). Minecraft resolves `world/`,
-`server.properties` and `eula.txt` against the working directory, so keep the server
-data directory and the working directory the same — never boot from the repository
-root.
+The first start downloads, decompiles, patches, compiles and packages into
+`Vanilla/` and `Veltis/`; every later one just validates and runs. Minecraft
+resolves `world/`, `server.properties` and `eula.txt` against the working
+directory, so run it from the directory that should hold the server data.
 
 Useful Gradle tasks:
 
 | Task | Purpose |
 |---|---|
-| `./gradlew build` | compile all six modules + tests |
-| `./gradlew buildVeltisMC` | full pipeline → `build/distributions/veltismc.jar` |
-| `./gradlew applyPatches` | apply `server/patches/features/` to the workspace |
-| `./gradlew rebuildPatches` | regenerate patch files from workspace edits |
-| `./gradlew generateSourceWorkspace` | reset the workspace from the pristine decompile |
-| `./gradlew decompileMinecraft` | decompile vanilla into `ver/<version>/minecraft-source/` |
+| `./gradlew build` | compile all three modules + tests |
+| `./gradlew buildVeltisMC` | full pipeline + distributable in `build/distributions/` |
+| `./gradlew prepareMinecraft` | download, decompile, patch, compile, copy resources |
+| `./gradlew downloadMinecraft` | resolve + fetch the server jar (SHA-1 verified) |
+| `./gradlew widenServerJarAccess` | widen class/field/method access in the server jar |
+| `./gradlew downloadLibraries` | fetch Mojang's declared library jars |
+| `./gradlew decompileMinecraft` | decompile the widened jar into `source/` |
+| `./gradlew applyVeltisPatches` | apply `Shulker/{code,data,modules}` into `patched/` |
+| `./gradlew rebuildVeltisPatches` | regenerate patch files from `patched/` edits, renumbered contiguously |
+| `./gradlew applyPatches` / `./gradlew rebuildPatches` | the contributor-facing aliases of the two tasks above |
+| `./gradlew cleanVeltisPatches` | discard `patched/`, `classes/`, `resources/` |
 | `./gradlew :patch-engine:benchmark` | run the patch-engine benchmark |
-| `./gradlew idea` | refresh IDE model (attaches `patched-source` as a source root) |
+| `./gradlew idea` | refresh IDE model |
+
+The Minecraft version and the patch worker count are build properties in
+`gradle.properties`:
+
+```properties
+minecraftVersion=26.3
+patchWorkers=4
+```
+
+Bumping `minecraftVersion` re-runs the whole chain against the new version; no
+URL is ever hardcoded.
 
 ## Development
 
 ### Writing Minecraft patches
 
+The full contributor workflow — naming, numbering, chains, and deleting or
+renaming patches — is documented in [`CONTRIBUTING.md`](CONTRIBUTING.md). The
+short version:
+
 ```bash
-./gradlew generateSourceWorkspace applyPatches   # pristine workspace + patches applied
-# edit files in ver/<version>/patched-source/
-./gradlew rebuildPatches                        # regenerate server/patches/features/
-git diff -- server/patches                      # review before committing
+./gradlew applyPatches            # pristine workspace + patches applied
+# edit files in build/minecraft/<v>/patched/
+./gradlew rebuildPatches          # regenerate Shulker/
+git diff -- Shulker               # review before committing
 ```
+
+`applyPatches` and `rebuildPatches` are aliases of the pipeline's own
+`applyVeltisPatches` and `rebuildVeltisPatches`; both spellings run the same
+task.
 
 Patch rules:
 
-- File names are `017-Short-description.patch` (three or four digits, then a dash).
-- Only the intended Minecraft source changes belong in a patch; no generated output,
-  logs, IDE files or local caches.
+- Files are `NNN-Short-description.patch` in `Shulker/code`, `Shulker/data` or
+  `Shulker/modules`; the directory determines apply order and which source set
+  the target lands in.
+- `NNN` is assigned by the build and renumbered contiguously after every rebuild,
+  so a deletion pulls the series up and leaves no hole. Renumbering changes only
+  the number — never the description, the targets or a byte of the diff.
+- Only the intended Minecraft source changes belong in a patch; no generated
+  output, logs, IDE files or local caches.
 - Prefer several small patches over one large mixed patch.
-- `server/patches/features/` is the **single** source of truth — the launcher bundles
-  these files into `veltismc.jar`. There is no second patch directory.
+- A patch that repairs a decompiler defect (limitation 1) is still an ordinary
+  `Shulker/code` patch; keep it separate from the feature patch that edits the same
+  file, so the repair survives a feature rewrite.
+- `Shulker/` is the **single** source of truth. There is no second patch
+  directory and nothing is bundled for runtime application.
 
-**IntelliJ IDEA** is the recommended IDE: `server` and `world` attach
-`ver/<version>/patched-source` as a source root, so after `applyPatches` run
-`./gradlew idea` and reopen the project for autocomplete into the decompiled sources.
+Rebuild renders through `git diff --no-index`, so the regenerated files are
+deterministic for the same reason a Git commit is: the same two trees always
+produce the same bytes, whatever machine produced them (`core.autocrlf` and
+`core.eol` are pinned on every call). Hunks are located by content rather than by
+line number, so a rebuilt patch keeps applying when unrelated lines shift above it.
+
+Several patches may address one file — that is how two unrelated changes to
+`DedicatedServer` stay separately reviewable. The rebuild replays the chain to
+recover each intermediate state: with no edits it regenerates every patch
+byte-identically, and with an edit it puts the change in the last patch of the
+chain, leaving the earlier ones untouched.
+
+`rebuildVeltisPatches` deliberately does **not** depend on `applyVeltisPatches`.
+`apply` re-mirrors `source/` over `patched/`, so depending on it would discard the
+edits being captured. For the same reason, deleting a patch means deleting the
+file, running `applyPatches`, and then `rebuildPatches`: the rebuild records what
+it applied and refuses to run while one of those patches is missing, rather than
+silently diffing the change straight back into a new file.
 
 ### Runtime behaviour
 
@@ -409,24 +680,32 @@ Bukkit/Paper source into this project.
 ```bash
 ./gradlew test                                      # all modules
 ./gradlew test --no-build-cache --rerun-tasks       # force a fresh run
-./gradlew :world:test :runtime:test :patch-engine:test
+./gradlew :patch-engine:test :server:test
 ```
 
 JUnit 5, standard `src/test/java` layout:
 
 | Module | Suites |
 |---|---|
-| `world` | chunk state machine, scheduler, lock-free queue, object pool, engine smoke test (headless, no Minecraft jar) |
-| `runtime` | `VeltisConfig` load/round-trip, `DefaultServerRuntime` start/shutdown/double-start |
-| `patch-engine` | hunk application semantics, input validation and failure diagnostics, output regression (byte-identical), line-split equivalence, performance floor |
+| `server` | `VeltisConfig` load/round-trip, `DefaultServerRuntime` start/shutdown/double-start, chunk state machine, scheduler, lock-free queue, object pool, engine smoke test (headless, no Minecraft jar) |
+| `patch-engine` | Mojang resolution + SHA-1, download + corrupt-cache recovery, decompile-cache invalidation, access widening, discovery, deterministic ordering, same-file chains, worker-count invariance, conflicts, rollback/atomicity, code/data/module patches, output regression, line-split equivalence, performance floor, runtime artifact + guard, Gradle pipeline declaration |
 
 Never delete a failing test to make the build green — fix the code (or the test, if
 it asserts the wrong behaviour).
 
 ## Contributing
 
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) first: it has the full patch workflow
+(naming, numbering, chains, deleting and renaming), every command in this
+repository spelled out for Windows and for Linux/macOS, the troubleshooting
+messages you are most likely to hit, and the rules that keep the distributable
+clean.
+
+The short version:
+
 1. Branch from the latest main and keep the change focused.
-2. If you changed Minecraft sources, rebuild the patch files (see Development).
+2. If you changed Minecraft sources, rebuild the patch files (see
+   [Development](#development)).
 3. Before committing run:
 
 ```bash
@@ -437,14 +716,12 @@ it asserts the wrong behaviour).
 5. Open a PR describing what changed and why, which patch files were touched, the
    Minecraft version used, the commands you ran and any known limitations.
 
-Do **not** commit: `ver/`, `build/`, `.gradle/`, `out/`, `run/`, IDE metadata,
-compile logs, temporary patch files, or server data (`eula.txt`,
-`server.properties`, `logs/`, `config/`, `vanilla/`, `libraries/`, `versions/`) —
-all gitignored. Note that `world/` is the tracked engine source directory, so never
-boot the server from the repository root without `--home`.
+Do **not** commit: `build/`, `.gradle/`, `Vanilla/`, `Veltis/`, `out/`, `run/`, IDE
+metadata, compile logs, temporary patch files, or server data (`eula.txt`,
+`server.properties`, `logs/`, `config/`) — all gitignored.
 
-Do commit: patch files in `server/patches/features/`, module sources and tests,
-Gradle/build-script changes needed by the workflow, documentation updates.
+Do commit: patch files in `Shulker/`, module sources and tests, Gradle/build-script
+changes needed by the workflow, documentation updates.
 
 ## License
 

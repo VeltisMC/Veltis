@@ -1,0 +1,6 @@
+# Patch files are compared byte-for-byte by `rebuildPatches`, which always writes
+# them with LF endings. If a checkout handed them back as CRLF, the first rebuild
+# would "regenerate" every patch in the set and the diff would show every file
+# changed even though nothing did — so the ending is pinned here rather than left
+# to each machine's core.autocrlf.
+*.patch text eol=lf

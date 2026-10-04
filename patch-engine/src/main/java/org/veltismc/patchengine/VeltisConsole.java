@@ -9,8 +9,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -36,31 +34,68 @@ public final class VeltisConsole {
 
     /**
      * Points Log4j2 at VeltisMC's configuration file. Must run before the
-     * first log statement anywhere — vanilla's own classpath carries a
-     * competing config that must never win, because that is what produces
-     * mixed patterns and the {@code Queue}/{@code Listener}/{@code Tracy}
+     * first log statement anywhere — the Minecraft classpath carries Mojang's
+     * own {@code com.mojang:logging} {@code log4j2.xml}, which must never win,
+     * because that is what produces mixed patterns and the
+     * {@code Queue}/{@code Listener}/{@code ServerGuiConsole}/{@code Tracy}
      * appender errors.
      *
-     * <p>No-op when {@code log4j.configurationFile} is already set (for
-     * example by the launcher before the server entry point runs).
+     * <p>This sets the {@code log4j2.configurationFile} system property to the
+     * resource's URL rather than calling {@code Configurator.initialize}. That
+     * matters because the launcher loads the server in a child class loader:
+     * the property is JVM-wide, so every Log4j2 instance — the launcher's and
+     * the server's — resolves the same config, whereas
+     * {@code Configurator.initialize} only configured the one context it was
+     * handed and the server's Log4j2 then went back to classpath discovery,
+     * found Mojang's file, and printed those four errors.
+     *
+     * <p>Nothing is written to disk. Copying the resource to a temporary file
+     * created a file per server start; a {@code jar:} URL is fine as long as
+     * the correct property name is used ({@code log4j2.configurationFile}, not
+     * the legacy {@code log4j.configurationFile}).
+     *
+     * <p>No-op when either property is already set, so an operator can
+     * override VeltisMC's logging from the command line.
      */
     public static void configureLog4j() {
+        if (System.getProperty("log4j2.configurationFile") != null) return;
         if (System.getProperty("log4j.configurationFile") != null) return;
         for (var resource : new String[] {"/veltis-log4j2.xml", "/log4j2.xml"}) {
             var url = VeltisConsole.class.getResource(resource);
             if (url == null) continue;
-            try (var in = url.openStream()) {
-                var config = Files.createTempFile("veltis-log4j2", ".xml");
-                config.toFile().deleteOnExit();
-                Files.copy(in, config, StandardCopyOption.REPLACE_EXISTING);
-                // A plain file:/// URI: jar:file: and bare paths make Log4j2
-                // silently fall back to classpath discovery, which is what
-                // mixed output patterns come from.
-                System.setProperty("log4j.configurationFile", config.toUri().toString());
-            } catch (IOException e) {
-                System.err.println("[VeltisMC] Could not prepare log4j configuration: " + e.getMessage());
-            }
+            System.setProperty("log4j2.configurationFile", url.toExternalForm());
             return;
+        }
+    }
+
+    /**
+     * Points Log4j2 at the console-only configuration, for a JVM whose whole job
+     * is to start a second one.
+     *
+     * <p>The only difference from {@link #configureLog4j()} is that there is no
+     * file appender, and that difference is the entire point. A relaunching
+     * process does not exit when its child starts — it waits for the child and
+     * forwards the child's exit status — so anything it opens stays open for the
+     * whole life of the server. Held that long, {@code logs/latest.log} makes
+     * the child's own {@code OnStartupTriggeringPolicy} roll fail in its first
+     * second with {@code Unable to delete file ... being used by another
+     * process} on stderr: a new error, on every start, introduced by the
+     * restart. The parent's lines were rolled out of the file anyway, so writing
+     * them there bought nothing but the lock and a one-line {@code .log.gz}.
+     *
+     * <p>Same pattern as the server's config, so the console output is
+     * indistinguishable from a single-process start. No-op when a configuration
+     * property is already set — an operator's own config still wins — and a
+     * no-op when the console-only resource is absent, in which case
+     * {@link #configureLog4j()} configures the usual one and the normal startup
+     * proceeds unaltered.
+     */
+    public static void configureLog4jForRelaunch() {
+        if (System.getProperty("log4j2.configurationFile") != null) return;
+        if (System.getProperty("log4j.configurationFile") != null) return;
+        var url = VeltisConsole.class.getResource("/log4j2.xml");
+        if (url != null) {
+            System.setProperty("log4j2.configurationFile", url.toExternalForm());
         }
     }
 

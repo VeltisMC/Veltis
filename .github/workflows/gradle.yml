@@ -41,4 +41,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: VeltisMC
-          path: build/distributions/*.jar
+          # Only this one jar. It carries no Minecraft code: the runtime it builds
+          # on a server embeds the widened vanilla classes, so publishing that
+          # would distribute Minecraft code. It is never produced by CI, only on
+          # the machine that runs it.
+          path: build/distributions/veltismc.jar

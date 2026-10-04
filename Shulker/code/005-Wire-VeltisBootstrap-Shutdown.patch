@@ -1,0 +1,26 @@
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -655,6 +655,13 @@
+             this.playerList.removeAll();
+         }
+ 
++        try {
++            Class.forName("org.veltismc.runtime.VeltisBootstrap")
++                .getMethod("onServerStopping")
++                .invoke(null);
++        } catch (Exception e) {
++            LOGGER.warn("VeltisMC shutdown hook failed", e);
++        }
+         LOGGER.info("Saving worlds");
+ 
+         for (ServerLevel level : this.getAllLevels()) {
+@@ -1218,7 +1225,7 @@
+     }
+ 
+     public String getServerModName() {
+-        return "vanilla";
++        return "VeltisMC "+getServerVersion();
+     }
+ 
+     public ServerClockManager clockManager() {

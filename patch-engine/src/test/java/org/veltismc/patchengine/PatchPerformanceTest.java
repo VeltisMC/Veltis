@@ -2,6 +2,7 @@ package org.veltismc.patchengine;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -45,8 +46,8 @@ class PatchPerformanceTest {
     void readsEachTargetOnceAndWritesOnlyWhatChanged() throws Exception {
         var corpus = PatchBench.scaleCorpus(CORPUS);
         try {
-            PatchBench.benchVeltis(corpus, WARMUP_RUNS);
-            var result = PatchBench.benchVeltis(corpus, MEASURED_RUNS);
+            PatchBench.benchVeltis(corpus, WARMUP_RUNS, 4);
+            var result = PatchBench.benchVeltis(corpus, MEASURED_RUNS, 4);
 
             assertTrue(result.verified, "output must be byte-identical across runs"
                 + " and match the expected result (" + result.verifyFailures + " failure(s))");
@@ -64,7 +65,6 @@ class PatchPerformanceTest {
                 "read " + filesRead + " times for " + corpus.targets.size() + " targets");
             // One write per changed file, and nothing else is written.
             assertEquals(filesChanged, filesWritten, "every write must change the file");
-            assertTrue(filesUnchanged >= 0);
             // Every patch is applied exactly once; nothing is silently skipped.
             assertEquals(corpus.patchCount, patchesApplied);
             assertTrue(hunksParsed >= patchesApplied, "each patch has at least one hunk");
@@ -89,42 +89,75 @@ class PatchPerformanceTest {
                 "warm average total " + warmAvgTotal + " ms exceeds ceiling "
                     + MAX_WARM_TOTAL_MS + " ms");
         } finally {
-            PatchBench.deleteRecursively(corpus.workspace.getParent());
+            PatchBench.deleteRecursively(corpus.workspace.projectDirectory());
         }
     }
 
     @Test
-    void reapplyingToAnAlreadyPatchedWorkspaceRewritesNothing() throws Exception {
+    void moreWorkersDoNotChangeTheCounters() throws Exception {
+        var corpus = PatchBench.scaleCorpus(CORPUS);
+        try {
+            var single = PatchBench.benchVeltis(corpus, 2, 1).counters;
+            var parallel = PatchBench.benchVeltis(corpus, 2, 8).counters;
+            for (int i = 0; i < single.size(); i++) {
+                assertEquals(java.util.Arrays.toString(single.get(i)),
+                    java.util.Arrays.toString(parallel.get(i)),
+                    "the plan must not depend on the worker count");
+            }
+            assertEquals(60, single.get(0)[0], "one read per target, however many patches hit it");
+        } finally {
+            PatchBench.deleteRecursively(corpus.workspace.projectDirectory());
+        }
+    }
+
+    @Test
+    void reapplyingToAnAlreadyPatchedWorkspaceFailsWithoutRewritingAnything()
+            throws Exception {
         var corpus = PatchBench.scaleCorpus(Map.of(
             "files", "20", "lines", "60", "patches", "40"));
         try {
-            var stats = new PatchStats();
-            var patches = PatchDiscovery.fromDirectory(corpus.patchesDir, stats);
-            corpus.restore();   // workspace starts empty; pristine inputs are the baseline
-            new RuntimePatchApplier().applyPatches(patches, corpus.workspace, stats);
+            var patches = PatchDiscovery.discover(corpus.patchesRoot, "26.3", new PatchStats());
+            corpus.restore();
+            var first = new VeltisPatcher(1, "26.3").apply(corpus.workspace, patches);
+            assertEquals(corpus.patchCount, first.patchesApplied, "first application");
 
-            assertEquals(corpus.patchCount, stats.patchesApplied, "first application");
+            var before = corpus.hashes();
 
-            // Second application on the untouched result: context no longer matches,
-            // so it must fail loudly rather than silently skip or corrupt files.
-            var second = new PatchStats();
+            // The workspace now holds the patched result, so the same patches no
+            // longer match. That must be a loud failure, not a silent skip - and
+            // not a rewrite either.
             boolean failed = false;
             try {
-                new RuntimePatchApplier().applyPatches(patches, corpus.workspace, second);
+                new VeltisPatcher(4, "26.3").apply(corpus.workspace, patches);
             } catch (PatchEngineException e) {
                 failed = true;
                 assertFalse(e.getMessage() == null || e.getMessage().isBlank());
+                assertTrue(e.getMessage().startsWith("[VeltisPatch] Failed to apply patch"),
+                    e.getMessage());
             }
             assertTrue(failed, "re-applying patched sources must fail, not be skipped");
 
-            // The failed attempt may not have rewritten anything: hashes are unchanged.
-            var hashes = corpus.hashes();
             for (var target : corpus.targets) {
-                assertEquals(corpus.expected.get(target), hashes.normalized().get(target),
+                assertEquals(before.get(target), corpus.hashes().get(target),
                     "target changed during the failed re-application: " + target);
             }
         } finally {
-            PatchBench.deleteRecursively(corpus.workspace.getParent());
+            PatchBench.deleteRecursively(corpus.workspace.projectDirectory());
+        }
+    }
+
+    @Test
+    void aCorpusWithMoreWorkersThanTargetsStillCompletes() throws IOException {
+        // 3 files, 8 workers: the pool is sized from the build setting, but the
+        // work is what it is. This must not deadlock or report 8-way parallelism.
+        var corpus = PatchBench.scaleCorpus(Map.of(
+            "files", "3", "lines", "20", "patches", "3"));
+        try {
+            var result = PatchBench.benchVeltis(corpus, 1, 8);
+            assertTrue(result.verified);
+            assertEquals(3, result.counters.get(0)[2], "all three files changed");
+        } finally {
+            PatchBench.deleteRecursively(corpus.workspace.projectDirectory());
         }
     }
 }

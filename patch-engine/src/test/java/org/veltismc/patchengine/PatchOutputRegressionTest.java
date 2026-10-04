@@ -3,35 +3,40 @@ package org.veltismc.patchengine;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
+import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Byte-for-byte output regression for the patch pipeline.
  *
  * <p>The corpus below exercises the production path end to end: patch files on
- * disk -> {@link PatchDiscovery} -> {@link RuntimePatchApplier} (grouping,
- * ordering, parallel application) -> written source files. It covers:
+ * disk in {@code Shulker/code} -> {@link PatchDiscovery} ->
+ * {@link VeltisPatcher} -> Git applying the set -> written source files. It
+ * covers:
  *
  * <ul>
  *   <li>two patches chained on one source file (deterministic order),</li>
- *   <li>independent files applied in parallel,</li>
+ *   <li>independent files applied in one Git call,</li>
  *   <li>a new-file patch ({@code --- /dev/null}),</li>
- *   <li>CRLF preservation,</li>
- *   <li>the whitespace-tolerant and blank-skipping fallback matchers,</li>
- *   <li>an empty context line (legacy diff generators emit "" instead of " ").</li>
+ *   <li>context that must match the source byte for byte, spacing included,</li>
+ *   <li>an empty context line (legacy diff generators emit "" instead of " "),</li>
+ *   <li>the trailing line break of the file surviving the patch.</li>
  * </ul>
  *
  * <p>All inputs are built in code with explicit line terminators, so a git
  * checkout with {@code autocrlf} cannot change the fixture. Expected outputs
  * were captured from the engine; they must stay identical unless a semantic
  * change is deliberate and reviewed.
+ *
+ * <p>Targets are LF because the decompiled source is, and because
+ * {@code .gitattributes} pins patch files to {@code eol=lf}. Under that
+ * arrangement Git's exact matching is what keeps the output reproducible, and
+ * {@link #aCrlfTargetIsRejectedRatherThanSilentlyRewritten} records the cost of
+ * exactness for the case it does not cover.
  */
 class PatchOutputRegressionTest {
 
@@ -67,15 +72,18 @@ class PatchOutputRegressionTest {
         "}",
         "");
 
-    /** Built LF, converted to CRLF before writing - line endings must survive patching. */
-    static final String CRLF = String.join("\n",
+    /**
+     * LF, like every other target, and holding the blank line that
+     * {@link #BLANK_PATCH} addresses in the legacy empty-context form.
+     */
+    static final String BLANK = String.join("\n",
         "package demo;",
         "",
-        "class Crlf {",
+        "class Blank {",
         "    int p = 1;",
         "    int q = 2;",
         "}",
-        "").replace("\n", "\r\n");
+        "");
 
     // Two patches on Alpha: applied in canonical name order (Alpha-first < Alpha-second).
     static final String ALPHA_PATCH_1 = String.join("\n",
@@ -105,27 +113,39 @@ class PatchOutputRegressionTest {
         " }",
         "");
 
-    /** Context line has single spacing, file has double - exercises the whitespace fallback. */
+    /**
+     * Context must match the source byte for byte, spacing included.
+     *
+     * <p>The source genuinely has a double space there and the patch repeats it.
+     * A patch that re-spaced the line would be editing a line it does not claim
+     * to change, so Git refuses it instead of reformatting the file.
+     */
     static final String BRAVO_PATCH = String.join("\n",
         "--- a/src/beta/Bravo.java",
         "+++ b/src/beta/Bravo.java",
         "@@ -3,5 +3,6 @@",
         " class Bravo {",
         "     int x = 1;",
-        "     int y = 2;",
+        "     int  y = 2;",
         "+    // trailing context",
         "     int z = 3;",
         " }",
         "");
 
-    /** Empty context line ("") plus blank-skipping fallback against the CRLF file. */
-    static final String CRLF_PATCH = String.join("\n",
-        "--- a/src/Crlf.java",
-        "+++ b/src/Crlf.java",
-        "@@ -3,5 +3,5 @@",
-        " class Crlf {",
-        "     int p = 1;",
+    /**
+     * An empty context line — {@code ""} where a modern generator writes
+     * {@code " "} — against a genuinely blank source line.
+     *
+     * <p>Legacy generators emit the empty form, Git accepts it, and a patch
+     * written that way must still apply.
+     */
+    static final String BLANK_PATCH = String.join("\n",
+        "--- a/src/Blank.java",
+        "+++ b/src/Blank.java",
+        "@@ -2,5 +2,5 @@",
         "",
+        " class Blank {",
+        "     int p = 1;",
         "-    int q = 2;",
         "+    int q = 22;",
         " }",
@@ -165,19 +185,22 @@ class PatchOutputRegressionTest {
         "",
         "class Bravo {",
         "    int x = 1;",
-        "    int y = 2;",
+        "    int  y = 2;",
         "    // trailing context",
         "    int z = 3;",
         "}",
         "");
 
-    static final String EXPECTED_CRLF = ("package demo;\r\n"
-        + "\r\n"
-        + "class Crlf {\r\n"
-        + "    int p = 1;\r\n"
-        + "\r\n"
-        + "    int q = 22;\r\n"
-        + "}");
+    // The file ends with a newline, so the trailing line break is part of the
+    // content and patching must not eat it.
+    static final String EXPECTED_BLANK = String.join("\n",
+        "package demo;",
+        "",
+        "class Blank {",
+        "    int p = 1;",
+        "    int q = 22;",
+        "}",
+        "");
 
     static final String EXPECTED_ZULU = String.join("\n",
         "class ZuluNew {",
@@ -186,83 +209,90 @@ class PatchOutputRegressionTest {
         "");
 
     // ------------------------------------------------------------------
-    // Test
+    // Tests
     // ------------------------------------------------------------------
 
     @Test
-    void patchedOutputMatchesGoldenFiles() throws Exception {
-        var first = runPipeline();   // fresh workspace
-        var second = runPipeline();  // fresh workspace again - determinism
+    void patchedOutputMatchesGoldenFiles() {
+        var fixture = corpus();
+        var stats = fixture.applyReporting(4);
+        assertEquals(5, stats.patchesApplied, "discovery must find all five patches");
 
-        for (var entry : first.entrySet()) {
-            var a = entry.getValue();
-            var b = second.get(entry.getKey());
-            assertArrayEquals(a.getBytes(StandardCharsets.UTF_8),
-                b.getBytes(StandardCharsets.UTF_8),
-                "non-deterministic output for " + entry.getKey());
+        var tree = fixture.patchedTree();
+        assertEquals(EXPECTED_ALPHA, tree.get("src/Alpha.java"));
+        assertEquals(EXPECTED_BRAVO, tree.get("src/beta/Bravo.java"));
+        assertEquals(EXPECTED_BLANK, tree.get("src/Blank.java"));
+        assertEquals(EXPECTED_ZULU, tree.get("src/ZuluNew.java"));
+        assertEquals(4, tree.size(), "unexpected output file count");
+    }
+
+    @Test
+    void everyWorkerCountProducesIdenticalBytes() {
+        Map<String, String> reference = null;
+        for (var workers : new int[] {1, 4, 8}) {
+            var fixture = corpus();
+            fixture.apply(workers);
+            var tree = fixture.patchedTree();
+            if (reference == null) {
+                reference = tree;
+            } else {
+                assertEquals(reference, tree, "output differs with " + workers + " workers");
+            }
         }
+    }
 
-        assertEquals(EXPECTED_ALPHA, first.get("src/Alpha.java"));
-        assertEquals(EXPECTED_BRAVO, first.get("src/beta/Bravo.java"));
-        assertEquals(EXPECTED_CRLF, first.get("src/Crlf.java"));
-        assertEquals(EXPECTED_ZULU, first.get("src/ZuluNew.java"));
-        assertEquals(4, first.size(), "unexpected output file count");
+    private TestWorkspace corpus() {
+        return TestWorkspace.create(tmp.resolve("regression-" + System.nanoTime()))
+            .source("src/Alpha.java", ALPHA)
+            .source("src/beta/Bravo.java", BRAVO)
+            .source("src/Blank.java", BLANK)
+            .patch(PatchCategory.CODE, "001-Alpha-first.patch", ALPHA_PATCH_1)
+            .patch(PatchCategory.CODE, "002-Bravo-strategy.patch", BRAVO_PATCH)
+            .patch(PatchCategory.CODE, "003-Alpha-second.patch", ALPHA_PATCH_2)
+            .patch(PatchCategory.CODE, "004-Zulu-new.patch", ZULU_PATCH)
+            .patch(PatchCategory.CODE, "005-Blank-empty-context.patch", BLANK_PATCH);
     }
 
     /**
-     * Writes pristine sources + patch files, then runs the production
-     * discovery + application path. Returns relative path -> exact file content.
+     * The one case exact matching does not cover, pinned so the trade is visible.
+     *
+     * <p>Git is run with {@code core.autocrlf=false} so the patched bytes cannot
+     * depend on whose machine ran the build, and at those settings an LF patch
+     * does not match a CRLF target. That costs the tolerance the replaced applier
+     * had; what it buys is that such a target is refused rather than quietly
+     * rewritten to the other convention, which would change every line of a file
+     * a developer then compiled.
+     *
+     * <p>It does not arise in production: the decompiled source is LF and
+     * {@code .gitattributes} pins patch files to {@code eol=lf}.
      */
-    private java.util.Map<String, String> runPipeline() throws Exception {
-        var root = Files.createTempDirectory(tmp, "regression-");
-        var pristine = root.resolve("pristine");
-        var workspace = root.resolve("workspace");
-        var patchesDir = root.resolve("patches");
-        Files.createDirectories(workspace);
-        Files.createDirectories(patchesDir);
+    @Test
+    void aCrlfTargetIsRejectedRatherThanSilentlyRewritten() {
+        var crlf = String.join("\r\n",
+            "package demo;",
+            "",
+            "class Crlf {",
+            "    int q = 2;",
+            "}",
+            "");
+        var fixture = TestWorkspace.create(tmp.resolve("crlf-target"))
+            .source("src/Crlf.java", crlf)
+            .patch(PatchCategory.CODE, "001-Crlf.patch", String.join("\n",
+                "--- a/src/Crlf.java",
+                "+++ b/src/Crlf.java",
+                "@@ -3,3 +3,3 @@",
+                " class Crlf {",
+                "-    int q = 2;",
+                "+    int q = 22;",
+                " }",
+                ""));
 
-        write(pristine.resolve("src").resolve("Alpha.java"), ALPHA);
-        write(pristine.resolve("src").resolve("beta").resolve("Bravo.java"), BRAVO);
-        write(pristine.resolve("src").resolve("Crlf.java"), CRLF);
-        Files.createDirectories(workspace.resolve("src").resolve("beta"));
-        Files.copy(pristine.resolve("src").resolve("Alpha.java"),
-            workspace.resolve("src").resolve("Alpha.java"));
-        Files.copy(pristine.resolve("src").resolve("beta").resolve("Bravo.java"),
-            workspace.resolve("src").resolve("beta").resolve("Bravo.java"));
-        Files.copy(pristine.resolve("src").resolve("Crlf.java"),
-            workspace.resolve("src").resolve("Crlf.java"));
+        var failure = assertThrows(PatchEngineException.class, () -> fixture.apply(1));
+        var message = failure.getMessage();
+        assertTrue(message.contains("line ending"), message);
+        assertTrue(message.contains("Patch: 001-Crlf.patch"), message);
 
-        write(patchesDir.resolve("001-Alpha-first.patch"), ALPHA_PATCH_1);
-        write(patchesDir.resolve("003-Alpha-second.patch"), ALPHA_PATCH_2);
-        write(patchesDir.resolve("002-Bravo-strategy.patch"), BRAVO_PATCH);
-        write(patchesDir.resolve("005-Crlf-empty-context.patch"), CRLF_PATCH);
-        write(patchesDir.resolve("004-Zulu-new.patch"), ZULU_PATCH);
-
-        var stats = new PatchStats();
-        var patches = PatchDiscovery.fromDirectory(patchesDir, stats);
-        assertEquals(5, patches.size(), "discovery must find all five patches");
-
-        var targets = new RuntimePatchApplier().applyPatches(patches, workspace, stats);
-        assertEquals(List.of(
-            "src/Alpha.java",
-            "src/beta/Bravo.java",
-            "src/Crlf.java",
-            "src/ZuluNew.java"), targets,
-            "groups must be ordered by first patch and never merge distinct files");
-
-        var result = new java.util.TreeMap<String, String>();
-        try (var walk = Files.walk(workspace)) {
-            for (var file : walk.filter(Files::isRegularFile).toList()) {
-                var rel = workspace.relativize(file).toString().replace('\\', '/');
-                result.put(rel, Files.readString(file, StandardCharsets.UTF_8));
-            }
-        }
-        assertTrue(result.containsKey("src/ZuluNew.java"), "new file must be created");
-        return result;
-    }
-
-    private static void write(Path file, String content) throws Exception {
-        Files.createDirectories(file.getParent());
-        Files.writeString(file, content, StandardCharsets.UTF_8);
+        assertEquals(crlf, fixture.patched("src/Crlf.java"),
+            "a target Git refuses must be left exactly as it was");
     }
 }
