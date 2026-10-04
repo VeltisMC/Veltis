@@ -1,0 +1,43 @@
+diff --git a/net/minecraft/world/level/block/entity/HopperBlockEntity.java b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
+--- a/net/minecraft/world/level/block/entity/HopperBlockEntity.java
++++ b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
+@@ -218,7 +218,26 @@
+     public static boolean suckInItems(final Level level, final Hopper hopper) {
+         BlockPos blockPos = BlockPos.containing(hopper.getLevelX(), hopper.getLevelY() + 1.0, hopper.getLevelZ());
+         BlockState blockState = level.getBlockState(blockPos);
+-        Container container = getSourceContainer(level, hopper, blockPos, blockState);
++        // Veltis: this is vanilla's own blocked test, hoisted from the branch
++        // below. It is a precomputed per-BlockState boolean plus one tag lookup
++        // (see BlockBehaviour's state cache), so computing it early costs
++        // nothing and it now decides both questions the method asks. The
++        // isGridAligned() term is what keeps the hopper minecart - whose
++        // isGridAligned() is false - on exactly vanilla's path.
++        boolean blocked = hopper.isGridAligned()
++            && blockState.isCollisionShapeFullBlock(level, blockPos)
++            && !blockState.is(BlockTags.DOES_NOT_BLOCK_HOPPERS);
++        // Veltis: a solid block above can still be a block-state container -
++        // a barrel is a full cube - so that lookup always runs and barrel
++        // transfers are untouched. What is skipped when blocked is the entity
++        // half of getSourceContainer: an AABB allocation plus an entity query
++        // over the whole block above, looking for a container entity that
++        // cannot be standing inside solid blocks. Vanilla guarded its item
++        // search with this same test but ran the container-entity probe
++        // first, unguarded, on every hopper tick.
++        Container container = blocked
++            ? getBlockContainer(level, blockPos, blockState)
++            : getSourceContainer(level, hopper, blockPos, blockState);
+         if (container != null) {
+             Direction direction = Direction.DOWN;
+ 
+@@ -230,10 +249,7 @@
+ 
+             return false;
+         } else {
+-            boolean isBlocked = hopper.isGridAligned()
+-                && blockState.isCollisionShapeFullBlock(level, blockPos)
+-                && !blockState.is(BlockTags.DOES_NOT_BLOCK_HOPPERS);
+-            if (!isBlocked) {
++            if (!blocked) {
+                 for (ItemEntity entity : getItemsAtAndAbove(level, hopper)) {
+                     if (addItem(hopper, entity)) {
+                         return true;

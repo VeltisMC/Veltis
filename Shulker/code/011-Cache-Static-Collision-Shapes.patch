@@ -1,0 +1,22 @@
+diff --git a/net/minecraft/world/level/block/state/BlockBehaviour.java b/net/minecraft/world/level/block/state/BlockBehaviour.java
+--- a/net/minecraft/world/level/block/state/BlockBehaviour.java
++++ b/net/minecraft/world/level/block/state/BlockBehaviour.java
+@@ -685,6 +685,18 @@
+         }
+ 
+         public VoxelShape getCollisionShape(final BlockGetter level, final BlockPos pos, final CollisionContext context) {
++            // Veltis: static voxel collision cache. A state with a vanilla cache
++            // (hasDynamicShape() == false) has a position-independent collision
++            // shape, and no non-dynamic block consults this context except
++            // LiquidBlock (alwaysCollideWithFluid / canStandOnFluid / mob liquid
++            // shape). Liquid states always carry a non-empty FluidState, so the
++            // fluid test keeps them on vanilla's context-aware path; every other
++            // cached state returns the per-state shape directly instead of
++            // re-dispatching through Block.getCollisionShape on each query.
++            if (this.cache != null && this.getFluidState().isEmpty()) {
++                return this.cache.collisionShape;
++            }
++
+             return this.getBlock().getCollisionShape(this.asState(), level, pos, context);
+         }
+ 

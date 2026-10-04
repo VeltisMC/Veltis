@@ -1,0 +1,18 @@
+diff --git a/net/minecraft/world/level/block/state/BlockBehaviour.java b/net/minecraft/world/level/block/state/BlockBehaviour.java
+--- a/net/minecraft/world/level/block/state/BlockBehaviour.java
++++ b/net/minecraft/world/level/block/state/BlockBehaviour.java
+@@ -127,10 +127,10 @@
+     }
+ 
+     public boolean isPathfindable(final BlockState state, final PathComputationType type) {
+-        return switch (<unrepresentable>.$SwitchMap$net$minecraft$world$level$pathfinder$PathComputationType[type.ordinal()]) {
+-            case 1 -> !state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+-            case 2 -> state.getFluidState().is(FluidTags.WATER);
+-            case 3 -> !state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
++        return switch (type) {
++            case LAND -> !state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
++            case WATER -> state.getFluidState().is(FluidTags.WATER);
++            case AIR -> !state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+             default -> false;
+         };
+     }
