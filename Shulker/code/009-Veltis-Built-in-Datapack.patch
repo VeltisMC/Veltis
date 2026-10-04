@@ -1,0 +1,52 @@
+diff --git a/net/minecraft/server/packs/repository/ServerPacksSource.java b/net/minecraft/server/packs/repository/ServerPacksSource.java
+--- a/net/minecraft/server/packs/repository/ServerPacksSource.java
++++ b/net/minecraft/server/packs/repository/ServerPacksSource.java
+@@ -3,6 +3,8 @@
+ import com.google.common.annotations.VisibleForTesting;
+ import java.nio.file.Path;
+ import java.util.Optional;
++import java.util.function.Consumer;
++import net.minecraft.ChatFormatting;
+ import net.minecraft.SharedConstants;
+ import net.minecraft.network.chat.Component;
+ import net.minecraft.resources.Identifier;
+@@ -35,6 +37,15 @@
+     public static PackSelectionConfig FEATURE_SELECTION_CONFIG = new PackSelectionConfig(false, Pack.Position.TOP, false);
+     public static Identifier PACKS_DIR = Identifier.withDefaultNamespace("datapacks");
+ 
++    // Veltis: Built-in Datapack Metadata & Config
++    public static PackSource VELTIS_PACK_SOURCE = PackSource.create(
++        name -> Component.literal("veltis").withStyle(ChatFormatting.DARK_PURPLE), true
++    );
++    public static PackLocationInfo VELTIS_PACK_INFO = new PackLocationInfo(
++        "veltis", Component.literal("Veltis"), VELTIS_PACK_SOURCE, Optional.empty()
++    );
++    public static PackSelectionConfig VELTIS_SELECTION_CONFIG = new PackSelectionConfig(true, Pack.Position.TOP, false);
++
+     public ServerPacksSource(final DirectoryValidator validator) {
+         super(PackType.SERVER_DATA, createVanillaPackSource(), PACKS_DIR, validator);
+     }
+@@ -48,6 +59,7 @@
+         return new VanillaPackResourcesBuilder()
+             .setMetadata(BUILT_IN_METADATA)
+             .exposeNamespace("minecraft")
++            .exposeNamespace("veltis")
+             .applyDevelopmentConfig()
+             .pushJarResources()
+             .build(VANILLA_PACK_INFO);
+@@ -68,6 +80,15 @@
+         return Pack.readMetaAndCreate(createBuiltInPackLocation(id, name), resources, PackType.SERVER_DATA, FEATURE_SELECTION_CONFIG);
+     }
+ 
++@Override
++    public void loadPacks(final Consumer<Pack> consumer) {
++        super.loadPacks(consumer);
++        Pack veltisPack = Pack.readMetaAndCreate(VELTIS_PACK_INFO, this.getVanillaPack().asResourcesSupplier(), PackType.SERVER_DATA, VELTIS_SELECTION_CONFIG);
++        if (veltisPack != null) {
++            consumer.accept(veltisPack);
++        }
++    }
++
+     public static PackRepository createPackRepository(final Path datapackDir, final DirectoryValidator validator) {
+         return new PackRepository(new ServerPacksSource(validator), new FolderRepositorySource(datapackDir, PackType.SERVER_DATA, PackSource.WORLD, validator));
+     }
