@@ -45,7 +45,7 @@ public final class PipelineRunner {
                   downloadLibraries      fetch and verify Mojang's declared libraries
                   widenServerJarAccess   widen access in the verified classes jar
                   decompileMinecraft     decompile the widened jar into the pristine tree
-                  applyVeltisPatches     mirror source/ and apply patches/{code,data,modules}
+                  applyVeltisPatches     mirror source/ and apply Shulker/{code,data,modules}
                   prepareVeltisRuntime   run the whole chain and record the runtime marker
                   verifyVeltisRuntime    load the runtime classpath and prove it is the patched one
                   rebuildVeltisPatches   regenerate the patch set from patched/
@@ -70,10 +70,10 @@ public final class PipelineRunner {
                 case "decompileMinecraft" -> decompileMinecraft(workspace, version);
                 case "applyVeltisPatches" -> applyVeltisPatches(workspace, version, workers);
                 case "prepareVeltisRuntime" -> prepareVeltisRuntime(workspace, version,
-                    VeltisRuntime.fromDirectory(projectDir, version, workspace.patchesDirectory(),
+                    VeltisRuntime.fromDirectory(projectDir, version, workspace.shulkerDirectory(),
                         workers, release));
                 case "verifyVeltisRuntime" -> verifyVeltisRuntime(
-                    VeltisRuntime.fromDirectory(projectDir, version, workspace.patchesDirectory(),
+                    VeltisRuntime.fromDirectory(projectDir, version, workspace.shulkerDirectory(),
                         workers, release));
                 case "rebuildVeltisPatches" -> rebuildVeltisPatches(workspace, version);
                 case "cleanVeltisPatches" -> cleanVeltisPatches(workspace);
@@ -235,11 +235,11 @@ public final class PipelineRunner {
                                            int workers) {
         long mirrorStarted = System.nanoTime();
         var stats = new PatchStats();
-        var patches = PatchDiscovery.discover(workspace.patchesDirectory(), version.toString(),
+        var patches = PatchDiscovery.discover(workspace.shulkerDirectory(), version.toString(),
             stats);
         if (patches.isEmpty()) {
             LOG.warn("[Veltis] No patches found in {}; the build will be unpatched",
-                workspace.patchesDirectory());
+                workspace.shulkerDirectory());
         }
 
         var mirrored = VeltisPatcher.mirrorPristineSource(
@@ -248,19 +248,15 @@ public final class PipelineRunner {
             mirrored, mirrored == 1 ? "" : "s", workspace.patchedDirectory(),
             VeltisConsole.formatDuration(System.nanoTime() - mirrorStarted));
 
-        long patchStarted = System.nanoTime();
-        var result = new VeltisPatcher(workers, version.toString()).apply(workspace, patches);
-        LOG.info("[Veltis] Applied {} patch{} to {} file{} ({} of {} changed) in {}",
-            patches.size(), patches.size() == 1 ? "" : "es",
-            mirrored, mirrored == 1 ? "" : "s",
-            result.filesChanged, result.filesRead,
-            VeltisConsole.formatDuration(System.nanoTime() - patchStarted));
+        // The apply phase reports one line on success, from VeltisPatcher itself:
+        // the kidnapping message. No second summary is printed here.
+        new VeltisPatcher(workers, version.toString()).apply(workspace, patches);
     }
 
     /** Regenerates the patch set from the current contents of the patched tree. */
     private static void rebuildVeltisPatches(VeltisWorkspace workspace, MinecraftVersion version) {
         var started = System.nanoTime();
-        var result = new PatchRebuilder().rebuild(workspace, workspace.patchesDirectory(),
+        var result = new PatchRebuilder().rebuild(workspace, workspace.shulkerDirectory(),
             version.toString());
         LOG.info("[Veltis] Patch set rebuilt: {} regenerated, {} created, {} removed,"
                 + " {} file{} covered ({})",

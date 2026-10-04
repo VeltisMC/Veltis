@@ -109,14 +109,14 @@ class PatchSetTest {
 
     @Test
     void anEmptyPatchDirectoryIsALegitimateSet(@TempDir Path tmp) throws Exception {
-        // A patches/ directory that exists but holds nothing is a real state — a
+        // A Shulker/ directory that exists but holds nothing is a real state — a
         // project that has not written its first patch yet — and it must not be
-        // confused with a patches/ directory that is not there at all. The second
+        // confused with a Shulker/ directory that is not there at all. The second
         // is the dangerous one: it is what a wrong working directory, a missing
         // jar resource or a bad --patches argument looks like, and the
         // difference between "no patches" and "no patch set" is the difference
         // between a VeltisMC server and a vanilla one wearing its name.
-        var empty = tmp.resolve("empty").resolve("patches");
+        var empty = tmp.resolve("empty").resolve("Shulker");
         Files.createDirectories(empty);
         assertEquals(List.of(), PatchSet.fromDirectory(empty, TestWorkspace.VERSION_ID,
                 new PatchStats()),

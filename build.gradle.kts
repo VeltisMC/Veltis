@@ -62,7 +62,7 @@ val patchedDir = workspaceDir.dir("patched")
 val classesDir = workspaceDir.dir("classes")
 val resourcesDir = workspaceDir.dir("resources")
 val buildStateDir = workspaceDir.dir("build")
-val patchesDir = layout.projectDirectory.dir("patches")
+val patchesDir = layout.projectDirectory.dir("Shulker")
 
 val vanillaServerJar = vanillaDir.file("server.jar")
 val vanillaClassesJar = vanillaDir.file("server-classes.jar")
@@ -162,6 +162,13 @@ repositories {
 
 dependencies {
     pipelineClasspath(project(":patch-engine"))
+    // The decompiler the pipeline runs to produce `source/`. Named here rather
+    // than exported by `:patch-engine`: that module declares Vineflower
+    // `compileOnly`, so it cannot reach a runtime classpath, an installed jar or
+    // `libraries/` — and this is the one classpath that actually needs it.
+    // Removing it here breaks `decompileMinecraft` (and therefore `applyPatches`)
+    // with a `NoClassDefFoundError` on first use of the marker's options.
+    pipelineClasspath("org.vineflower:vineflower:1.12.0")
 }
 
 tasks.jar {
@@ -533,7 +540,7 @@ val decompileMinecraft = pipelineStep(
 
 val applyVeltisPatches = pipelineStep(
     "applyVeltisPatches", "applyVeltisPatches",
-    "Mirrors the decompiled source and applies patches/{code,data,modules}"
+    "Mirrors the decompiled source and applies Shulker/{code,data,modules}"
 ).also {
     it.configure {
         inputs.dir(patchesDir).withPropertyName("patchSet")
@@ -548,7 +555,7 @@ val applyVeltisPatches = pipelineStep(
 
 val rebuildVeltisPatches = pipelineStep(
     "rebuildVeltisPatches", "rebuildVeltisPatches",
-    "Regenerates patches/ from the current contents of the patched workspace"
+    "Regenerates Shulker/ from the current contents of the patched workspace"
 ).also {
     it.configure {
         // Deliberately NOT dependsOn(applyVeltisPatches). The rebuild workflow is
@@ -561,7 +568,7 @@ val rebuildVeltisPatches = pipelineStep(
 
         // patched/ is hand-edited between runs, so its contents cannot be tracked
         // as an input: Gradle would either miss a change or consider the task up to
-        // date while patches/ is stale. Reading the tree live and always running is
+        // date while Shulker/ is stale. Reading the tree live and always running is
         // the only honest description of what this task does.
         outputs.upToDateWhen { false }
         outputs.dir(patchesDir).withPropertyName("regeneratedPatches")
@@ -603,13 +610,13 @@ val cleanVeltisPatches = pipelineStep(
  */
 tasks.register("applyPatches") {
     group = "minecraft"
-    description = "Mirrors the pristine decompiled source and applies patches/{code,data,modules}"
+    description = "Mirrors the pristine decompiled source and applies Shulker/{code,data,modules}"
     dependsOn(applyVeltisPatches)
 }
 
 tasks.register("rebuildPatches") {
     group = "minecraft"
-    description = "Turns edited files under patched/ back into patches/, renumbered contiguously"
+    description = "Turns edited files under patched/ back into Shulker/, renumbered contiguously"
     dependsOn(rebuildVeltisPatches)
 }
 
@@ -707,7 +714,7 @@ val verifyVeltisRuntime = pipelineStep(
  * <p>This is the one thing that makes `java -jar server.jar` a complete
  * distribution: the patch set that turns a downloaded vanilla jar into a
  * VeltisMC server travels inside the launcher, under a name that says which
- * Minecraft version it addresses. An operator never has a `patches/` directory,
+ * Minecraft version it addresses. An operator never has a `Shulker/` directory,
  * a Git checkout, a decompiler or a compiler, and never needs one.
  *
  * <p>Generated rather than assembled by the packaging script, so the file that

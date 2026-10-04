@@ -13,35 +13,29 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.ThreadFactory;
 
 /**
  * Applies the patch set to the patched workspace.
  *
- * <p>Two things define this class, and both exist because a patch set with
- * dozens of files is still applied correctly on a laptop and on CI.
+ * <p><b>Git applies the set; this class orders and reports it.</b> The set is
+ * handed to {@link GitPatchEngine} as a whole and in discovery order —
+ * {@code code}, then {@code data}, then {@code modules}, by file name inside
+ * each — and Git decides whether every patch lands and what bytes come out.
+ * Nothing here re-implements hunk matching: a patch that Git rejects is
+ * reported, not worked around, so the development patch set cannot drift into
+ * being understood by two different engines that disagree.
  *
- * <p><b>Work is grouped by target file, not by patch.</b> Patches are collected
- * into a {@link LinkedHashMap} keyed by the file they address, so the chain for
- * a file is the patches that touch it, in the order discovery produced them:
- * {@code code}, then {@code data}, then {@code modules}, and by file name inside
- * each. One task per target means two patches for the same file can never run at
- * the same time — the ordering guarantee is structural, not a lock. Distinct
- * targets are genuinely independent and run in parallel.
+ * <p><b>Failures are reported once, by the patch that caused them.</b> The
+ * engine replays a rejected set to find the first patch that does not apply and
+ * renders it as a {@link PatchFailure}, which names the patch, the category, the
+ * target, the line and Git's reason. Because the set is applied as a unit, a
+ * failure leaves the workspace exactly as the pristine mirror made it — the next
+ * run starts from the same state as a fresh clone.
  *
- * <p><b>The pool is fixed and named.</b> A plain platform-thread pool of exactly
- * {@code workers} threads, never {@link java.util.concurrent.ForkJoinPool#commonPool()}
- * (whose size is a function of the machine, and which is shared with unrelated
- * library code). The thread count is a build setting, so a build either has the
- * same resources everywhere or fails the same way everywhere.
- *
- * <p>Results are collected in group order, not completion order, so a failure is
- * always reported as the earliest failing target rather than whichever worker
- * happened to lose the race. That is what makes an error message reproducible.
+ * <p><b>The worker count does not reach the result.</b> It is kept as a build
+ * setting and reported by {@link #workers()}, but Git takes the set in one call,
+ * so there is no pool to size and no completion order to race on: two runs of
+ * the same set on the same mirror produce the same bytes whatever the count.
  */
 public final class VeltisPatcher {
 
@@ -51,7 +45,8 @@ public final class VeltisPatcher {
         org.apache.logging.log4j.LogManager.getLogger(VeltisPatcher.class);
 
     /**
-     * @param workers         parallel targets; values below 1 are clamped to 1
+     * @param workers         reported build setting; application itself is a
+     *                        single Git call, so this cannot change the outcome
      * @param minecraftVersion reported in every failure message
      */
     public VeltisPatcher(int workers, String minecraftVersion) {
@@ -66,9 +61,10 @@ public final class VeltisPatcher {
     /**
      * Groups the patch set by target file, in first-seen order.
      *
-     * <p>A patch that addresses several files contributes to each of them; a
-     * patch is one task per file it touches, and each of those applications is
-     * independent because the files are independent.
+     * <p>A patch that addresses several files contributes to each of them, so the
+     * map answers "which patches touch this file, in what order" — the question
+     * the rebuild and any per-file tooling ask. It is a property of the set, not
+     * of how the set is applied: application no longer runs these groups.
      */
     public static Map<String, List<UnifiedDiffPatcher.ChainEntry>> groupByTarget(
             List<VeltisPatch> patches) {
@@ -99,40 +95,18 @@ public final class VeltisPatcher {
         }
         var patchedRoot = workspace.patchedDirectory();
 
-        var groups = groupByTarget(patches);
+        // Git takes the whole set in one call, in the order discovery produced
+        // it, so application is neither grouped by target nor spread across the
+        // pool. The worker count therefore cannot reach the result — there is no
+        // ordering left for it to perturb.
+        total.merge(new GitPatchEngine(minecraftVersion).apply(patchedRoot, patches));
 
-        // Effective parallelism is capped by the work: asking for 8 workers on a
-        // patch set with 2 targets costs nothing but must not look like it ran
-        // 8-wide in the timings.
-        int threads = Math.min(workers, groups.size());
-        log.info("[Veltis] Applying {} patch{} across {} file{} using {} worker{}",
-            patches.size(), patches.size() == 1 ? "" : "es",
-            groups.size(), groups.size() == 1 ? "" : "s",
-            threads, threads == 1 ? "" : "s");
-
-        var executor = Executors.newFixedThreadPool(threads, workerFactory());
-        try {
-            var futures = new ArrayList<Future<PatchStats>>(groups.size());
-            for (var entry : groups.entrySet()) {
-                futures.add(executor.submit(() -> applyGroup(entry.getKey(), entry.getValue(),
-                    patchedRoot)));
-            }
-            // Collected in group order, so the first failure is always the same
-            // failure on every run, whatever the worker count.
-            for (var future : futures) {
-                total.merge(await(future));
-            }
-        } finally {
-            executor.shutdownNow();
-        }
+        // Reached only when every patch applied: a failure throws before here, so
+        // the count is the number of patches that actually landed. This is the
+        // one line the apply phase reports, worded exactly.
+        log.info("[Veltis] Vanilla code has been kidnapped successfully and replaced with"
+            + " {} Veltis Patches!!!", patches.size());
         return total;
-    }
-
-    private PatchStats applyGroup(String targetKey, List<UnifiedDiffPatcher.ChainEntry> chain,
-                                  Path patchedRoot) {
-        var stats = new PatchStats();
-        new UnifiedDiffPatcher(minecraftVersion).applyTarget(targetKey, chain, patchedRoot, stats);
-        return stats;
     }
 
     /**
@@ -192,43 +166,6 @@ public final class VeltisPatcher {
                 "[VeltisPatch] Failed to record the applied patches in " + file
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
-    }
-
-    /**
-     * Waits for one group. A failure from the group is rethrown as-is: it is
-     * already a fully rendered {@code [VeltisPatch]} report, and wrapping it
-     * would bury the part a developer needs.
-     */
-    private static PatchStats await(Future<PatchStats> future) {
-        try {
-            return future.get();
-        } catch (ExecutionException e) {
-            if (e.getCause() instanceof PatchEngineException failure) {
-                throw failure;
-            }
-            throw new PatchEngineException(
-                "[VeltisPatch] Failed to apply patch"
-                    + "\n  Target: <unknown>"
-                    + "\n  Reason: " + MojangMetadata.rootMessage(e.getCause()),
-                e.getCause());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new PatchEngineException(
-                "[VeltisPatch] Patch application was interrupted; the build was stopped", e);
-        }
-    }
-
-    private static ThreadFactory workerFactory() {
-        return Thread.ofPlatform()
-            .name("veltis-patch-", 0)   // veltis-patch-0, veltis-patch-1, ...
-            .daemon(false)
-            .uncaughtExceptionHandler((thread, error) ->
-                // Nothing should reach here: applyGroup reports through the
-                // future. If something does, name it instead of letting the JVM
-                // print a bare stack trace.
-                System.err.println("[Veltis] Patch worker " + thread.getName() + " died: "
-                    + MojangMetadata.rootMessage(error)))
-            .factory();
     }
 
     // ------------------------------------------------------------------

@@ -10,7 +10,7 @@ import java.util.List;
  * Finds the patch set for a run, in a fixed and reproducible order.
  *
  * <p>Exactly three directories are consulted, in category order:
- * {@code patches/code}, {@code patches/data}, {@code patches/modules}. Within a
+ * {@code Shulker/code}, {@code Shulker/data}, {@code Shulker/modules}. Within a
  * directory, patch files are applied in file-name order. There is no discovery
  * by classpath scan, no search of well-known locations, and no
  * numbered-name-renaming: the file name is the patch's identity, so
@@ -22,14 +22,14 @@ import java.util.List;
  * sorted explicitly before it is returned.
  *
  * <p>A missing category directory is not an error — a project may legitimately
- * have no data patches. A missing {@code patches/} root is an error, because that
+ * have no data patches. A missing {@code Shulker/} root is an error, because that
  * means the build was pointed at the wrong directory and silently applying
  * nothing would produce a server that is quietly just vanilla.
  */
 public final class PatchDiscovery {
 
     /** Directory under the project root that holds the patch set. */
-    public static final String PATCHES_DIRECTORY = "patches";
+    public static final String SHULKER_DIRECTORY = "Shulker";
 
     private PatchDiscovery() {
     }
@@ -42,7 +42,7 @@ public final class PatchDiscovery {
      * That also means a malformed patch fails here, before a single source file
      * has been written.
      *
-     * @param patchesRoot      the {@code patches/} directory
+     * @param patchesRoot      the {@code Shulker/} directory
      * @param minecraftVersion reported in any failure
      * @return patches in application order: code, then data, then modules
      */
@@ -53,7 +53,7 @@ public final class PatchDiscovery {
             throw new PatchEngineException(
                 "[VeltisPatch] No patch directory at " + patchesRoot
                     + "\n  Reason: the patch set is missing, so the build would silently"
-                    + " produce an unpatched server; expected a 'patches' directory"
+                    + " produce an unpatched server; expected a 'Shulker' directory"
                     + " holding 'code', 'data' and/or 'modules'");
         }
 
@@ -80,9 +80,9 @@ public final class PatchDiscovery {
         return List.copyOf(patches);
     }
 
-    /** Discovers the patch set under {@code projectDirectory/patches}. */
+    /** Discovers the patch set under {@code projectDirectory/Shulker}. */
     public static List<VeltisPatch> discover(Path projectDirectory, String minecraftVersion) {
-        return discover(projectDirectory.resolve(PATCHES_DIRECTORY), minecraftVersion,
+        return discover(projectDirectory.resolve(SHULKER_DIRECTORY), minecraftVersion,
             new PatchStats());
     }
 

@@ -25,15 +25,16 @@ no Gradle installation is required — the wrapper downloads the right one.
 | Requirement | Why |
 |---|---|
 | JDK 26 on `PATH` (or `JAVA_HOME`) | every module compiles and runs on it |
-| Git | the patch set is version-controlled data, and the rebuild renumbers files |
+| Git 2.x | the patch set is version-controlled data, and Git is what applies it and renders rebuilds |
 | Internet on the first build | Minecraft and its libraries are fetched from Mojang and SHA-1 verified |
 | The Gradle wrapper in this repository | `gradlew.bat` / `gradlew`; no global Gradle to install or match |
 
-Nothing else. The decompiler, the diff engine and the test framework are all in
-the build; the server runtime has no dependency on any of them.
+Nothing else. The decompiler and the test framework are all in the build, patch
+application and rebuild rendering are the Git you already installed, and the server
+runtime has no dependency on any of them.
 
 Your working directory for a rebuild is the repository root, because that is what
-decides where `patches/` and `build/minecraft/<version>/` are.
+decides where `Shulker/` and `build/minecraft/<version>/` are.
 
 ## 2. Repository layout
 
@@ -41,9 +42,9 @@ decides where `patches/` and `build/minecraft/<version>/` are.
 launcher/                    the entry point; assembles the distributable
 patch-engine/                download / widen / decompile / diff / patch / workspace
 server/                      the runtime and the world engine
-patches/code/                source patches, compiled             (committed)
-patches/data/                source patches, resources            (committed)
-patches/modules/             source patches, Veltis modules        (committed)
+Shulker/code/                source patches, compiled             (committed)
+Shulker/data/                source patches, resources            (committed)
+Shulker/modules/             source patches, Veltis modules        (committed)
 build/minecraft/<version>/   generated workspace                  (gitignored)
 build/distributions/         the distributable                    (gitignored)
 ```
@@ -70,8 +71,8 @@ fixed, named location, so a rerun after a failure resumes from a known state.
 
 VeltisMC has exactly two patch layers, and no third patch engine.
 
-**Layer 1 — the source patch set, in Git.** `patches/code`, `patches/data` and
-`patches/modules` hold git-style unified diffs against the decompiled Minecraft
+**Layer 1 — the source patch set, in Git.** `Shulker/code`, `Shulker/data` and
+`Shulker/modules` hold git-style unified diffs against the decompiled Minecraft
 source. This is the layer you edit, review and commit. Everything else in the
 build is derived from it.
 
@@ -87,7 +88,7 @@ What follows from that:
 - There is no source-patch application at run time. The server downloads vanilla,
   verifies it, applies the bytecode patch set, and launches.
 - Do not introduce a second mechanism for changing Minecraft's behaviour. If a
-  change belongs in `patches/`, put it there.
+  change belongs in `Shulker/`, put it there.
 
 ## 4. Making a change: the edit loop
 
@@ -99,7 +100,7 @@ The whole contribution loop is three commands.
 .\gradlew.bat applyPatches
 # edit files under build\minecraft\26.3\patched\
 .\gradlew.bat rebuildPatches
-git diff -- patches
+git diff -- Shulker
 ```
 
 **Linux / macOS:**
@@ -108,7 +109,7 @@ git diff -- patches
 ./gradlew applyPatches
 # edit files under build/minecraft/26.3/patched/
 ./gradlew rebuildPatches
-git diff -- patches
+git diff -- Shulker
 ```
 
 `applyPatches` mirrors the pristine decompile into `patched/` and applies the
@@ -116,14 +117,14 @@ whole patch set over it, so you start from a known state rather than from
 whatever a previous run left behind. You then edit `patched/` — it is a real
 Gradle source root, so IntelliJ will index it and let you navigate into
 `net.minecraft.*`. `rebuildPatches` diffs `patched/` against `source/` and writes
-the difference back into `patches/`.
+the difference back into `Shulker/`.
 
 > **Do not run `applyPatches` between editing and rebuilding.** `apply`
 > re-mirrors `source/` over `patched/`, which discards the edits you are trying to
 > capture. `rebuildPatches` deliberately does not depend on `applyPatches` for
 > exactly this reason; keep the same discipline by hand.
 
-Review the diff before committing. `git diff -- patches` should show only the
+Review the diff before committing. `git diff -- Shulker` should show only the
 change you meant to make — if it shows a file you never touched, see
 [§11 Renaming and reordering](#11-renaming-and-reordering).
 
@@ -157,9 +158,9 @@ everything about it:
 
 | Directory | Apply order | Source set | Typical targets |
 |---|---|---|---|
-| `patches/code` | 1st | `minecraft` (compiled) | `net/minecraft/**/*.java` |
-| `patches/data` | 2nd | `minecraftResources` | data files, resources |
-| `patches/modules` | 3rd | `minecraftModules` | `org/veltismc/**` |
+| `Shulker/code` | 1st | `minecraft` (compiled) | `net/minecraft/**/*.java` |
+| `Shulker/data` | 2nd | `minecraftResources` | data files, resources |
+| `Shulker/modules` | 3rd | `minecraftModules` | `org/veltismc/**` |
 
 Within a category, patches apply in file-name order — which, after a rebuild, is
 number order.
@@ -179,7 +180,7 @@ into the right directory and rebuild again.
 
 ## 7. Numbering rules
 
-These are the rules that make `patches/` reviewable and mergeable.
+These are the rules that make `Shulker/` reviewable and mergeable.
 
 1. `NNN` runs from `001` upward and is **three digits**.
 2. **Each category is its own series.** `code`, `data` and `modules` each start
@@ -234,7 +235,7 @@ described from its path:
 
 ```text
 build/minecraft/26.3/patched/net/minecraft/util/Helper.java
-    -> patches/code/003-net-minecraft-util-Helper.patch
+    -> Shulker/code/003-net-minecraft-util-Helper.patch
 ```
 
 Case is preserved; only path separators and punctuation become `-`.
@@ -282,16 +283,16 @@ Order matters here more than anywhere else.
 Remove-Item patches\code\001-Improve-Command-Logging.patch
 .\gradlew.bat applyPatches
 .\gradlew.bat rebuildPatches
-git diff -- patches
+git diff -- Shulker
 ```
 
 **Linux / macOS:**
 
 ```bash
-rm patches/code/001-Improve-Command-Logging.patch
+rm Shulker/code/001-Improve-Command-Logging.patch
 ./gradlew applyPatches
 ./gradlew rebuildPatches
-git diff -- patches
+git diff -- Shulker
 ```
 
 **Why step 2 is not optional.** After you delete the file, `patched/` still
@@ -340,7 +341,7 @@ Then re-establish the workspace and let the build settle the numbering:
 ```powershell
 .\gradlew.bat applyPatches
 .\gradlew.bat rebuildPatches
-git diff -- patches
+git diff -- Shulker
 ```
 
 (`./gradlew applyPatches` and `./gradlew rebuildPatches` on Linux/macOS.)
@@ -348,7 +349,7 @@ git diff -- patches
 **What must not change.** After a rename or a renumber, the category, the targets
 and every byte of the diff are unchanged. Only `NNN-` moves. If `git diff` shows a
 content change to a patch you only renamed, that is a bug — please report it with
-the output of `git diff -- patches`.
+the output of `git diff -- Shulker`.
 
 ## 12. Verifying your change
 
@@ -369,7 +370,7 @@ Run these from the repository root before you open a pull request.
 Two checks worth doing by hand when you touched numbering:
 
 - **Idempotence.** Run `rebuildPatches` a second time. It must report
-  `0 regenerated, 0 created, 0 removed`, and `git diff -- patches` must be empty.
+  `0 regenerated, 0 created, 0 removed`, and `git diff -- Shulker` must be empty.
   A rebuild with no edits produces no version-control diff.
 - **Round trip.** After `rebuildPatches`, run `applyPatches` again. The patched
   tree must come out identical — the regenerated set reproduces exactly the tree
@@ -388,8 +389,8 @@ Every command has been run from the repository root.
 
 | Purpose | Windows | Linux / macOS |
 |---|---|---|
-| Mirror pristine source and apply `patches/` | `.\gradlew.bat applyPatches` | `./gradlew applyPatches` |
-| Turn `patched/` edits back into `patches/` | `.\gradlew.bat rebuildPatches` | `./gradlew rebuildPatches` |
+| Mirror pristine source and apply `Shulker/` | `.\gradlew.bat applyPatches` | `./gradlew applyPatches` |
+| Turn `patched/` edits back into `Shulker/` | `.\gradlew.bat rebuildPatches` | `./gradlew rebuildPatches` |
 | …naming the one new patch it creates | `.\gradlew.bat rebuildPatches "-PpatchName=Improve Helper Logging"` | `./gradlew rebuildPatches "-PpatchName=Improve Helper Logging"` |
 | Discard `patched/`, `classes/`, `resources/` | `.\gradlew.bat cleanVeltisPatches` | `./gradlew cleanVeltisPatches` |
 | Run every test | `.\gradlew.bat test` | `./gradlew test` |
@@ -473,7 +474,7 @@ any change you make to the build.
   `libraries/` is already on the server's classpath at run time.
 - **The decompiler, `javac`, test classes, sources and Gradle metadata do not
   ship.** They are development tooling; the runtime never touches them.
-- **`patches/` is the single source of truth** for changing Minecraft. Nothing is
+- **`Shulker/` is the single source of truth** for changing Minecraft. Nothing is
   bundled for run-time source application.
 
 `.gitignore` blocks `*.jar` except the Gradle wrapper, so a bundled jar cannot be
@@ -495,7 +496,7 @@ itself.
 | `org.apache.logging.log4j:log4j-jul` | 2.26.0 | `:launcher`, `:server` | `REQUIRED_RUNTIME` | `libraries/` — Maven Central; Mojang ships `log4j-slf4j2-impl`, not the JUL bridge, so this one is VeltisMC's |
 | `org.yaml:snakeyaml` | 2.4 | `:server` (`veltis.yml`) | `REQUIRED_RUNTIME` | `libraries/` — Maven Central; Mojang does not publish it |
 | Mojang's libraries — 56 coordinates (brigadier, datafixerupper, authlib, ...) | per Mojang's version manifest | the server itself | `MINECRAFT_RUNTIME` | `libraries/`, each SHA-1-verified; the three rows above that Mojang also publishes are the *same files* fetched once, never two copies |
-| `org.vineflower:vineflower` | 1.12.0 | `:patch-engine` (decompile step) | `BUILD_ONLY` | nowhere: build classpath only, and `verifyDistributableContent` fails the build if decompiler classes appear in the jar |
+| `org.vineflower:vineflower` | 1.12.0 | `:patch-engine` (`compileOnly`, compiles `MinecraftDecompiler`), `:patch-engine` tests (`testRuntimeOnly`), root `pipelineClasspath` | `BUILD_ONLY` | nowhere. Deliberately **not** `implementation`: `implementation` is inherited by `:server` and `:launcher` `runtimeClasspath`, and those two are inputs to `uberJar` (which unpacks them) and to the bootstrap table — so declaring it there made the runtime depend on the packaging filter to stay clean rather than on the dependency graph. It now reaches only the compile classpath of the module that compiles the decompiler, that module's test runtime, and `pipelineClasspath`, the one classpath that actually decompiles. `verifyDistributableContent` fails the build if decompiler classes appear in the jar |
 | `org.ow2.asm:asm` + `asm-commons` (and their `asm-tree`/`asm-analysis`/`asm-util` transitive modules, aligned by `resolutionStrategy.force` in the root script) | 9.10.1 | `:patch-engine` (access widening) | `BUILD_ONLY` | nowhere: build classpath only |
 | Minecraft compile classpath — `server-classes.jar` plus the workspace's verified `libraries/*.jar` | 26.3 | `:server` compilation | `BUILD_ONLY` | `build/minecraft/26.3/` only; excluded from every artifact |
 | IntelliJ IDEA project files and the `idea` Gradle plugin | — | contributor IDE | `DEVELOPMENT_ONLY` | gitignored; never part of a build product |
@@ -527,7 +528,7 @@ Before opening it:
 
 Checklist:
 
-- [ ] `git diff -- patches` shows only the patches you meant to change.
+- [ ] `git diff -- Shulker` shows only the patches you meant to change.
 - [ ] `rebuildPatches` run twice is stable — the second reports `0 regenerated, 0
       created, 0 removed`.
 - [ ] Numbering in every category is contiguous, starting at `001`.
@@ -538,7 +539,7 @@ Checklist:
 - [ ] The pull request says what changed and why, which patch files were touched,
       the Minecraft version used, the commands you ran, and any limitations.
 
-**Commit** patch files under `patches/`, module sources and tests, Gradle and
+**Commit** patch files under `Shulker/`, module sources and tests, Gradle and
 build-script changes the workflow needs, and documentation.
 
 **Do not commit** `build/`, `.gradle/`, `Vanilla/`, `Veltis/`, `out/`, `run/`,

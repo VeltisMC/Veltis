@@ -88,7 +88,7 @@ public final class PatchRebuilder {
      * Regenerates the patch set from the current contents of the patched tree.
      *
      * @param workspace   supplies both trees being diffed
-     * @param patchesRoot the {@code patches/} directory to write into
+     * @param patchesRoot the {@code Shulker/} directory to write into
      */
     public Result rebuild(VeltisWorkspace workspace, Path patchesRoot, String minecraftVersion) {
         var source = workspace.sourceDirectory();
@@ -606,7 +606,7 @@ public final class PatchRebuilder {
             if (section.before() != null && section.before().equals(section.after())) {
                 continue;
             }
-            var diff = DiffGenerator.diff(target, section.before(), section.after());
+            var diff = GitPatchEngine.diff(target, section.before(), section.after());
             if (diff.isEmpty()) {
                 continue;
             }

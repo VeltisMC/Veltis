@@ -7,7 +7,7 @@ simulation engine and a build-time patch pipeline.
 
 VeltisMC boots the patched vanilla `DedicatedServer` directly. There is **no plugin
 API** — no Bukkit, Spigot or Paper. Gameplay is vanilla plus the patch set in
-`patches/`.
+`Shulker/`.
 
 Every Minecraft change is a git-style unified-diff patch file. VeltisMC ships one
 jar — `server.jar`, with no Minecraft code inside it — plus the patch set
@@ -23,7 +23,7 @@ touches the network on that path.
 That path never widens, decompiles or compiles, and it cannot: the distributable
 ships neither a decompiler nor `javac`. Producing the patch set is a build-time
 job — `./gradlew buildVeltisMC` widens access, decompiles, applies the source
-patches in `patches/` and compiles the result before cutting the bytecode patch
+patches in `Shulker/` and compiles the result before cutting the bytecode patch
 set the jar carries. An operator's directory holds no source and needs no
 toolchain.
 
@@ -44,7 +44,7 @@ VeltisMC/
 │                       the workspace layout and the runtime that builds and loads it
 ├── server/             everything inside Minecraft's classloader: the NMS entrypoint,
 │                       the Veltis framework and the world engine
-├── patches/            code/ data/ modules/ — the single source of truth
+├── Shulker/            code/ data/ modules/ — the single source of truth
 ├── gradle/             Gradle wrapper
 ├── build.gradle.kts    the pipeline and the `minecraft` source set
 ├── settings.gradle.kts the three modules
@@ -143,38 +143,55 @@ requested version, server jar and library set.
 
 ### The patch engine
 
-`patch-engine` is Veltis's own; no `patchy`, no `git apply`, no external diff
-tool. Patches are git-style unified diffs with the usual semantics retained.
+`patch-engine` is Veltis's own orchestration over a tool every checkout already has:
+**Git applies the set** with `git apply`, and **Git renders rebuilds** with
+`git diff --no-index`. Patches are git-style unified diffs. Veltis keeps everything
+Git does not decide — category, order, numbering, slot mapping, validation and the
+failure report — while `UnifiedDiffPatcher` and `DiffGenerator` stay in the tree as
+a reference implementation the tests exercise, not as the engine the build runs.
 
-- **Categories** are exactly `patches/code`, `patches/data`, `patches/modules`.
+- **Categories** are exactly `Shulker/code`, `Shulker/data`, `Shulker/modules`.
   They determine apply order (`code` → `data` → `modules`) and which source set the
   target lands in (`minecraft`, `minecraftResources`, `minecraftModules`). Within a
   category, patches apply in file-name order.
-- **Application** is read-once → apply the whole per-file chain in memory →
-  verify → one atomic write. A file is never left half-patched: either the complete
-  chain succeeds and the result replaces the original atomically, or nothing is
-  written.
-- **Determinism** comes from `LinkedHashMap` grouping in first-seen order, so
-  same-file chains are structurally sequential and independent targets can run in
-  parallel without the result depending on thread scheduling or worker count.
-- **Parallelism** uses a fixed `veltis-patch-N` platform-thread pool sized from the
-  `patchWorkers` property. Never `ForkJoinPool.commonPool()`.
+- **Application** snapshots each distinct target once, copies the set into a scratch
+  tree, runs a single `git apply` over all of it, then writes back only the files
+  whose bytes actually changed. The real workspace is never half-patched: a
+  rejection rewinds the scratch, reports the patch that refused, and leaves the
+  workspace exactly as it was.
+- **Determinism** is pinned rather than assumed. Every Git call carries
+  `-c core.autocrlf=false -c core.eol=lf`, so a machine's global `core.autocrlf`
+  cannot change what lands on disk, and Veltis fixes the order the patches go in.
+- **Concurrency** is deliberately absent: one `git apply` takes the whole set in one
+  call, so there is no thread pool whose scheduling could influence the result. The
+  `patchWorkers` property is still declared and passed down, but it no longer
+  partitions anything.
 - **Failures** name the patch, category, target, location and reason, and stop the
   build:
 
   ```text
-  [VeltisPatch] Failed to apply patch: 005-Wire-VeltisBootstrap-Shutdown.patch
+  [VeltisPatch] Failed to apply patch
+    Patch: 005-Wire-VeltisBootstrap-Shutdown.patch
     Category: code
     Target: net/minecraft/server/MinecraftServer.java
     Location: patch 1 of 1, hunk #2
-    Reason: patch 1 of 1, hunk #2 found no matching context: tried exact,
-            whitespace-tolerant and blank-skipping
+    Reason: the file does not hold the context the patch requires; Git matches context exactly, so the patch and the source must be identical line for line, line endings included
+    expected context (from the patch):
+      - @Override
+      - public void safeShutdown(boolean waitForShutdown) {
+    actual source lines 652-660 (around the expected position):
+      + @Override
+      + public void shutdown(boolean waitForShutdown) {
     Minecraft: 26.3
     Patch revision: 894b9815255046c7c474dd303cd3bd17ede8fbcdaaad1cd168dab631b7d92b7c
   ```
 
-  The revision is the SHA-256 of the patch file's bytes, so the message identifies
-  the exact patch content rather than just its name.
+  Git decides that the patch does not apply; Veltis turns Git's verdict into the
+  patch, category, target, location and reason above. A missing target and a
+  CRLF/LF mismatch get their own explanations instead of a context diff, because
+  quoting lines that are equal once terminators are stripped would send you looking
+  in the wrong place. The revision is the SHA-256 of the patch file's bytes, so the
+  message identifies the exact patch content rather than just its name.
 
 ### Runtime boot
 
@@ -396,7 +413,7 @@ This is currently harmless **only** because the compile is scoped to the patch
 targets (§ [Compile scope](#compile-scope)) — the other 110 files are never handed
 to javac. It becomes real the moment one of them is added as a target.
 
-When that happens, add a small `patches/code` patch that rewrites the switch to the
+When that happens, add a small `Shulker/code` patch that rewrites the switch to the
 enum constants themselves. `Fix-Decompiled-PermissionLevel-Switch.patch` is the
 worked example: it turns the switch above into
 
@@ -416,17 +433,18 @@ Derive the mapping from the bytecode, not from the decompiled labels —
 recompiled result was checked against the original Mojang bytecode and is
 instruction-identical, constant-pool indices included.
 
-### 2. `patchWorkers` above the target count changes nothing
+### 2. `patchWorkers` changes nothing
 
-Parallelism is capped at the number of independent target files
-(`min(patchWorkers, groups)`), so `-PpatchWorkers=8` still reports 4 workers on a
-4-file patch set. The cap is what makes the result independent of the setting; the
-`workers=1/4/8` equivalence is proved on fixtures with enough files for 8 threads to
-actually start.
+Application is a single `git apply` over the whole set, so there is no work left to
+partition: `-PpatchWorkers=8` and `-PpatchWorkers=1` produce identical bytes, and
+the apply step reports no worker count because it starts no workers. The property
+stays declared in `gradle.properties` and passed down to the pipeline, and
+`PatchOutputRegressionTest` still applies the set at 1, 4 and 8 workers — a guard
+against the setting quietly starting to matter again.
 
 ### 3. The current patch set touches four vanilla files
 
-`patches/code` addresses `Commands`, `MinecraftServer`, `DedicatedServer` and
+`Shulker/code` addresses `Commands`, `MinecraftServer`, `DedicatedServer` and
 `PlayerList`. That is what the runtime hooks (bootstrap, shutdown, console/command
 logging) need, and it keeps the compile scope small enough to avoid the
 `<unrepresentable>` problem above — but it means VeltisMC is currently a platform
@@ -578,7 +596,7 @@ Useful Gradle tasks:
 | `./gradlew widenServerJarAccess` | widen class/field/method access in the server jar |
 | `./gradlew downloadLibraries` | fetch Mojang's declared library jars |
 | `./gradlew decompileMinecraft` | decompile the widened jar into `source/` |
-| `./gradlew applyVeltisPatches` | apply `patches/{code,data,modules}` into `patched/` |
+| `./gradlew applyVeltisPatches` | apply `Shulker/{code,data,modules}` into `patched/` |
 | `./gradlew rebuildVeltisPatches` | regenerate patch files from `patched/` edits, renumbered contiguously |
 | `./gradlew applyPatches` / `./gradlew rebuildPatches` | the contributor-facing aliases of the two tasks above |
 | `./gradlew cleanVeltisPatches` | discard `patched/`, `classes/`, `resources/` |
@@ -607,8 +625,8 @@ short version:
 ```bash
 ./gradlew applyPatches            # pristine workspace + patches applied
 # edit files in build/minecraft/<v>/patched/
-./gradlew rebuildPatches          # regenerate patches/
-git diff -- patches               # review before committing
+./gradlew rebuildPatches          # regenerate Shulker/
+git diff -- Shulker               # review before committing
 ```
 
 `applyPatches` and `rebuildPatches` are aliases of the pipeline's own
@@ -617,8 +635,8 @@ task.
 
 Patch rules:
 
-- Files are `NNN-Short-description.patch` in `patches/code`, `patches/data` or
-  `patches/modules`; the directory determines apply order and which source set
+- Files are `NNN-Short-description.patch` in `Shulker/code`, `Shulker/data` or
+  `Shulker/modules`; the directory determines apply order and which source set
   the target lands in.
 - `NNN` is assigned by the build and renumbered contiguously after every rebuild,
   so a deletion pulls the series up and leaves no hole. Renumbering changes only
@@ -627,15 +645,16 @@ Patch rules:
   output, logs, IDE files or local caches.
 - Prefer several small patches over one large mixed patch.
 - A patch that repairs a decompiler defect (limitation 1) is still an ordinary
-  `patches/code` patch; keep it separate from the feature patch that edits the same
+  `Shulker/code` patch; keep it separate from the feature patch that edits the same
   file, so the repair survives a feature rewrite.
-- `patches/` is the **single** source of truth. There is no second patch
+- `Shulker/` is the **single** source of truth. There is no second patch
   directory and nothing is bundled for runtime application.
 
-Rebuild uses `DiffGenerator` (Myers O(ND) with prefix/suffix trimming), so the
-regenerated files are deterministic: the same edits always produce the same bytes.
-Hunks are located by content, not by line number, so a rebuilt patch keeps applying
-when unrelated lines shift above it.
+Rebuild renders through `git diff --no-index`, so the regenerated files are
+deterministic for the same reason a Git commit is: the same two trees always
+produce the same bytes, whatever machine produced them (`core.autocrlf` and
+`core.eol` are pinned on every call). Hunks are located by content rather than by
+line number, so a rebuilt patch keeps applying when unrelated lines shift above it.
 
 Several patches may address one file — that is how two unrelated changes to
 `DedicatedServer` stay separately reviewable. The rebuild replays the chain to
@@ -669,7 +688,7 @@ JUnit 5, standard `src/test/java` layout:
 | Module | Suites |
 |---|---|
 | `server` | `VeltisConfig` load/round-trip, `DefaultServerRuntime` start/shutdown/double-start, chunk state machine, scheduler, lock-free queue, object pool, engine smoke test (headless, no Minecraft jar) |
-| `patch-engine` | Mojang resolution + SHA-1, download + corrupt-cache recovery, decompile-cache invalidation, access widening, discovery, deterministic ordering, same-file chains, parallel patching, conflicts, rollback/atomicity, code/data/module patches, output regression, line-split equivalence, performance floor, runtime artifact + guard, Gradle pipeline declaration |
+| `patch-engine` | Mojang resolution + SHA-1, download + corrupt-cache recovery, decompile-cache invalidation, access widening, discovery, deterministic ordering, same-file chains, worker-count invariance, conflicts, rollback/atomicity, code/data/module patches, output regression, line-split equivalence, performance floor, runtime artifact + guard, Gradle pipeline declaration |
 
 Never delete a failing test to make the build green — fix the code (or the test, if
 it asserts the wrong behaviour).
@@ -701,7 +720,7 @@ Do **not** commit: `build/`, `.gradle/`, `Vanilla/`, `Veltis/`, `out/`, `run/`, 
 metadata, compile logs, temporary patch files, or server data (`eula.txt`,
 `server.properties`, `logs/`, `config/`) — all gitignored.
 
-Do commit: patch files in `patches/`, module sources and tests, Gradle/build-script
+Do commit: patch files in `Shulker/`, module sources and tests, Gradle/build-script
 changes needed by the workflow, documentation updates.
 
 ## License

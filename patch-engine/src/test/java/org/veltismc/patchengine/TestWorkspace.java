@@ -20,7 +20,7 @@ import java.util.TreeMap;
  * nothing under test depends on how those bytes got there.
  *
  * <p>The layout is the real one — {@code <root>/build/minecraft/26.3/{source,patched,build}}
- * plus {@code <root>/patches/{code,data,modules}} — so a test that asserts "no
+ * plus {@code <root>/Shulker/{code,data,modules}} — so a test that asserts "no
  * temporary directories are produced" is asserting it about the real layout.
  */
 final class TestWorkspace {
@@ -72,7 +72,7 @@ final class TestWorkspace {
             write(workspace.sourceDirectory().resolve(entry.getKey()), entry.getValue());
         }
         for (var entry : patchFiles.entrySet()) {
-            write(workspace.patchesDirectory().resolve(entry.getKey()), entry.getValue());
+            write(workspace.shulkerDirectory().resolve(entry.getKey()), entry.getValue());
         }
         VeltisPatcher.mirrorPristineSource(workspace.sourceDirectory(),
             workspace.patchedDirectory());
@@ -91,7 +91,7 @@ final class TestWorkspace {
      * mean anything. Callers that want both write and discover chain them.
      */
     List<VeltisPatch> discover() {
-        return PatchDiscovery.discover(workspace.patchesDirectory(), VERSION_ID, new PatchStats());
+        return PatchDiscovery.discover(workspace.shulkerDirectory(), VERSION_ID, new PatchStats());
     }
 
     /** Mirrors, discovers and applies with the given worker count, for chaining. */

@@ -72,7 +72,7 @@ import java.util.zip.ZipFile;
  *
  * <p>The development source pipeline is deliberately confined to a checkout. A
  * server installation never widens, decompiles or compiles anything: it has no
- * {@code patches/}, no decompiled source and no javac, and adding those to an
+ * {@code Shulker/}, no decompiled source and no javac, and adding those to an
  * operator's machine would be re-introducing the build step this design
  * exists to remove.
  *
@@ -136,13 +136,13 @@ public final class VeltisRuntime {
      * and the layout an IDE reads.
      *
      * <p>This is the only layout that runs the development source pipeline, and
-     * the only one that generates a bytecode patch set: it has {@code patches/},
+     * the only one that generates a bytecode patch set: it has {@code Shulker/},
      * a decompiled tree to apply them to, and a compiler to compile the result
      * with.
      *
      * @param workspaceBase the project root; the workspace it creates lives in
      *                      {@code build/minecraft/<version>}
-     * @param patchesDirectory {@code patches/} in the project
+     * @param patchesDirectory {@code Shulker/} in the project
      */
     public static VeltisRuntime fromDirectory(Path workspaceBase, MinecraftVersion version,
                                               Path patchesDirectory, int workers,
@@ -218,7 +218,7 @@ public final class VeltisRuntime {
                 "[VeltisPatch] The Veltis patch set is empty"
                     + "\n  Reason: an empty patch set produces a server that starts, runs"
                     + " vanilla and gives no sign that no patch was applied"
-                    + "\n  Fix: put at least one patch under patches/code, or check that"
+                    + "\n  Fix: put at least one patch under Shulker/code, or check that"
                     + " this jar was built with a patch set");
         }
         return discovered;
@@ -737,14 +737,9 @@ public final class VeltisRuntime {
                 VeltisConsole.formatDuration(System.nanoTime() - mirrorStarted));
         }
 
-        long patchStarted = System.nanoTime();
-        var stats = new VeltisPatcher(workers, version.toString()).apply(workspace, patches);
-        LOG.info("[Veltis] Patch complete in {} ({} patch{}, {} file{} changed,"
-                + " {} of {} unchanged).",
-            VeltisConsole.formatDuration(System.nanoTime() - patchStarted),
-            stats.patchesApplied, stats.patchesApplied == 1 ? "" : "es",
-            stats.filesChanged, stats.filesChanged == 1 ? "" : "s",
-            stats.filesUnchanged, stats.filesUnchanged);
+        // The apply phase reports one line on success, from VeltisPatcher itself:
+        // the kidnapping message. No second summary is printed here.
+        new VeltisPatcher(workers, version.toString()).apply(workspace, patches);
         copyResourceDelta(patches);
     }
 

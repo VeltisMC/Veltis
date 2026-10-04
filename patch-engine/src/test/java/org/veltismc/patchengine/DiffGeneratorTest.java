@@ -147,7 +147,7 @@ class DiffGeneratorTest {
     void aGeneratedDiffIsConsumedByTheRealParser() {
         // The generated header counts must match the emitted lines exactly, which
         // is what the parser validates. A round trip through discovery proves it.
-        var patches = tmp.resolve("patches");
+        var patches = tmp.resolve("Shulker");
         var before = "class A {\n    int v = 1;\n    int w = 2;\n}\n";
         var after = "class A {\n    int v = 3;\n    int w = 4;\n}\n";
         try {

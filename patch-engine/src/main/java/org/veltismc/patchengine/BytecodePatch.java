@@ -28,7 +28,7 @@ import java.util.zip.ZipOutputStream;
  * from the Minecraft jar Mojang published, and nothing else.
  *
  * <p>This is the only format that carries a patch from a build to a running
- * server. The development source patches under {@code patches/code|data|modules}
+ * server. The development source patches under {@code Shulker/code|data|modules}
  * are how a contributor writes a change; this is how that change ships. There is
  * no third representation in between — no reconstructed source, no decompiler on
  * a server, no compiler on a server.

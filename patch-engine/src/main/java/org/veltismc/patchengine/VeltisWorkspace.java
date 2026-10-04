@@ -438,9 +438,9 @@ public final class VeltisWorkspace {
         return root.resolve(RUNTIME_MARKER);
     }
 
-    /** The {@code patches/} directory at the project root. */
-    public Path patchesDirectory() {
-        return projectDirectory.resolve(PatchDiscovery.PATCHES_DIRECTORY);
+    /** The {@code Shulker/} directory at the project root. */
+    public Path shulkerDirectory() {
+        return projectDirectory.resolve(PatchDiscovery.SHULKER_DIRECTORY);
     }
 
     /**

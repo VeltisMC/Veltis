@@ -30,7 +30,7 @@ public final class LauncherManifest {
 
     /**
      * @param launcherDirectory the directory this jar was loaded from, used to
-     *                          find a developer checkout's {@code patches/}
+     *                          find a developer checkout's {@code Shulker/}
      */
     public static LauncherManifest from(String[] args, Path launcherDirectory) {
         var flags = parseFlags(args);
@@ -144,7 +144,7 @@ public final class LauncherManifest {
     /**
      * The patch set to build the runtime from.
      *
-     * <p>An explicit {@code --patches} wins, then a {@code patches/} directory
+     * <p>An explicit {@code --patches} wins, then a {@code Shulker/} directory
      * beside the jar. The second rule is what gives a developer a live editing
      * loop: edit a patch, restart the server, and it is your patch that gets
      * applied, with no repackaging step. When neither is present — an operator who
@@ -156,8 +156,8 @@ public final class LauncherManifest {
         if (override != null) {
             return Paths.get(override).toAbsolutePath().normalize();
         }
-        if (isPatchDirectory(launcherDirectory.resolve(PatchDiscovery.PATCHES_DIRECTORY))) {
-            return launcherDirectory.resolve(PatchDiscovery.PATCHES_DIRECTORY);
+        if (isPatchDirectory(launcherDirectory.resolve(PatchDiscovery.SHULKER_DIRECTORY))) {
+            return launcherDirectory.resolve(PatchDiscovery.SHULKER_DIRECTORY);
         }
         return null;
     }

@@ -121,7 +121,7 @@ public final class PatchBench {
         final Path pristine;        // pristine copies of every target file
         final Path patched;         // the real workspace, which patches are applied to
         final VeltisWorkspace workspace;
-        final Path patchesRoot;     // the patches/ directory
+        final Path patchesRoot;     // the Shulker/ directory
         final List<String> targets;          // relative paths of patched files
         final Map<String, String> expected;  // rel path -> sha256 of the expected output
         final int patchCount;
@@ -183,9 +183,9 @@ public final class PatchBench {
      * Requires {@code ./gradlew applyVeltisPatches} to have been run.
      */
     static Corpus realCorpus(Path repo) throws IOException {
-        var patchesRoot = repo.resolve("patches");
+        var patchesRoot = repo.resolve("Shulker");
         if (!Files.isDirectory(patchesRoot)) {
-            throw new IOException("patches/ missing - run from a VeltisMC checkout");
+            throw new IOException("Shulker/ missing - run from a VeltisMC checkout");
         }
         var version = resolveWorkspace(repo);
         var source = version.resolve("source");
@@ -249,7 +249,7 @@ public final class PatchBench {
         var workspace = VeltisWorkspace.of(root, TestWorkspace.VERSION).createDirectories();
         var pristine = workspace.sourceDirectory();
         var patched = workspace.patchedDirectory();
-        var patchesRoot = workspace.patchesDirectory().resolve("code");
+        var patchesRoot = workspace.shulkerDirectory().resolve("code");
         Files.createDirectories(patchesRoot);
 
         // Current content per file; evolves as patch files are generated in
@@ -309,7 +309,7 @@ public final class PatchBench {
                     .getBytes(StandardCharsets.UTF_8)));
         }
 
-        var corpus = new Corpus("scale", pristine, patched, workspace, workspace.patchesDirectory(),
+        var corpus = new Corpus("scale", pristine, patched, workspace, workspace.shulkerDirectory(),
             targets, expected, patches);
         corpus.mirrored = true;
         return corpus;

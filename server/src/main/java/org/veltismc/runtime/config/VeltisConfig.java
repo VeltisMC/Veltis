@@ -27,9 +27,9 @@ public final class VeltisConfig {
             Files.createDirectories(configDir);
         } catch (Exception ignored) {}
 
-        var globalFile = configDir.resolve("paper-global.yml");
+        var globalFile = configDir.resolve("veltis-global.yml");
         if (!Files.exists(globalFile)) {
-            writeDefaults(configDir, "paper-global.yml", new GlobalConfiguration());
+            writeDefaults(configDir, "veltis-global.yml", new GlobalConfiguration());
         }
         if (Files.exists(globalFile)) {
             try (InputStream in = Files.newInputStream(globalFile)) {
@@ -41,9 +41,9 @@ public final class VeltisConfig {
             } catch (Exception ignored) {}
         }
 
-        var worldDefaultsFile = configDir.resolve("paper-world-defaults.yml");
+        var worldDefaultsFile = configDir.resolve("veltis-world-defaults.yml");
         if (!Files.exists(worldDefaultsFile)) {
-            writeDefaults(configDir, "paper-world-defaults.yml", new WorldConfiguration());
+            writeDefaults(configDir, "veltis-world-defaults.yml", new WorldConfiguration());
         }
         if (Files.exists(worldDefaultsFile)) {
             try (InputStream in = Files.newInputStream(worldDefaultsFile)) {
@@ -60,7 +60,7 @@ public final class VeltisConfig {
     public static WorldConfiguration worldDefaults() { return worldDefaults; }
 
     public static WorldConfiguration worldConfig(Path worldDir) {
-        var file = worldDir.resolve("paper-world.yml");
+        var file = worldDir.resolve("veltis-world.yml");
         if (!Files.exists(file)) return worldDefaults;
         try (InputStream in = Files.newInputStream(file)) {
             var raw = loadYaml(in);

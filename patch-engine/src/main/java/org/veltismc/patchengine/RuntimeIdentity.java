@@ -93,7 +93,7 @@ public record RuntimeIdentity(
     /**
      * What {@link #sourceRevision()} is when there is no source patch set.
      *
-     * <p>A server installation has no {@code patches/} directory and never will:
+     * <p>A server installation has no {@code Shulker/} directory and never will:
      * the source patches are how the change is written, the bytecode patch set
      * is how it ships. Recording a placeholder rather than omitting the field
      * keeps one record shape across both layouts, so the comparison stays an

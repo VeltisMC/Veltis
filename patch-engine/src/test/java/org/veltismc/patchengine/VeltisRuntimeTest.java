@@ -182,7 +182,7 @@ class VeltisRuntimeTest {
 
     private static VeltisRuntime runtimeFor(VeltisWorkspace workspace) {
         return VeltisRuntime.fromDirectory(workspace.projectDirectory(),
-            TestWorkspace.VERSION, workspace.patchesDirectory(), 1,
+            TestWorkspace.VERSION, workspace.shulkerDirectory(), 1,
             Runtime.version().feature());
     }
 
@@ -926,13 +926,13 @@ class VeltisRuntimeTest {
             + "}\n";
         Files.writeString(sourceFile, body, StandardCharsets.UTF_8);
 
-        var patchFile = workspace.patchesDirectory()
+        var patchFile = workspace.shulkerDirectory()
             .resolve("code").resolve("001-Server.patch");
         Files.createDirectories(patchFile.getParent());
         Files.writeString(patchFile, """
             --- a/net/minecraft/server/MinecraftServer.java
             +++ b/net/minecraft/server/MinecraftServer.java
-            @@ -1,5 +1,6 @@
+            @@ -2,5 +2,6 @@
              public class MinecraftServer {
                  public void performCommand(String s) {
                      int x = 1;
@@ -942,8 +942,8 @@ class VeltisRuntimeTest {
             """, StandardCharsets.UTF_8);
 
         var runtime = VeltisRuntime.fromDirectory(project, TestWorkspace.VERSION,
-            workspace.patchesDirectory(), 1, Runtime.version().feature());
-        var patches = PatchSet.fromDirectory(workspace.patchesDirectory(),
+            workspace.shulkerDirectory(), 1, Runtime.version().feature());
+        var patches = PatchSet.fromDirectory(workspace.shulkerDirectory(),
             TestWorkspace.VERSION_ID, new PatchStats());
 
         runtime.applyPatches(patches);
@@ -1109,12 +1109,12 @@ class VeltisRuntimeTest {
         Files.write(workspace.classesDirectory()
             .resolve("net/minecraft/server/MinecraftServer.class"), new byte[] {1, 2, 3});
 
-        var patch = workspace.patchesDirectory().resolve("code").resolve("001-A.patch");
+        var patch = workspace.shulkerDirectory().resolve("code").resolve("001-A.patch");
         Files.createDirectories(patch.getParent());
         Files.writeString(patch, TestWorkspace.createPatch(SERVER), StandardCharsets.UTF_8);
 
         var runtime = VeltisRuntime.fromDirectory(project, TestWorkspace.VERSION,
-            workspace.patchesDirectory(), 4, Runtime.version().feature());
+            workspace.shulkerDirectory(), 4, Runtime.version().feature());
         var identity = new RuntimeIdentity(
             TestWorkspace.VERSION_ID,
             "a".repeat(40),

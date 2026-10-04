@@ -214,7 +214,7 @@ public final class VeltisLauncher {
 
         var version = resolveVersion(manifest);
 
-        // A patches/ directory beside this jar -- or an explicit --patches --
+        // A Shulker/ directory beside this jar -- or an explicit --patches --
         // means someone wants the development loop: apply the source patches to
         // a decompiled tree, widen, compile, rebuild. None of that is here, and
         // it cannot be: the distributable deliberately carries no decompiler, no
@@ -231,12 +231,12 @@ public final class VeltisLauncher {
                 + "\n  Patches: " + sourcePatches.get()
                 + "\n  Reason: a distributable ships Minecraft's changes as compiled"
                 + " bytecode with both hashes on every entry, so it has no decompiler,"
-                + " no compiler and no source patch engine to apply a patches/ directory"
+                + " no compiler and no source patch engine to apply a Shulker/ directory"
                 + " with. Those live in the Gradle build."
                 + "\n  Fix: rebuild the runtime from your patches -- ./gradlew applyPatches,"
                 + " edit build/minecraft/<version>/patched/, then ./gradlew rebuildPatches"
                 + " and ./gradlew buildVeltisMC -- and run the jar that produces; or run"
-                + " this jar from a directory with no patches/ beside it, which uses the"
+                + " this jar from a directory with no Shulker/ beside it, which uses the"
                 + " patch set packaged inside it.");
             System.exit(1);
             return;

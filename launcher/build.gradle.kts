@@ -281,7 +281,7 @@ val oursRoots = listOf("org/veltismc", "META-INF/veltis")
  * bytecode patch set, verify the result and start the server. The decompiler,
  * `javac`, the source patch engine, the access widener and the pipeline's own
  * main do that work inside the Gradle build — and `VeltisLauncher` says so out
- * loud when a `patches/` directory turns up beside the jar: there is no
+ * loud when a `Shulker/` directory turns up beside the jar: there is no
  * pipeline here to run it with, so it refuses instead of starting a server that
  * quietly ignores the patches. Shipping the classes anyway would contradict
  * that claim in the one direction a reader cannot check by running anything:
@@ -289,7 +289,7 @@ val oursRoots = listOf("org/veltismc", "META-INF/veltis")
  *
  * Matched on the simple class name, so an inner class (`X$Y`) goes with `X`.
  * `PatchCategory` is deliberately not here: the launcher executes it when it
- * looks for a `patches/` directory, before it can decide to refuse one.
+ * looks for a `Shulker/` directory, before it can decide to refuse one.
  */
 val developmentClasses = setOf(
     "AccessRequirements",     // the access widener's model of what to widen
@@ -298,7 +298,7 @@ val developmentClasses = setOf(
     "DiffGenerator",          // source diffs for rebuildPatches
     "MinecraftDecompiler",    // Vineflower integration; Vineflower is not in the jar
     "ParsedPatch",            // source patch parsing
-    "PatchDiscovery",         // patches/ scanning; its directory constant is inlined
+    "PatchDiscovery",         // Shulker/ scanning; its directory constant is inlined
     "PatchedSourceCompiler",  // javac integration
     "PatchFailure",           // source patch failure reporting
     "PatchRebuilder",         // the rebuildPatches half of the source workflow
@@ -363,7 +363,7 @@ tasks.register("uberJar", Jar::class) {
     // path: `java -jar server.jar` needs nothing on disk but the jar, and the
     // difference between it and vanilla Minecraft is in it.
     //
-    // The development source patches under `patches/` deliberately are not.
+    // The development source patches under `Shulker/` deliberately are not.
     // They are how a contributor writes a change; a running server has no
     // decompiler to apply them with and no compiler to run the result through,
     // so packaging them would ship a second patch representation nobody can

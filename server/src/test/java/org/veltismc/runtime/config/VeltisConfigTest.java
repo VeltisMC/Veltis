@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@link VeltisConfig} writes Paper-compatible config files on first load and
+ * {@link VeltisConfig} writes its configuration files on first load and
  * maps their kebab-case keys onto the configuration objects.
  */
 class VeltisConfigTest {
@@ -28,8 +28,8 @@ class VeltisConfigTest {
 
     @Test
     void firstLoadWritesBothConfigFiles() {
-        assertTrue(Files.exists(home.resolve("config").resolve("paper-global.yml")));
-        assertTrue(Files.exists(home.resolve("config").resolve("paper-world-defaults.yml")));
+        assertTrue(Files.exists(home.resolve("config").resolve("veltis-global.yml")));
+        assertTrue(Files.exists(home.resolve("config").resolve("veltis-world-defaults.yml")));
     }
 
     @Test
@@ -43,7 +43,7 @@ class VeltisConfigTest {
 
     @Test
     void writtenDefaultsRoundTripThroughLoad() throws Exception {
-        var globalFile = home.resolve("config").resolve("paper-global.yml");
+        var globalFile = home.resolve("config").resolve("veltis-global.yml");
         var yaml = Files.readString(globalFile);
 
         // Kebab-case keys, defaults written out and readable back unchanged.
@@ -56,7 +56,7 @@ class VeltisConfigTest {
 
     @Test
     void nestedScalarSectionsAreApplied() throws Exception {
-        Files.writeString(home.resolve("config").resolve("paper-global.yml"), """
+        Files.writeString(home.resolve("config").resolve("veltis-global.yml"), """
             _version: 31
             chunk-loading-basic:
               player-max-chunk-send-rate: 42.5
@@ -68,7 +68,7 @@ class VeltisConfigTest {
                 enabled: true
                 secret: "s3cret"
             """);
-        Files.writeString(home.resolve("config").resolve("paper-world-defaults.yml"), """
+        Files.writeString(home.resolve("config").resolve("veltis-world-defaults.yml"), """
             _version: 31
             chunks:
               max-auto-save-chunks-per-tick: 5
@@ -97,7 +97,7 @@ class VeltisConfigTest {
 
     @Test
     void mapTypedFieldsAcceptNestedYamlMaps() throws Exception {
-        Files.writeString(home.resolve("config").resolve("paper-world-defaults.yml"), """
+        Files.writeString(home.resolve("config").resolve("veltis-world-defaults.yml"), """
             _version: 31
             tick-rates:
               sensor:
@@ -115,7 +115,7 @@ class VeltisConfigTest {
     void worldDirectoryOverridesFallBackToWorldDefaults() throws Exception {
         var worldDir = home.resolve("world");
         Files.createDirectories(worldDir);
-        Files.writeString(worldDir.resolve("paper-world.yml"), """
+        Files.writeString(worldDir.resolve("veltis-world.yml"), """
             _version: 31
             chunks:
               max-auto-save-chunks-per-tick: 7

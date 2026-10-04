@@ -174,7 +174,7 @@ public final class PatchedSourceCompiler {
      * references another patched class must resolve against the freshly compiled
      * output, not against the vanilla class of the same name sitting in the
      * widened jar. A patch that changes a method's signature and a second patch
-     * that calls it is exactly that case, and {@code patches/code/004} chains
+     * that calls it is exactly that case, and {@code Shulker/code/004} chains
      * with {@code 016} on the same file for the same reason.
      */
     private String compilerClasspath(VeltisWorkspace workspace) {

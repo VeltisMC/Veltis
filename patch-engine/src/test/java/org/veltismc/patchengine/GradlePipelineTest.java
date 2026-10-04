@@ -271,7 +271,7 @@ class GradlePipelineTest {
         assertTrue(uberJar.contains("include(\"META-INF/veltis/**\")"),
             "the patch set and the packaged version travel under META-INF/veltis/"
                 + " so a jar scan cannot mistake them for anything else");
-        assertFalse(uberJar.contains("dir(\"patches\")"),
+        assertFalse(uberJar.contains("dir(\"Shulker\")"),
             "the development source patches must not ship: a server has no decompiler to"
                 + " apply them with and no compiler to run the result through, so they"
                 + " would be a second patch representation nothing could use");
@@ -310,7 +310,7 @@ class GradlePipelineTest {
         assertTrue(entries.contains("META-INF/veltis/minecraft-version.txt"),
             "the jar must record the version it was built for");
 
-        var sourcePatches = entries.stream().filter(e -> e.startsWith("patches/")).toList();
+        var sourcePatches = entries.stream().filter(e -> e.startsWith("Shulker/")).toList();
         assertEquals(List.of(), sourcePatches,
             "no development source patch may ship: they are how a contributor writes a"
                 + " change, and a running server has nothing to apply them with ("
@@ -518,7 +518,7 @@ class GradlePipelineTest {
         // The shipped jar carries the patch set as compiled bytecode and ships no
         // pipeline to produce one: no decompiler, no javac, no source patch engine,
         // because none of them belongs in something an operator downloads. A
-        // `patches/` directory beside the jar therefore means someone expects a
+        // `Shulker/` directory beside the jar therefore means someone expects a
         // feature this jar cannot have.
         //
         // The refusal has to exist, and be checked, because the alternative is
@@ -598,8 +598,8 @@ class GradlePipelineTest {
             var script = read(module + "/build.gradle.kts");
             assertFalse(script.contains("File.separator + \"ver\" + File.separator"),
                 module + "/build.gradle.kts still filters on the retired ver/ layout");
-            assertFalse(script.contains(".resolve(\"patches\")"),
-                module + "/build.gradle.kts must not build its own patches/ path; only"
+            assertFalse(script.contains(".resolve(\"Shulker\")"),
+                module + "/build.gradle.kts must not build its own Shulker/ path; only"
                     + " the launcher packages the patch set, and it does so from the"
                     + " one directory Gradle declares at the top level");
             assertFalse(script.contains(".vlt"),

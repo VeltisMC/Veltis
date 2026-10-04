@@ -47,7 +47,7 @@ class PatchRebuilderTest {
      * <p>That matters for the "no edits" case: the guarantee under test is that a
      * rebuild which changes nothing leaves the patch files byte-identical, and that
      * is only a meaningful statement when the starting patch set is canonical.
-     * Building the fixture through {@link DiffGenerator} also means the test
+     * Building the fixture through {@link GitPatchEngine#diff} also means the test
      * exercises the round trip rather than a hand-written approximation of it.
      */
     private TestWorkspace baseFixture(String name) {
@@ -67,9 +67,15 @@ class PatchRebuilderTest {
             .apply(2);
     }
 
-    /** Exactly the bytes a rebuild would write for this change. */
+    /**
+     * Exactly the bytes a rebuild would write for this change.
+     *
+     * <p>Rendered by the same Git the rebuild calls, so "is the rebuild a fixed
+     * point of itself" is answered against Git's own output rather than against a
+     * second implementation that happens to agree with it today.
+     */
     private static String canonicalPatch(String target, String pristine, String patched) {
-        return String.join("\n", DiffGenerator.diff(target, pristine, patched)) + "\n";
+        return String.join("\n", GitPatchEngine.diff(target, pristine, patched)) + "\n";
     }
 
     /** Applies the patch set to a fresh mirror and returns the resulting tree. */
@@ -92,7 +98,7 @@ class PatchRebuilderTest {
 
         var edited = fixture.patchedTree();
         var result = new PatchRebuilder().rebuild(fixture.workspace(),
-            fixture.workspace().patchesDirectory(), TestWorkspace.VERSION_ID);
+            fixture.workspace().shulkerDirectory(), TestWorkspace.VERSION_ID);
 
         assertEquals(2, result.regenerated(), "only the two edited patches change");
         assertEquals(0, result.created());
@@ -108,12 +114,12 @@ class PatchRebuilderTest {
     @Test
     void aRebuildWithNoEditsProducesNoVersionControlDiff() throws Exception {
         var fixture = baseFixture("no-edits");
-        var before = readPatches(fixture.workspace().patchesDirectory());
+        var before = readPatches(fixture.workspace().shulkerDirectory());
 
         var result = new PatchRebuilder().rebuild(fixture.workspace(),
-            fixture.workspace().patchesDirectory(), TestWorkspace.VERSION_ID);
+            fixture.workspace().shulkerDirectory(), TestWorkspace.VERSION_ID);
 
-        assertEquals(before, readPatches(fixture.workspace().patchesDirectory()),
+        assertEquals(before, readPatches(fixture.workspace().shulkerDirectory()),
             "a rebuild that changes nothing must not rewrite a patch file");
         assertEquals(0, result.regenerated());
         assertEquals(0, result.created());
@@ -126,10 +132,10 @@ class PatchRebuilderTest {
         // Put the file back exactly as the decompile has it.
         Files.write(fixture.patchedRoot().resolve(SERVER),
             fixture.pristine(SERVER).getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        var patchFile = fixture.workspace().patchesDirectory().resolve("code/001-Server.patch");
+        var patchFile = fixture.workspace().shulkerDirectory().resolve("code/001-Server.patch");
 
         var result = new PatchRebuilder().rebuild(fixture.workspace(),
-            fixture.workspace().patchesDirectory(), TestWorkspace.VERSION_ID);
+            fixture.workspace().shulkerDirectory(), TestWorkspace.VERSION_ID);
 
         assertEquals(1, result.removed());
         assertFalse(Files.exists(patchFile), "a patch nothing needs must be deleted, not emptied");
@@ -148,7 +154,7 @@ class PatchRebuilderTest {
             "class Helper {}\n");
 
         var result = new PatchRebuilder().rebuild(fixture.workspace(),
-            fixture.workspace().patchesDirectory(), TestWorkspace.VERSION_ID);
+            fixture.workspace().shulkerDirectory(), TestWorkspace.VERSION_ID);
 
         assertEquals(1, result.created());
         var patches = fixture.discover();
@@ -173,13 +179,13 @@ class PatchRebuilderTest {
 
         // With no edits the chain regenerates byte-identically: replaying it
         // recovers exactly the states the patches already described.
-        var before = readPatches(fixture.workspace().patchesDirectory());
+        var before = readPatches(fixture.workspace().shulkerDirectory());
         var untouched = new PatchRebuilder().rebuild(fixture.workspace(),
-            fixture.workspace().patchesDirectory(), TestWorkspace.VERSION_ID);
+            fixture.workspace().shulkerDirectory(), TestWorkspace.VERSION_ID);
         assertEquals(0, untouched.regenerated(), "a rebuild with no edits changes nothing");
         assertEquals(0, untouched.removed());
         assertEquals(1, untouched.targets(), "the file is still covered, by two patches");
-        assertEquals(before, readPatches(fixture.workspace().patchesDirectory()));
+        assertEquals(before, readPatches(fixture.workspace().shulkerDirectory()));
 
         // An edit lands in the LAST patch of the chain, because that is the only
         // position from which the edited tree is reachable. The earlier patch
@@ -188,12 +194,12 @@ class PatchRebuilderTest {
         var edited = fixture.patchedTree();
 
         var result = new PatchRebuilder().rebuild(fixture.workspace(),
-            fixture.workspace().patchesDirectory(), TestWorkspace.VERSION_ID);
+            fixture.workspace().shulkerDirectory(), TestWorkspace.VERSION_ID);
 
         assertEquals(1, result.regenerated(), "only the patch carrying the edit is rewritten");
         assertEquals(0, result.created());
         assertEquals(0, result.removed());
-        var after = readPatches(fixture.workspace().patchesDirectory());
+        var after = readPatches(fixture.workspace().shulkerDirectory());
         assertEquals(before.get("code/001-A.patch"), after.get("code/001-A.patch"),
             "the earlier patch in the chain keeps its content exactly");
         assertEquals(canonicalPatch(SERVER, markerOne, markerThree),
@@ -224,16 +230,16 @@ class PatchRebuilderTest {
         // Deleting a patch changes the intended final state, so the workspace is
         // re-applied first — that is the workflow CONTRIBUTING documents, and it
         // is also what keeps the applied-patch record truthful.
-        Files.delete(fixture.workspace().patchesDirectory().resolve("code/001-Server.patch"));
+        Files.delete(fixture.workspace().shulkerDirectory().resolve("code/001-Server.patch"));
         reapply(fixture);
 
         var result = new PatchRebuilder().rebuild(fixture.workspace(),
-            fixture.workspace().patchesDirectory(), TestWorkspace.VERSION_ID);
+            fixture.workspace().shulkerDirectory(), TestWorkspace.VERSION_ID);
 
         assertEquals(2, result.regenerated(), "both survivors keep their content and move");
         assertEquals(0, result.created());
         assertEquals(0, result.removed());
-        var patches = readPatches(fixture.workspace().patchesDirectory());
+        var patches = readPatches(fixture.workspace().shulkerDirectory());
         assertEquals(
             java.util.Set.of("code/001-Bootstrap.patch", "code/002-PlayerList.patch"),
             patches.keySet(),
@@ -250,18 +256,18 @@ class PatchRebuilderTest {
     void aPatchDeletedWithoutReapplyingIsRefusedByNameAndTarget() throws Exception {
         var fixture = baseFixture("stale-delete");
         var expected = fixture.patchedTree();
-        Files.delete(fixture.workspace().patchesDirectory().resolve("code/001-Server.patch"));
+        Files.delete(fixture.workspace().shulkerDirectory().resolve("code/001-Server.patch"));
 
         var failure = assertThrows(PatchEngineException.class,
             () -> new PatchRebuilder().rebuild(fixture.workspace(),
-                fixture.workspace().patchesDirectory(), TestWorkspace.VERSION_ID));
+                fixture.workspace().shulkerDirectory(), TestWorkspace.VERSION_ID));
 
         var msg = failure.getMessage();
         assertTrue(msg.contains("code/001-Server.patch"), msg);
         assertTrue(msg.contains(SERVER), msg);
         assertTrue(msg.contains("applyPatches"), msg);
         assertTrue(msg.contains("nothing was written"), msg);
-        assertTrue(Files.exists(fixture.workspace().patchesDirectory().resolve("code/002-Bootstrap.patch")),
+        assertTrue(Files.exists(fixture.workspace().shulkerDirectory().resolve("code/002-Bootstrap.patch")),
             "the rebuild must not have touched any surviving patch");
         assertEquals(expected, fixture.patchedTree(), "and not the workspace either");
     }
@@ -276,12 +282,12 @@ class PatchRebuilderTest {
         System.setProperty(PatchRebuilder.PATCH_NAME_PROPERTY, "007-Improve Helper Logging");
         try {
             var result = new PatchRebuilder().rebuild(fixture.workspace(),
-                fixture.workspace().patchesDirectory(), TestWorkspace.VERSION_ID);
+                fixture.workspace().shulkerDirectory(), TestWorkspace.VERSION_ID);
             assertEquals(1, result.created());
             assertTrue(Files.exists(
-                    fixture.workspace().patchesDirectory().resolve("code/003-Improve-Helper-Logging.patch")),
+                    fixture.workspace().shulkerDirectory().resolve("code/003-Improve-Helper-Logging.patch")),
                 "the number comes from the order, the description from the property; "
-                    + "readPatches=" + readPatches(fixture.workspace().patchesDirectory()).keySet());
+                    + "readPatches=" + readPatches(fixture.workspace().shulkerDirectory()).keySet());
         } finally {
             System.clearProperty(PatchRebuilder.PATCH_NAME_PROPERTY);
         }
@@ -301,14 +307,14 @@ class PatchRebuilderTest {
         try {
             var failure = assertThrows(PatchEngineException.class,
                 () -> new PatchRebuilder().rebuild(fixture.workspace(),
-                    fixture.workspace().patchesDirectory(), TestWorkspace.VERSION_ID));
+                    fixture.workspace().shulkerDirectory(), TestWorkspace.VERSION_ID));
             var msg = failure.getMessage();
             assertTrue(msg.contains("-PpatchName"), msg);
             assertTrue(msg.contains("net/minecraft/util/Helper.java"), msg);
             assertTrue(msg.contains("net/minecraft/util/Other.java"), msg);
             assertTrue(msg.contains("nothing was written"), msg);
             assertFalse(Files.exists(
-                    fixture.workspace().patchesDirectory().resolve("code/003-Whatever.patch")),
+                    fixture.workspace().shulkerDirectory().resolve("code/003-Whatever.patch")),
                 "an ambiguous name must not half-apply");
         } finally {
             System.clearProperty(PatchRebuilder.PATCH_NAME_PROPERTY);
@@ -325,7 +331,7 @@ class PatchRebuilderTest {
 
         var failure = assertThrows(PatchEngineException.class,
             () -> new PatchRebuilder().rebuild(fixture.workspace(),
-                fixture.workspace().patchesDirectory(), TestWorkspace.VERSION_ID));
+                fixture.workspace().shulkerDirectory(), TestWorkspace.VERSION_ID));
 
         assertTrue(failure.getMessage().contains("applyPatches"),
             failure.getMessage());
