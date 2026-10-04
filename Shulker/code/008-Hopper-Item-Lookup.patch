@@ -1,0 +1,22 @@
+diff --git a/net/minecraft/world/level/block/entity/HopperBlockEntity.java b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
+--- a/net/minecraft/world/level/block/entity/HopperBlockEntity.java
++++ b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
+@@ -357,7 +357,7 @@
+ 
+     public static List<ItemEntity> getItemsAtAndAbove(final Level level, final Hopper hopper) {
+         AABB aabb = hopper.getSuckAabb().move(hopper.getLevelX() - 0.5, hopper.getLevelY() - 0.5, hopper.getLevelZ() - 0.5);
+-        return level.<Entity>getEntitiesOfClass(ItemEntity.class, aabb, EntitySelector.ENTITY_STILL_ALIVE);
++        return level.getEntitiesOfClass(ItemEntity.class, aabb, EntitySelector.ENTITY_STILL_ALIVE);
+     }
+ 
+     public static @Nullable Container getContainerAt(final Level level, final BlockPos pos) {
+@@ -369,6 +369,9 @@
+     ) {
+         Container result = getBlockContainer(level, pos, state);
+         if (result == null) {
++            if (state.isCollisionShapeFullBlock(level, pos)) {
++                return null;
++            }
+             result = getEntityContainer(level, x, y, z);
+         }
+ 
