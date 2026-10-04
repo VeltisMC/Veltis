@@ -16,7 +16,7 @@ diff --git a/net/minecraft/server/packs/repository/ServerPacksSource.java b/net/
  
 +    // Veltis: Built-in Datapack Metadata & Config
 +    public static PackSource VELTIS_PACK_SOURCE = PackSource.create(
-+        name -> Component.literal("veltis").withStyle(ChatFormatting.DARK_PURPLE), true
++        name -> Component.literal("Veltis (built-in)").withStyle(ChatFormatting.DARK_PURPLE), true
 +    );
 +    public static PackLocationInfo VELTIS_PACK_INFO = new PackLocationInfo(
 +        "veltis", Component.literal("Veltis"), VELTIS_PACK_SOURCE, Optional.empty()
