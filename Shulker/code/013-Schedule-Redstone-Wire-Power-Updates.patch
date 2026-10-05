@@ -1,0 +1,101 @@
+diff --git a/net/minecraft/world/level/redstone/DefaultRedstoneWireEvaluator.java b/net/minecraft/world/level/redstone/DefaultRedstoneWireEvaluator.java
+--- a/net/minecraft/world/level/redstone/DefaultRedstoneWireEvaluator.java
++++ b/net/minecraft/world/level/redstone/DefaultRedstoneWireEvaluator.java
+@@ -1,7 +1,8 @@
+ package net.minecraft.world.level.redstone;
+ 
+-import com.google.common.collect.Sets;
+-import java.util.Set;
++import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
++import java.util.ArrayDeque;
++import java.util.Deque;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.Direction;
+ import net.minecraft.world.level.Level;
+@@ -10,6 +11,11 @@
+ import org.jspecify.annotations.Nullable;
+ 
+ public class DefaultRedstoneWireEvaluator extends RedstoneWireEvaluator {
++    public static final int MAX_DRAINED_POWER_UPDATES = 1048576;
++    public Deque<BlockPos> pendingPowerUpdates = new ArrayDeque<BlockPos>();
++    public LongOpenHashSet pendingPowerUpdateSet = new LongOpenHashSet();
++    public boolean drainingPowerUpdates = false;
++
+     public DefaultRedstoneWireEvaluator(final RedstoneWireBlock wireBlock) {
+         super(wireBlock);
+     }
+@@ -18,22 +24,64 @@
+     public void updatePowerStrength(
+         final Level level, final BlockPos pos, final BlockState state, final @Nullable Orientation orientation, final boolean skipShapeUpdates
+     ) {
+-        int targetStrength = this.calculateTargetStrength(level, pos);
+-        if (state.<Integer>getValue(RedstoneWireBlock.POWER) != targetStrength) {
+-            if (level.getBlockState(pos) == state) {
+-                level.setBlock(pos, state.setValue(RedstoneWireBlock.POWER, targetStrength), 2);
++        this.schedulePowerUpdate(pos);
++        this.drainPowerUpdates(level);
++    }
++
++    public void schedulePowerUpdate(final BlockPos pos) {
++        if (this.pendingPowerUpdateSet.add(pos.asLong())) {
++            this.pendingPowerUpdates.add(new BlockPos(pos.getX(), pos.getY(), pos.getZ()));
++        }
++    }
++
++    public void drainPowerUpdates(final Level level) {
++        if (this.drainingPowerUpdates) {
++            return;
++        }
++
++        this.drainingPowerUpdates = true;
++
++        try {
++            int budget = MAX_DRAINED_POWER_UPDATES;
++
++            while (!this.pendingPowerUpdates.isEmpty() && budget-- > 0) {
++                BlockPos pos = this.pendingPowerUpdates.removeFirst();
++                this.pendingPowerUpdateSet.remove(pos.asLong());
++                this.applyPowerUpdate(level, pos);
+             }
+ 
+-            Set<BlockPos> toUpdate = Sets.<BlockPos>newHashSet();
+-            toUpdate.add(pos);
++            if (!this.pendingPowerUpdates.isEmpty()) {
++                this.pendingPowerUpdates.clear();
++                this.pendingPowerUpdateSet.clear();
++            }
++        } finally {
++            this.drainingPowerUpdates = false;
++        }
++    }
++
++    public void applyPowerUpdate(final Level level, final BlockPos pos) {
++        BlockState state = level.getBlockState(pos);
++
++        if (!state.is(this.wireBlock)) {
++            level.updateNeighborsAt(pos, this.wireBlock);
+ 
+             for (Direction direction : Direction.values()) {
+-                toUpdate.add(pos.relative(direction));
++                level.updateNeighborsAt(pos.relative(direction), this.wireBlock);
+             }
+ 
+-            for (BlockPos blockPos : toUpdate) {
+-                level.updateNeighborsAt(blockPos, this.wireBlock);
+-            }
++            return;
++        }
++
++        int targetStrength = this.calculateTargetStrength(level, pos);
++        if (state.<Integer>getValue(RedstoneWireBlock.POWER) == targetStrength) {
++            return;
++        }
++
++        level.setBlock(pos, state.setValue(RedstoneWireBlock.POWER, targetStrength), 2);
++        level.updateNeighborsAt(pos, this.wireBlock);
++
++        for (Direction direction : Direction.values()) {
++            level.updateNeighborsAt(pos.relative(direction), this.wireBlock);
+         }
+     }
+ 
