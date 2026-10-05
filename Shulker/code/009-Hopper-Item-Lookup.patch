@@ -1,0 +1,13 @@
+diff --git a/net/minecraft/world/level/block/entity/HopperBlockEntity.java b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
+--- a/net/minecraft/world/level/block/entity/HopperBlockEntity.java
++++ b/net/minecraft/world/level/block/entity/HopperBlockEntity.java
+@@ -369,6 +369,9 @@
+     ) {
+         Container result = getBlockContainer(level, pos, state);
+         if (result == null) {
++            if (state.isCollisionShapeFullBlock(level, pos)) {
++                return null;
++            }
+             result = getEntityContainer(level, x, y, z);
+         }
+ 
