@@ -5,7 +5,7 @@ diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server
              player.getY(),
              player.getZ()
          );
-+        LOGGER.info("{} joined the game", player.getGameProfile().name());
++        LOGGER.info("{} joined the game!", player.getGameProfile().name());
          LevelData levelData = level.getLevelData();
          ServerGamePacketListenerImpl playerConnection = new ServerGamePacketListenerImpl(this.server, connection, player, cookie);
          connection.setupInboundProtocol(
@@ -13,7 +13,7 @@ diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server
      public void remove(final ServerPlayer player) {
          ServerLevel level = player.level();
          player.awardStat(Stats.LEAVE_GAME);
-+        LOGGER.info("{} left the game", player.getGameProfile().name());
++        LOGGER.info("{} left the game.", player.getGameProfile().name());
          this.save(player);
          if (player.isPassenger()) {
              Entity vehicle = player.getRootVehicle();
