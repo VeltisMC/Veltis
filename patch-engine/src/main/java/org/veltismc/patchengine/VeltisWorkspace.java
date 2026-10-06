@@ -409,7 +409,8 @@ public final class VeltisWorkspace {
     /**
      * The bytecode patch set generated for this workspace: the compiled
      * difference between Mojang's classes jar and a VeltisMC build, expressed as
-     * whole-class payloads with both hashes on every entry.
+     * one class delta per modified class plus resource and removal entries, with
+     * three SHA-256s on every index line.
      *
      * <p>Development builds generate it and then apply it, so the jar they end up
      * with is produced by the same code a server installation runs — which is the
@@ -426,6 +427,23 @@ public final class VeltisWorkspace {
     }
 
     /**
+     * The exploded mirror of the patch set's payload directory: every delta,
+     * resource and payload the container carries, under the same names the
+     * container uses, at the workspace root.
+     *
+     * <p>It exists so the patch set's contents can be inspected, diffed and
+     * wired into build outputs without unzipping anything — the container and
+     * this tree are written from the same records in the same run, so they
+     * agree byte for byte. It is regenerated from scratch on every generation;
+     * a leftover file here is never read back.
+     *
+     * <p>Declared as a Gradle output in the root build script.</p>
+     */
+    public Path runtimePatchesDirectory() {
+        return root.resolve("runtime-patches");
+    }
+
+    /**
      * Development-only marker proving the compiled runtime in
      * {@link #classesDirectory()} belongs to this patch set and artifact.
      *
@@ -438,9 +456,9 @@ public final class VeltisWorkspace {
         return root.resolve(RUNTIME_MARKER);
     }
 
-    /** The {@code Shulker/} directory at the project root. */
+    /** The {@code server/Shulker/} directory the development patch set lives in. */
     public Path shulkerDirectory() {
-        return projectDirectory.resolve(PatchDiscovery.SHULKER_DIRECTORY);
+        return projectDirectory.resolve("server").resolve(PatchDiscovery.SHULKER_DIRECTORY);
     }
 
     /**

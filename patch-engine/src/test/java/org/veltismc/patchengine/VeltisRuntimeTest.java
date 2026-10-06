@@ -48,7 +48,7 @@ class VeltisRuntimeTest {
      * a different one is refused, not how it is computed (that is
      * {@code RuntimeIdentityTest}'s job).
      */
-    private static final String FIXTURE_REVISION = "fixture-revision";
+    private static final String FIXTURE_REVISION = "f".repeat(64);
 
     /**
      * A compilable class in package {@code net.minecraft.server}.
@@ -125,7 +125,7 @@ class VeltisRuntimeTest {
             serverSha1 = MojangMetadata.sha1(workspace.vanillaServerJar());
             patch = BytecodePatch.read(BytecodePatchGenerator
                 .generate(workspace, TestWorkspace.VERSION, serverSha1,
-                    Runtime.version().feature())
+                    Runtime.version().feature(), FIXTURE_REVISION, 1, 1)
                 .file());
         } catch (IOException e) {
             throw new IllegalStateException(
@@ -378,16 +378,18 @@ class VeltisRuntimeTest {
             MojangMetadata.sha1(workspace.vanillaServerJar()),
             MojangMetadata.sha1(workspace.vanillaClassesJar()),
             Runtime.version().feature(),
-            List.of(new BytecodePatch.ProducedEntry(SERVER_CLASS, identical,
-                BytecodePatch.sha1Hex(identical))));
+            1,
+            List.of(new BytecodePatch.ProducedEntry(SERVER_CLASS, BytecodePatch.Kind.ENTRY,
+                identical, BytecodePatch.sha256Hex(identical),
+                BytecodePatch.sha256Hex(identical))));
         var patch = BytecodePatch.read(patchFile);
         runtime.applyBytecodePatch(patch,
             runtime.identityFor(patch.metadata(), FIXTURE_REVISION));
 
         var guard = VeltisRuntime.readGuard(workspace.veltisServerJar());
         assertEquals(1, guard.size(), "one guarded class in the fixture");
-        assertEquals(guard.get(SERVER_CLASS).compiledSha1(),
-            guard.get(SERVER_CLASS).baselineSha1(),
+        assertEquals(guard.get(SERVER_CLASS).compiledSha256(),
+            guard.get(SERVER_CLASS).baselineSha256(),
             "the fixture must really produce a patched class identical to vanilla,"
                 + " or the guard is not being tested at all");
 
@@ -433,12 +435,24 @@ class VeltisRuntimeTest {
         // was written from the bytes that were verified, so a later change shows up
         // as a mismatch even though the class loads and the code source is right.
         var runtime = fixture(tmp);
-        var classFile = runtime.workspace().classesDirectory().resolve(SERVER_CLASS);
-        assertArrayEquals(Files.readAllBytes(classFile),
-            readEntry(runtime.workspace().veltisServerJar(), SERVER_CLASS),
-            "the fixture must start with a jar that matches its compiled class");
+        // What the jar must hold is the class the patch set promised: the
+        // applier wrote it from the payload, and generation verified that
+        // payload against the compiled class — the splice does not have to
+        // reproduce javac's byte layout (constant-pool order, debug tables on
+        // kept members) to be the same class.
+        var jar = runtime.workspace().veltisServerJar();
+        var index = BytecodePatch.read(runtime.workspace().bytecodePatchFile());
+        var promised = index.entries().stream()
+            .filter(entry -> SERVER_CLASS.equals(entry.name()))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError(
+                "the fixture's patch set must name the class it guards"));
+        assertEquals(promised.resultSha256(),
+            BytecodePatch.sha256Hex(readEntry(jar, SERVER_CLASS)),
+            "the fixture must start with a jar that holds exactly the class the patch"
+                + " set promised to write");
 
-        replaceEntry(runtime.workspace().veltisServerJar(), SERVER_CLASS,
+        replaceEntry(jar, SERVER_CLASS,
             source("MinecraftServer", "not what was compiled").getBytes(StandardCharsets.UTF_8));
 
         try (var loader = runtime.newClassLoader(null)) {
@@ -470,11 +484,13 @@ class VeltisRuntimeTest {
         var before = Files.readAllBytes(jar);
 
         var good = BytecodePatch.read(runtime.workspace().bytecodePatchFile());
-        var wrong = "0".repeat(40);
+        var wrong = "0".repeat(64);
         var entries = new ArrayList<BytecodePatch.ProducedEntry>();
         for (var entry : good.entries()) {
-            entries.add(new BytecodePatch.ProducedEntry(entry.name(), good.payload(entry.name()),
-                SERVER_CLASS.equals(entry.name()) ? wrong : entry.originalSha1()));
+            entries.add(new BytecodePatch.ProducedEntry(entry.name(), entry.kind(),
+                good.payload(entry.name()),
+                SERVER_CLASS.equals(entry.name()) ? wrong : entry.originalSha256(),
+                entry.resultSha256()));
         }
         // Rewritten rather than edited in place, so the container stays
         // internally consistent — fingerprint, entry count and index all agree.
@@ -482,7 +498,7 @@ class VeltisRuntimeTest {
         var elsewhere = tmp.resolve("cut-against-another-build.zip");
         BytecodePatch.write(elsewhere, good.metadata().minecraftVersion(),
             good.metadata().serverSha1(), good.metadata().classesSha1(),
-            good.metadata().classFileRelease(), entries);
+            good.metadata().classFileRelease(), good.metadata().sourcePatchCount(), entries);
         var bad = BytecodePatch.read(elsewhere);
 
         var failure = assertThrows(PatchEngineException.class,
@@ -490,10 +506,10 @@ class VeltisRuntimeTest {
                 runtime.identityFor(bad.metadata(), FIXTURE_REVISION)),
             "a patch set and a baseline that disagree must not be applied at all");
         assertTrue(failure.getMessage().contains(SERVER_CLASS), failure.getMessage());
-        assertTrue(failure.getMessage().contains("Expected SHA-1: " + wrong),
+        assertTrue(failure.getMessage().contains("Expected SHA-256: " + wrong),
             "both hashes have to be in the message, or the operator cannot tell what"
                 + " the jar actually is: " + failure.getMessage());
-        assertTrue(failure.getMessage().contains("Actual SHA-1:"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("Actual SHA-256:"), failure.getMessage());
         assertArrayEquals(before, Files.readAllBytes(jar),
             "the artifact the installation already has must be left exactly as it was");
         assertFalse(Files.exists(jar.resolveSibling(jar.getFileName() + ".writing")),
@@ -531,10 +547,10 @@ class VeltisRuntimeTest {
             "a payload the index does not describe must not be written into a jar");
         assertTrue(failure.getMessage().contains("is corrupt"), failure.getMessage());
         assertTrue(failure.getMessage().contains(SERVER_CLASS), failure.getMessage());
-        assertTrue(failure.getMessage().contains("Expected SHA-1:"),
+        assertTrue(failure.getMessage().contains("Expected SHA-256:"),
             "the expected hash is what tells the operator which build was intended: "
                 + failure.getMessage());
-        assertTrue(failure.getMessage().contains("Actual SHA-1:"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("Actual SHA-256:"), failure.getMessage());
         assertArrayEquals(before, Files.readAllBytes(jar),
             "the artifact the installation already has must be left exactly as it was");
         assertFalse(Files.exists(jar.resolveSibling(jar.getFileName() + ".writing")),
@@ -584,12 +600,21 @@ class VeltisRuntimeTest {
 
         var jar = workspace.veltisServerJar();
         var nested = "net/minecraft/server/MinecraftServer$Inner.class";
-        var compiled = workspace.classesDirectory();
 
-        assertArrayEquals(Files.readAllBytes(compiled.resolve(nested)),
-            readEntry(jar, nested),
-            "the nested class in the jar must be the one javac just compiled, not"
-                + " vanilla's copy of a class the patch set never mentioned");
+        // The jar must hold exactly what the patch set promised for the nested
+        // class: applier output from the payload, which generation verified
+        // against the class javac compiled — byte layout differences (constant
+        // pool order, debug tables on kept members) notwithstanding.
+        var index = BytecodePatch.read(workspace.bytecodePatchFile());
+        var promised = index.entries().stream()
+            .filter(entry -> nested.equals(entry.name()))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError(
+                "the patch set must name the nested class it guards"));
+        assertEquals(promised.resultSha256(),
+            BytecodePatch.sha256Hex(readEntry(jar, nested)),
+            "the nested class in the jar must be exactly what the patch set promised"
+                + " for it, not vanilla's copy of a class");
         assertNotEquals(
             Files.readAllBytes(vanillaOut.resolve("net/minecraft/server/MinecraftServer$Inner.class")),
             readEntry(jar, nested),
@@ -599,13 +624,13 @@ class VeltisRuntimeTest {
         assertTrue(guard.containsKey(nested),
             "the guard must cover it too: proving the class is in the jar says nothing"
                 + " about which jar the loader will actually answer from");
-        assertEquals(BytecodePatch.sha1Hex(Files.readAllBytes(
+        assertEquals(BytecodePatch.sha256Hex(Files.readAllBytes(
                 vanillaOut.resolve("net/minecraft/server/MinecraftServer$Inner.class"))),
-            guard.get(nested).baselineSha1(),
+            guard.get(nested).baselineSha256(),
             "and it carries the real baseline hash: vanilla's copy genuinely is the class"
                 + " this one replaces, so it is diffed against like any other entry"
                 + " rather than waved through because it happens to be a nested class");
-        assertNotEquals("-", guard.get(SERVER_CLASS).baselineSha1(),
+        assertNotEquals("-", guard.get(SERVER_CLASS).baselineSha256(),
             "while the file the patch set actually names keeps its real baseline, so"
                 + " the check for a patch that silently matched nothing still has"
                 + " something to compare against");
@@ -741,9 +766,10 @@ class VeltisRuntimeTest {
         var otherFile = tmp.resolve("other.zip");
         BytecodePatch.write(otherFile, TestWorkspace.VERSION_ID,
             patch.metadata().serverSha1(), patch.metadata().classesSha1(),
-            patch.metadata().classFileRelease(),
-            List.of(new BytecodePatch.ProducedEntry("nothing.txt", new byte[] {9},
-                BytecodePatch.ABSENT)));
+            patch.metadata().classFileRelease(), patch.metadata().sourcePatchCount(),
+            List.of(new BytecodePatch.ProducedEntry("nothing.txt", BytecodePatch.Kind.ENTRY,
+                new byte[] {9}, BytecodePatch.ABSENT,
+                BytecodePatch.sha256Hex(new byte[] {9}))));
         var otherPatch = BytecodePatch.read(otherFile);
         assertFalse(runtime.validateArtifact(otherPatch, FIXTURE_REVISION).isPresent(),
             "and neither must a patch set cut from different payloads: the fingerprint is"
@@ -1058,7 +1084,8 @@ class VeltisRuntimeTest {
 
     /**
      * The guard must fail when a build tree, rather than the artifact, is what
-     * the loader answers from — even though the bytes are the compiled bytes.
+     * the loader answers from — even though the bytes are exactly the bytes
+     * the guard records.
      *
      * <p>This is the case a classpath-ordering rule alone cannot catch: the loose
      * directory holds <em>exactly</em> the classes the guard wants, so every hash
@@ -1072,6 +1099,16 @@ class VeltisRuntimeTest {
         throws Exception {
         var runtime = fixture(tmp);
         var workspace = runtime.workspace();
+        var jar = workspace.veltisServerJar();
+
+        // The guard records the applier's output, not javac's byte layout, so
+        // the loose directory is seeded with the packaged bytes: hashes match,
+        // and the origin is the only thing left for the guard to object to.
+        for (var name : VeltisRuntime.readGuard(jar).keySet()) {
+            var target = workspace.classesDirectory().resolve(name);
+            Files.createDirectories(target.getParent());
+            Files.write(target, readEntry(jar, name));
+        }
 
         var urls = new java.util.ArrayList<java.net.URL>();
         urls.add(workspace.classesDirectory().toUri().toURL());
@@ -1084,10 +1121,10 @@ class VeltisRuntimeTest {
             var failure = assertThrows(PatchEngineException.class,
                 () -> runtime.verifyPatchedClasses(loader),
                 "a build tree ahead of the artifact must fail even though its bytes are"
-                    + " the compiled bytes: the whole point is that the server runs from"
+                    + " the recorded bytes: the whole point is that the server runs from"
                     + " the jar, and nothing else");
             assertTrue(failure.getMessage().contains("code source"), failure.getMessage());
-            assertFalse(failure.getMessage().contains("to bytes whose SHA-1"),
+            assertFalse(failure.getMessage().contains("to bytes whose SHA-256"),
                 "the bytes must have matched first: it is the origin that is wrong, and"
                     + " a test where the hashes also differed would pass for the wrong"
                     + " reason");

@@ -40,7 +40,7 @@ class PatchDiscoveryTest {
         return root;
     }
 
-    /** Discovery of an explicit {@code Shulker/} directory, with its own counters. */
+    /** Discovery of an explicit patch-set directory, with its own counters. */
     private static List<VeltisPatch> discover(Path patchesRoot) {
         return PatchDiscovery.discover(patchesRoot, "26.3", new PatchStats());
     }

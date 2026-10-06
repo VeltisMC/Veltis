@@ -20,7 +20,7 @@ import java.util.TreeMap;
  * nothing under test depends on how those bytes got there.
  *
  * <p>The layout is the real one — {@code <root>/build/minecraft/26.3/{source,patched,build}}
- * plus {@code <root>/Shulker/{code,data,modules}} — so a test that asserts "no
+ * plus {@code <root>/server/Shulker/{code,data,modules}} — so a test that asserts "no
  * temporary directories are produced" is asserting it about the real layout.
  */
 final class TestWorkspace {

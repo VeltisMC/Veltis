@@ -62,7 +62,12 @@ val patchedDir = workspaceDir.dir("patched")
 val classesDir = workspaceDir.dir("classes")
 val resourcesDir = workspaceDir.dir("resources")
 val buildStateDir = workspaceDir.dir("build")
-val patchesDir = layout.projectDirectory.dir("Shulker")
+// The exploded mirror of the patch set's payload directory: the same deltas and
+// resources the container carries, as plain files under the names the index
+// uses. A generated view of one run's output, declared as an output of the task
+// that writes it so a clean build knows it exists.
+val runtimePatchesDir = workspaceDir.dir("runtime-patches")
+val patchesDir = layout.projectDirectory.dir("server/Shulker")
 
 val vanillaServerJar = vanillaDir.file("server.jar")
 val vanillaClassesJar = vanillaDir.file("server-classes.jar")
@@ -540,7 +545,7 @@ val decompileMinecraft = pipelineStep(
 
 val applyVeltisPatches = pipelineStep(
     "applyVeltisPatches", "applyVeltisPatches",
-    "Mirrors the decompiled source and applies Shulker/{code,data,modules}"
+    "Mirrors the decompiled source and applies server/Shulker/{code,data,modules}"
 ).also {
     it.configure {
         inputs.dir(patchesDir).withPropertyName("patchSet")
@@ -555,7 +560,7 @@ val applyVeltisPatches = pipelineStep(
 
 val rebuildVeltisPatches = pipelineStep(
     "rebuildVeltisPatches", "rebuildVeltisPatches",
-    "Regenerates Shulker/ from the current contents of the patched workspace"
+    "Regenerates server/Shulker/ from the current contents of the patched workspace"
 ).also {
     it.configure {
         // Deliberately NOT dependsOn(applyVeltisPatches). The rebuild workflow is
@@ -568,7 +573,7 @@ val rebuildVeltisPatches = pipelineStep(
 
         // patched/ is hand-edited between runs, so its contents cannot be tracked
         // as an input: Gradle would either miss a change or consider the task up to
-        // date while Shulker/ is stale. Reading the tree live and always running is
+        // date while server/Shulker/ is stale. Reading the tree live and always running is
         // the only honest description of what this task does.
         outputs.upToDateWhen { false }
         outputs.dir(patchesDir).withPropertyName("regeneratedPatches")
@@ -610,13 +615,13 @@ val cleanVeltisPatches = pipelineStep(
  */
 tasks.register("applyPatches") {
     group = "minecraft"
-    description = "Mirrors the pristine decompiled source and applies Shulker/{code,data,modules}"
+    description = "Mirrors the pristine decompiled source and applies server/Shulker/{code,data,modules}"
     dependsOn(applyVeltisPatches)
 }
 
 tasks.register("rebuildPatches") {
     group = "minecraft"
-    description = "Turns edited files under patched/ back into Shulker/, renumbered contiguously"
+    description = "Turns edited files under patched/ back into server/Shulker/, renumbered contiguously"
     dependsOn(rebuildVeltisPatches)
 }
 
@@ -659,6 +664,7 @@ val prepareVeltisRuntime = pipelineStep(
         outputs.dir(resourcesDir).withPropertyName("patchedResources")
         outputs.dir(buildStateDir).withPropertyName("pipelineState")
         outputs.file(runtimeMarkerFile).withPropertyName("runtimeIdentity")
+        outputs.dir(runtimePatchesDir).withPropertyName("runtimePatches")
 
         // The per-stage tasks and this one both produce the workspace, which Gradle
         // will call an overlapping output and refuse to cache. It is a real

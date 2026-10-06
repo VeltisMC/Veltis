@@ -94,6 +94,7 @@ public final class VeltisPatcher {
             return total;
         }
         var patchedRoot = workspace.patchedDirectory();
+        log.info("[Veltis] Applying {} Shulker patches...", patches.size());
 
         // Git takes the whole set in one call, in the order discovery produced
         // it, so application is neither grouped by target nor spread across the

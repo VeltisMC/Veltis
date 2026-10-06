@@ -121,7 +121,7 @@ public final class PatchBench {
         final Path pristine;        // pristine copies of every target file
         final Path patched;         // the real workspace, which patches are applied to
         final VeltisWorkspace workspace;
-        final Path patchesRoot;     // the Shulker/ directory
+        final Path patchesRoot;     // the server/Shulker/ directory
         final List<String> targets;          // relative paths of patched files
         final Map<String, String> expected;  // rel path -> sha256 of the expected output
         final int patchCount;
@@ -183,9 +183,9 @@ public final class PatchBench {
      * Requires {@code ./gradlew applyVeltisPatches} to have been run.
      */
     static Corpus realCorpus(Path repo) throws IOException {
-        var patchesRoot = repo.resolve("Shulker");
+        var patchesRoot = repo.resolve("server").resolve("Shulker");
         if (!Files.isDirectory(patchesRoot)) {
-            throw new IOException("Shulker/ missing - run from a VeltisMC checkout");
+            throw new IOException("server/Shulker/ missing - run from a VeltisMC checkout");
         }
         var version = resolveWorkspace(repo);
         var source = version.resolve("source");

@@ -88,7 +88,7 @@ public final class PatchRebuilder {
      * Regenerates the patch set from the current contents of the patched tree.
      *
      * @param workspace   supplies both trees being diffed
-     * @param patchesRoot the {@code Shulker/} directory to write into
+     * @param patchesRoot the {@code server/Shulker/} directory to write into
      */
     public Result rebuild(VeltisWorkspace workspace, Path patchesRoot, String minecraftVersion) {
         var source = workspace.sourceDirectory();

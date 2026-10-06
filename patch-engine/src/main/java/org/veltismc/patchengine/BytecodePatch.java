@@ -28,8 +28,9 @@ import java.util.zip.ZipOutputStream;
  * from the Minecraft jar Mojang published, and nothing else.
  *
  * <p>This is the only format that carries a patch from a build to a running
- * server. The development source patches under {@code Shulker/code|data|modules}
- * are how a contributor writes a change; this is how that change ships. There is
+ * server. The development source patches under
+ * {@code server/Shulker/code|data|modules} are how a contributor writes a
+ * change; this is how that change ships. There is
  * no third representation in between — no reconstructed source, no decompiler on
  * a server, no compiler on a server.
  *
@@ -42,7 +43,7 @@ import java.util.zip.ZipOutputStream;
  * <pre>
  * META-INF/veltis/patch.properties   the metadata block (below)
  * index.txt                          one line per changed entry
- * payloads/&lt;entry name&gt;             the bytes to write for that entry
+ * runtime-patches/&lt;entry name&gt;       the bytes to write for that entry
  * </pre>
  *
  * <h2>The metadata block</h2>
@@ -68,12 +69,16 @@ import java.util.zip.ZipOutputStream;
  *   <li>{@code classFileRelease} — the class file release the payload classes
  *       were compiled to.</li>
  *   <li>{@code fingerprint} — SHA-256 over {@code index.txt}. The index carries
- *       the SHA-1 of every payload and of the baseline it replaces, so this one
- *       value changes when and only when the patch's <em>content</em> changes.
- *       It is half of the cache identity: version, artifact SHA-1, fingerprint,
- *       format version.</li>
- *   <li>{@code entryCount}, {@code classCount}, {@code resourceCount} — sizes,
- *       so a log line can state what was applied without parsing anything.</li>
+ *       the SHA-256 of every payload, of the baseline it replaces and of the
+ *       bytes it must produce, so this one value changes when and only when the
+ *       patch's <em>content</em> changes. It is half of the cache identity:
+ *       version, artifact SHA-1, fingerprint, format version.</li>
+ *   <li>{@code entryCount}, {@code classCount}, {@code resourceCount},
+ *       {@code sourcePatchCount} — sizes, so a log line can state what was
+ *       applied without parsing anything. {@code sourcePatchCount} is how many
+ *       development source patches this patch set was generated from; it is
+ *       deliberately not the number of class payloads, which counts classes
+ *       rather than patches.</li>
  * </ul>
  *
  * <h2>The index</h2>
@@ -81,34 +86,40 @@ import java.util.zip.ZipOutputStream;
  * <p>Tab-separated, sorted by entry name, one line per entry:
  *
  * <pre>
- * kind &lt;TAB&gt; name &lt;TAB&gt; originalSha1 &lt;TAB&gt; resultSha1
+ * kind &lt;TAB&gt; name &lt;TAB&gt; originalSha256 &lt;TAB&gt; resultSha256 &lt;TAB&gt; payloadSha256
  * </pre>
  *
- * <p>Both hashes are always present and both are always checked.
- * {@code originalSha1} is the SHA-1 of the baseline entry in the vanilla jar —
+ * <p>All three hashes are always present and all are always checked.
+ * {@code originalSha256} is the SHA-256 of the baseline entry in the vanilla jar —
  * or {@code -} when the entry does not exist there, which is itself a claim the
- * applier verifies. {@code resultSha1} is the SHA-1 of the bytes the applier must
- * produce. An entry whose original hash does not match is a patch cut from a
- * different artifact, and the applier refuses it rather than writing a jar that
- * half applies.
+ * applier verifies. {@code resultSha256} is the SHA-256 of the bytes the applier
+ * must produce for that entry: for a {@code CLASS} entry that is the merged
+ * class, the value {@link ClassDelta#apply} re-derives before the class is
+ * served. {@code payloadSha256} is the SHA-256 of the payload bytes as stored —
+ * for a {@code CLASS} entry the delta file itself, which is what it is. An entry
+ * whose original hash does not match is a patch cut from a different artifact,
+ * and the applier refuses it rather than writing a jar that half applies.
  *
- * <h2>Why full class replacement rather than a binary diff</h2>
+ * <h2>What a class payload is</h2>
  *
- * <p>Measured, not assumed. The payload classes are javac output compiled from
- * Vineflower's rendering of the decompiled sources; Mojang's classes came from a
- * different compiler over a different source, so the two share almost no
- * structure below the string constant. A binary diff over them recovers very
- * little while adding a second implementation that has to be exactly reversible
- * on a stranger's machine. Whole-class payloads compressed with the container's
- * DEFLATE are smaller in practice, orders of magnitude faster to apply,
- * verifiable by a single hash, and cannot fail halfway. Correctness,
- * determinism, fast application, version safety and corruption detection all
- * come out ahead; only a theoretical minimum size does not, and it was measured
- * rather than guessed.
+ * <p>Not a replacement class. A {@code CLASS} payload is a
+ * {@link ClassDelta}: the Veltis-only difference between the vanilla class and
+ * the class the patched sources compile to — members carried, members removed,
+ * access flags rewritten — containing no Mojang bytecode and none of the
+ * unchanged methods javac merely reproduced. Applying one reads the verified
+ * vanilla class, splices the delta onto it, and checks the result against
+ * {@code resultSha256} before the class is used. One delta per distinct
+ * modified class: a patch set for five source patches that touch two classes
+ * carries two deltas.
  *
- * <p>Nothing here interprets class files. The applier copies bytes and checks
- * hashes; it never reads a constant pool, never rewrites a method, and never
- * needs to know that a payload is a class at all.
+ * <p>Resource payloads ({@code ENTRY}) remain whole files, because a resource
+ * has no structure to take a difference of, and removals ({@code DELETE}) carry
+ * no payload at all.
+ *
+ * <p>None of this happens here. This class stores and verifies bytes: it writes
+ * the container, reads it back, and checks every hash. The interpretation of a
+ * class delta lives in {@link ClassDelta}, and it only ever runs against a
+ * vanilla class whose SHA-256 has already been checked against this index.
  */
 public final class BytecodePatch {
 
@@ -121,7 +132,7 @@ public final class BytecodePatch {
      * identity — so an incompatible patch fails with a statement of both
      * versions instead of a corrupt jar.
      */
-    public static final int FORMAT = 1;
+    public static final int FORMAT = 3;
 
     /** Where a packaged patch set lives inside the launcher jar, one per version. */
     public static final String RESOURCE_PREFIX = "META-INF/veltis/patches/";
@@ -132,8 +143,8 @@ public final class BytecodePatch {
     /** The index entry inside the container. */
     public static final String INDEX_ENTRY = "index.txt";
 
-    /** The prefix every payload entry shares. */
-    public static final String PAYLOAD_PREFIX = "payloads/";
+    /** The prefix every payload entry shares, inside the container. */
+    public static final String PAYLOAD_PREFIX = "runtime-patches/";
 
     /** The placeholder for "there is no such value", as distinct from an empty one. */
     public static final String ABSENT = "-";
@@ -143,19 +154,30 @@ public final class BytecodePatch {
         /** Replace the entry, or add it when the baseline does not have it. */
         ENTRY,
         /** Remove the entry from the result. */
-        DELETE
+        DELETE,
+        /**
+         * Apply a {@link ClassDelta} payload onto the baseline class and write
+         * what comes out. The payload is the delta, not a class; the index's
+         * {@code resultSha256} is the hash of the class the applier must
+         * produce, which is what makes the result checkable.
+         */
+        CLASS
     }
 
     /**
      * One line of {@link #INDEX_ENTRY}.
      *
-     * @param kind          whether the entry is written or removed
+     * @param kind          whether the entry is written, removed, or spliced
+     *                      from a class delta
      * @param name          the entry name, exactly as it appears in a jar
-     * @param originalSha1  SHA-1 of the baseline entry, or {@link #ABSENT}
-     * @param resultSha1    SHA-1 of the bytes the applier must produce, or
+     * @param originalSha256 SHA-256 of the baseline entry, or {@link #ABSENT}
+     * @param resultSha256  SHA-256 of the bytes the applier must produce, or
+     *                      {@link #ABSENT} for a removal
+     * @param payloadSha256 SHA-256 of the payload bytes as stored, or
      *                      {@link #ABSENT} for a removal
      */
-    public record IndexEntry(Kind kind, String name, String originalSha1, String resultSha1) {
+    public record IndexEntry(Kind kind, String name, String originalSha256,
+                             String resultSha256, String payloadSha256) {
     }
 
     /**
@@ -169,10 +191,14 @@ public final class BytecodePatch {
      * @param entryCount       number of index lines
      * @param classCount       how many of them are class entries
      * @param resourceCount    how many of them are resources or removals
+     * @param sourcePatchCount how many development source patches this set was
+     *                         generated from — kept separate from the class and
+     *                         entry counts on purpose: patches and classes are
+     *                         not the same quantity
      */
     public record Metadata(String minecraftVersion, String serverSha1, String classesSha1,
                            int classFileRelease, String fingerprint, int entryCount,
-                           int classCount, int resourceCount) {
+                           int classCount, int resourceCount, int sourcePatchCount) {
 
         /** The value of {@code formatVersion} as this build writes it. */
         public String formatVersion() {
@@ -393,7 +419,8 @@ public final class BytecodePatch {
             fingerprint,
             requireInt(values, "entryCount", source),
             requireInt(values, "classCount", source),
-            requireInt(values, "resourceCount", source));
+            requireInt(values, "resourceCount", source),
+            requireInt(values, "sourcePatchCount", source));
         if (metadata.minecraftVersion() == null || metadata.serverSha1() == null
                 || metadata.classesSha1() == null) {
             throw new PatchEngineException(
@@ -430,13 +457,15 @@ public final class BytecodePatch {
                 continue;
             }
             var parts = line.split("\t", -1);
-            if (parts.length != 4) {
+            if (parts.length != 5) {
                 throw new PatchEngineException(
                     "[Veltis] Bytecode patch index in " + source + " has a malformed line"
                         + "\n  Line: " + line
-                        + "\n  Expected: kind<TAB>name<TAB>originalSha1<TAB>resultSha1"
-                        + "\n  Reason: every entry must carry both hashes, because both are"
-                        + " checked — the original before writing and the result after");
+                        + "\n  Expected: kind<TAB>name<TAB>originalSha256<TAB>resultSha256"
+                        + "<TAB>payloadSha256"
+                        + "\n  Reason: every entry must carry all three hashes, because all are"
+                        + " checked — the original before writing, the result after, and the"
+                        + " payload when it is read");
             }
             Kind kind;
             try {
@@ -458,7 +487,7 @@ public final class BytecodePatch {
                         + " would make the result depend on how the patch was written");
             }
             previousName = parts[1];
-            entries.add(new IndexEntry(kind, parts[1], parts[2], parts[3]));
+            entries.add(new IndexEntry(kind, parts[1], parts[2], parts[3], parts[4]));
         }
         if (entries.size() != metadata.entryCount()) {
             throw new PatchEngineException(
@@ -477,14 +506,25 @@ public final class BytecodePatch {
     /**
      * One changed entry as the generator produces it.
      *
-     * @param name         the jar entry name
-     * @param payload      the bytes to write, or {@code null} for a removal
-     * @param originalSha1 SHA-1 of the baseline entry, or {@link #ABSENT}
+     * @param name           the jar entry name
+     * @param kind           whether this writes a class delta, writes a
+     *                       resource, or removes the entry
+     * @param payload        the bytes to store: the delta for {@link Kind#CLASS},
+     *                       the file for {@link Kind#ENTRY}, {@code null} for
+     *                       {@link Kind#DELETE}
+     * @param originalSha256 SHA-256 of the baseline entry, or {@link #ABSENT}
+     * @param resultSha256   SHA-256 of the bytes the applier must produce for
+     *                       this entry — the merged class for {@link Kind#CLASS},
+     *                       the payload itself for {@link Kind#ENTRY},
+     *                       {@link #ABSENT} for {@link Kind#DELETE}
      */
-    public record ProducedEntry(String name, byte[] payload, String originalSha1) {
+    public record ProducedEntry(String name, Kind kind, byte[] payload, String originalSha256,
+                                String resultSha256) {
         public ProducedEntry {
             Objects.requireNonNull(name, "name cannot be null");
-            Objects.requireNonNull(originalSha1, "originalSha1 cannot be null");
+            Objects.requireNonNull(kind, "kind cannot be null");
+            Objects.requireNonNull(originalSha256, "originalSha256 cannot be null");
+            Objects.requireNonNull(resultSha256, "resultSha256 cannot be null");
         }
     }
 
@@ -501,12 +541,13 @@ public final class BytecodePatch {
      * @param serverSha1       Mojang's SHA-1 for that version's server artifact
      * @param classesSha1      SHA-1 of the classes jar the payloads were diffed against
      * @param classFileRelease the class file release the payloads were compiled to
+     * @param sourcePatchCount how many development source patches produced these records
      * @param records          the changed entries, in any order
      * @return the metadata that was written, which is what the caller records
      */
     public static Metadata write(Path target, String minecraftVersion, String serverSha1,
                                  String classesSha1, int classFileRelease,
-                                 List<ProducedEntry> records) {
+                                 int sourcePatchCount, List<ProducedEntry> records) {
         Objects.requireNonNull(records, "records cannot be null");
         var sorted = new TreeMap<String, ProducedEntry>();
         for (var record : records) {
@@ -522,11 +563,14 @@ public final class BytecodePatch {
         int classCount = 0;
         int resourceCount = 0;
         for (var entry : sorted.values()) {
-            var removal = entry.payload() == null;
-            index.append(removal ? Kind.DELETE : Kind.ENTRY).append('\t')
+            var removal = entry.kind() == Kind.DELETE;
+            var payloadSha = removal ? ABSENT : sha256Hex(entry.payload());
+            validate(entry, payloadSha);
+            index.append(entry.kind()).append('\t')
                 .append(entry.name()).append('\t')
-                .append(entry.originalSha1()).append('\t')
-                .append(removal ? ABSENT : sha1Hex(entry.payload())).append('\n');
+                .append(entry.originalSha256()).append('\t')
+                .append(entry.resultSha256()).append('\t')
+                .append(payloadSha).append('\n');
             if (entry.name().endsWith(".class")) {
                 classCount++;
             } else {
@@ -535,7 +579,7 @@ public final class BytecodePatch {
         }
         var indexBytes = index.toString().getBytes(StandardCharsets.UTF_8);
         var metadata = new Metadata(minecraftVersion, serverSha1, classesSha1, classFileRelease,
-            sha256Hex(indexBytes), sorted.size(), classCount, resourceCount);
+            sha256Hex(indexBytes), sorted.size(), classCount, resourceCount, sourcePatchCount);
 
         try {
             Files.createDirectories(target.toAbsolutePath().getParent());
@@ -589,6 +633,98 @@ public final class BytecodePatch {
         zip.closeEntry();
     }
 
+    /**
+     * Refuses a record whose hashes cannot describe what it is about to write.
+     * The generator computes these values; a disagreement here is a bug in the
+     * build rather than a corrupt patch, and catching it before a byte is
+     * written keeps a bad container from ever existing.
+     *
+     * @param payloadSha the SHA-256 of the payload, or {@link #ABSENT} for a removal
+     */
+    private static void validate(ProducedEntry entry, String payloadSha) {
+        if (!isSha256(entry.originalSha256()) && !ABSENT.equals(entry.originalSha256())) {
+            throw new PatchEngineException(
+                "[Veltis] Bytecode patch generation produced " + entry.name() + " with a"
+                    + " malformed baseline hash: " + entry.originalSha256()
+                    + "\n  Reason: the baseline hash is what proves this entry was cut from"
+                    + " this exact vanilla jar, and it must be a SHA-256 or \"-\""
+                    + "\n  Nothing was written.");
+        }
+        switch (entry.kind()) {
+            case DELETE -> {
+                if (entry.payload() != null) {
+                    throw new PatchEngineException(
+                        "[Veltis] Bytecode patch generation produced the removal " + entry.name()
+                            + " with a payload"
+                            + "\n  Reason: a removal deletes the baseline entry; carrying bytes"
+                            + " for it would make the result depend on which of the two the"
+                            + " applier chose"
+                            + "\n  Nothing was written.");
+                }
+                if (!ABSENT.equals(entry.resultSha256())) {
+                    throw new PatchEngineException(
+                        "[Veltis] Bytecode patch generation produced the removal " + entry.name()
+                            + " with a result hash of " + entry.resultSha256()
+                            + "\n  Reason: a removed entry produces nothing, so its result hash"
+                            + " must be \"-\""
+                            + "\n  Nothing was written.");
+                }
+            }
+            case ENTRY -> {
+                if (entry.payload() == null) {
+                    throw new PatchEngineException(
+                        "[Veltis] Bytecode patch generation produced the entry " + entry.name()
+                            + " without its bytes"
+                            + "\n  Reason: an entry payload is written as-is, so it must be"
+                            + " present and its result hash must be its own hash"
+                            + "\n  Nothing was written.");
+                }
+                if (!payloadSha.equalsIgnoreCase(entry.resultSha256())) {
+                    throw new PatchEngineException(
+                        "[Veltis] Bytecode patch generation produced " + entry.name() + " with a"
+                            + " result hash that is not its payload's hash"
+                            + "\n  Payload SHA-256: " + payloadSha
+                            + "\n  Result SHA-256:  " + entry.resultSha256()
+                            + "\n  Reason: for a resource the bytes are the result, so the two"
+                            + " hashes must agree"
+                            + "\n  Nothing was written.");
+                }
+            }
+            case CLASS -> {
+                if (entry.payload() == null) {
+                    throw new PatchEngineException(
+                        "[Veltis] Bytecode patch generation produced the class delta for "
+                            + entry.name() + " without its payload"
+                            + "\n  Reason: a class delta is applied onto the verified vanilla"
+                            + " class; without the delta there is no patch"
+                            + "\n  Nothing was written.");
+                }
+                if (!isSha256(entry.resultSha256())) {
+                    throw new PatchEngineException(
+                        "[Veltis] Bytecode patch generation produced the class delta for "
+                            + entry.name() + " with a malformed result hash: "
+                            + entry.resultSha256()
+                            + "\n  Reason: the result hash is the hash of the merged class the"
+                            + " applier must reproduce byte for byte, so it must be a SHA-256"
+                            + "\n  Nothing was written.");
+                }
+            }
+        }
+    }
+
+    private static boolean isSha256(String value) {
+        if (value == null || value.length() != 64) {
+            return false;
+        }
+        for (var i = 0; i < value.length(); i++) {
+            var c = value.charAt(i);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static byte[] renderMetadata(Metadata metadata) {
         return ("formatVersion=" + metadata.formatVersion() + '\n'
             + "minecraftVersion=" + metadata.minecraftVersion() + '\n'
@@ -598,7 +734,8 @@ public final class BytecodePatch {
             + "fingerprint=" + metadata.fingerprint() + '\n'
             + "entryCount=" + metadata.entryCount() + '\n'
             + "classCount=" + metadata.classCount() + '\n'
-            + "resourceCount=" + metadata.resourceCount() + '\n')
+            + "resourceCount=" + metadata.resourceCount() + '\n'
+            + "sourcePatchCount=" + metadata.sourcePatchCount() + '\n')
             .getBytes(StandardCharsets.UTF_8);
     }
 
@@ -635,12 +772,7 @@ public final class BytecodePatch {
         }
     }
 
-    /** SHA-1 of a payload or baseline entry, lowercase hex, as the index stores it. */
-    public static String sha1Hex(byte[] bytes) {
-        return HexFormat.of().formatHex(digest("SHA-1", bytes));
-    }
-
-    /** SHA-256 of an index, lowercase hex, as the fingerprint stores it. */
+    /** SHA-256 of a payload, baseline entry or index, lowercase hex. */
     public static String sha256Hex(byte[] bytes) {
         return HexFormat.of().formatHex(digest("SHA-256", bytes));
     }

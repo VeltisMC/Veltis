@@ -37,6 +37,15 @@ dependencies {
     implementation("org.yaml:snakeyaml:2.4")
     implementation("com.google.code.gson:gson:2.14.0")
 
+    // The class-file parser the runtime delta applier needs: applying a patch
+    // set splices `ClassDelta` payloads onto the verified vanilla classes, and
+    // that splice parses both sides with ASM's tree API. Declared here rather
+    // than inherited through `:patch-engine` so the start-up classpath this
+    // build assembles for the server names its own requirement: these two are
+    // in the bootstrap table the launcher preflights, not in veltismc.jar.
+    implementation("org.ow2.asm:asm:9.10.1")
+    implementation("org.ow2.asm:asm-tree:9.10.1")
+
     // Tests run with a real Log4j2 context (see src/test/resources/log4j2.xml).
     testRuntimeOnly("org.apache.logging.log4j:log4j-core:2.26.0")
     testRuntimeOnly("org.apache.logging.log4j:log4j-jul:2.26.0")

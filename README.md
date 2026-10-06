@@ -7,7 +7,7 @@ simulation engine and a build-time patch pipeline.
 
 VeltisMC boots the patched vanilla `DedicatedServer` directly. There is **no plugin
 API** — no Bukkit, Spigot or Paper. Gameplay is vanilla plus the patch set in
-`Shulker/`.
+`server/Shulker/`.
 
 Every Minecraft change is a git-style unified-diff patch file. VeltisMC ships one
 jar — `server.jar`, with no Minecraft code inside it — plus the patch set
@@ -23,7 +23,7 @@ touches the network on that path.
 That path never widens, decompiles or compiles, and it cannot: the distributable
 ships neither a decompiler nor `javac`. Producing the patch set is a build-time
 job — `./gradlew buildVeltisMC` widens access, decompiles, applies the source
-patches in `Shulker/` and compiles the result before cutting the bytecode patch
+patches in `server/Shulker/` and compiles the result before cutting the bytecode patch
 set the jar carries. An operator's directory holds no source and needs no
 toolchain.
 
@@ -44,7 +44,7 @@ VeltisMC/
 │                       the workspace layout and the runtime that builds and loads it
 ├── server/             everything inside Minecraft's classloader: the NMS entrypoint,
 │                       the Veltis framework and the world engine
-├── Shulker/            code/ data/ modules/ — the single source of truth
+├── server/Shulker/      code/ data/ modules/ — the single source of truth
 ├── gradle/             Gradle wrapper
 ├── build.gradle.kts    the pipeline and the `minecraft` source set
 ├── settings.gradle.kts the three modules
@@ -150,7 +150,7 @@ Git does not decide — category, order, numbering, slot mapping, validation and
 failure report — while `UnifiedDiffPatcher` and `DiffGenerator` stay in the tree as
 a reference implementation the tests exercise, not as the engine the build runs.
 
-- **Categories** are exactly `Shulker/code`, `Shulker/data`, `Shulker/modules`.
+- **Categories** are exactly `server/Shulker/code`, `server/Shulker/data`, `server/Shulker/modules`.
   They determine apply order (`code` → `data` → `modules`) and which source set the
   target lands in (`minecraft`, `minecraftResources`, `minecraftModules`). Within a
   category, patches apply in file-name order.
@@ -413,7 +413,7 @@ This is currently harmless **only** because the compile is scoped to the patch
 targets (§ [Compile scope](#compile-scope)) — the other 110 files are never handed
 to javac. It becomes real the moment one of them is added as a target.
 
-When that happens, add a small `Shulker/code` patch that rewrites the switch to the
+When that happens, add a small `server/Shulker/code` patch that rewrites the switch to the
 enum constants themselves. `Fix-Decompiled-PermissionLevel-Switch.patch` is the
 worked example: it turns the switch above into
 
@@ -444,7 +444,7 @@ against the setting quietly starting to matter again.
 
 ### 3. The current patch set touches four vanilla files
 
-`Shulker/code` addresses `Commands`, `MinecraftServer`, `DedicatedServer` and
+`server/Shulker/code` addresses `Commands`, `MinecraftServer`, `DedicatedServer` and
 `PlayerList`. That is what the runtime hooks (bootstrap, shutdown, console/command
 logging) need, and it keeps the compile scope small enough to avoid the
 `<unrepresentable>` problem above — but it means VeltisMC is currently a platform
@@ -596,7 +596,7 @@ Useful Gradle tasks:
 | `./gradlew widenServerJarAccess` | widen class/field/method access in the server jar |
 | `./gradlew downloadLibraries` | fetch Mojang's declared library jars |
 | `./gradlew decompileMinecraft` | decompile the widened jar into `source/` |
-| `./gradlew applyVeltisPatches` | apply `Shulker/{code,data,modules}` into `patched/` |
+| `./gradlew applyVeltisPatches` | apply `server/Shulker/{code,data,modules}` into `patched/` |
 | `./gradlew rebuildVeltisPatches` | regenerate patch files from `patched/` edits, renumbered contiguously |
 | `./gradlew applyPatches` / `./gradlew rebuildPatches` | the contributor-facing aliases of the two tasks above |
 | `./gradlew cleanVeltisPatches` | discard `patched/`, `classes/`, `resources/` |
@@ -625,8 +625,8 @@ short version:
 ```bash
 ./gradlew applyPatches            # pristine workspace + patches applied
 # edit files in build/minecraft/<v>/patched/
-./gradlew rebuildPatches          # regenerate Shulker/
-git diff -- Shulker               # review before committing
+./gradlew rebuildPatches          # regenerate server/Shulker/
+git diff -- server/Shulker        # review before committing
 ```
 
 `applyPatches` and `rebuildPatches` are aliases of the pipeline's own
@@ -635,8 +635,8 @@ task.
 
 Patch rules:
 
-- Files are `NNN-Short-description.patch` in `Shulker/code`, `Shulker/data` or
-  `Shulker/modules`; the directory determines apply order and which source set
+- Files are `NNN-Short-description.patch` in `server/Shulker/code`, `server/Shulker/data` or
+  `server/Shulker/modules`; the directory determines apply order and which source set
   the target lands in.
 - `NNN` is assigned by the build and renumbered contiguously after every rebuild,
   so a deletion pulls the series up and leaves no hole. Renumbering changes only
@@ -645,9 +645,9 @@ Patch rules:
   output, logs, IDE files or local caches.
 - Prefer several small patches over one large mixed patch.
 - A patch that repairs a decompiler defect (limitation 1) is still an ordinary
-  `Shulker/code` patch; keep it separate from the feature patch that edits the same
+  `server/Shulker/code` patch; keep it separate from the feature patch that edits the same
   file, so the repair survives a feature rewrite.
-- `Shulker/` is the **single** source of truth. There is no second patch
+- `server/Shulker/` is the **single** source of truth. There is no second patch
   directory and nothing is bundled for runtime application.
 
 Rebuild renders through `git diff --no-index`, so the regenerated files are
@@ -720,7 +720,7 @@ Do **not** commit: `build/`, `.gradle/`, `Vanilla/`, `Veltis/`, `out/`, `run/`, 
 metadata, compile logs, temporary patch files, or server data (`eula.txt`,
 `server.properties`, `logs/`, `config/`) — all gitignored.
 
-Do commit: patch files in `Shulker/`, module sources and tests, Gradle/build-script
+Do commit: patch files in `server/Shulker/`, module sources and tests, Gradle/build-script
 changes needed by the workflow, documentation updates.
 
 ## License

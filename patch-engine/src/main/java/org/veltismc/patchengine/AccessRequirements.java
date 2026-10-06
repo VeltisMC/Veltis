@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -22,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.stream.Stream;
 import java.util.zip.ZipFile;
@@ -43,9 +45,10 @@ import java.util.zip.ZipFile;
  *
  * <p>So the widening is narrowed to the demand: scan the classes the patch set
  * already replaces, ask of every reference they make whether the unwidened
- * vanilla jar would resolve it, and widen exactly the classes that answer no.
- * The widening itself is still {@link AccessWidener}'s — this class only decides
- * which classes deserve it.
+ * vanilla jar would resolve it, and widen exactly the classes and members that
+ * answer no. The transform itself is still {@link AccessWidener}'s — this class
+ * only decides where it is needed, and the patch set carries the outcome as
+ * access-flag metadata per class and per member, never as rewritten bytecode.
  *
  * <h2>What is measured</h2>
  *
@@ -77,30 +80,53 @@ import java.util.zip.ZipFile;
  * <h2>What it deliberately does not do</h2>
  *
  * <p>It does not rewrite anything, does not interpret method bodies, and does
- * not decide where a widening goes: {@link BytecodePatch} records widened
- * classes as ordinary entries with ordinary hashes, exactly like a patched
- * class, so applying one is indistinguishable from applying the other.
+ * not decide how a widening is expressed: {@link ClassDelta} carries each
+ * required change as access-flag metadata — one record per class header, one
+ * per member — and applying one is a flag rewrite against verified vanilla
+ * bytes, never a shipped replacement class.
  */
 public final class AccessRequirements {
 
     /**
      * The outcome of an analysis.
      *
-     * @param wideningRequired internal names of vanilla classes that must be
-     *                          widened before the patched bytecode can link
+     * @param wideningRequired internal names of vanilla classes whose header or
+     *                          inner-class entries must be rewritten before the
+     *                          patched bytecode can link
+     * @param memberWidenings   declaring class → the members of it that must be
+     *                          rewritten, one entry each: an access widening
+     *                          when a reference could not reach the member as
+     *                          vanilla declares it, or a final-method strip when
+     *                          a patched class overrides one
      * @param violations        reasons the patched bytecode is not safe to ship
      *                          even with every required widening applied
      * @param referencesIntoVanilla how many references were examined
      * @param referencesDeclared   how many of those resolved to a declaration
      *                          inside the vanilla jar
      */
-    public record Result(Set<String> wideningRequired, List<String> violations,
+    public record Result(Set<String> wideningRequired,
+                         Map<String, List<MemberWidening>> memberWidenings,
+                         List<String> violations,
                          int referencesIntoVanilla, int referencesDeclared) {
 
         /** Whether the patch set can be produced from this result as it stands. */
         public boolean acceptable() {
             return violations.isEmpty();
         }
+    }
+
+    /**
+     * One vanilla member that must be rewritten for the patched bytecode to
+     * link, as flag metadata only — the delta never carries the member's body.
+     *
+     * @param field      whether this names a field ({@code false} = method)
+     * @param name       the member name
+     * @param desc       the member descriptor
+     * @param finalStrip whether what is needed is dropping {@code ACC_FINAL}
+     *                   from an otherwise acceptable method (a patched class
+     *                   overrides it) rather than a full access widening
+     */
+    public record MemberWidening(boolean field, String name, String desc, boolean finalStrip) {
     }
 
     private final Map<String, ClassInfo> info = new HashMap<>();
@@ -114,6 +140,7 @@ public final class AccessRequirements {
 
     private final Set<String> widenForAccess = new TreeSet<>();
     private final Set<String> widenForFinal = new TreeSet<>();
+    private final Map<String, List<MemberWidening>> memberWidenings = new TreeMap<>();
     private final List<String> violations = new ArrayList<>();
     private int referencesIntoVanilla;
     private int referencesDeclared;
@@ -174,7 +201,15 @@ public final class AccessRequirements {
         var required = new TreeSet<String>(analyzer.widenForAccess);
         required.addAll(analyzer.widenForFinal);
         required.removeAll(analyzer.replaced);
-        return new Result(Set.copyOf(required), List.copyOf(analyzer.violations),
+        var members = new TreeMap<String, List<MemberWidening>>();
+        for (var entry : analyzer.memberWidenings.entrySet()) {
+            if (analyzer.replaced.contains(entry.getKey())) {
+                continue;
+            }
+            members.put(entry.getKey(), List.copyOf(entry.getValue()));
+        }
+        return new Result(Set.copyOf(required), Collections.unmodifiableMap(members),
+            List.copyOf(analyzer.violations),
             analyzer.referencesIntoVanilla, analyzer.referencesDeclared);
     }
 
@@ -307,6 +342,45 @@ public final class AccessRequirements {
         if (violations.size() < 200) {
             violations.add(name + ": " + why);
         }
+    }
+
+    /**
+     * Records one member of one vanilla class that the patched bytecode needs
+     * rewritten. Keys arrive as {@code name:descriptor}; neither half can
+     * contain a colon, so the first one separates them.
+     *
+     * <p>Members are recorded one by one rather than by widening their whole
+     * class: the patch set ships flag metadata for exactly these members, so a
+     * class with one unreachable private method does not become a rewritten
+     * class with every member's flags changed.</p>
+     */
+    private void widenMember(String declaringClass, String key, boolean field,
+                             boolean finalStrip) {
+        var colon = key.indexOf(':');
+        if (colon < 0) {
+            violate(declaringClass, "internal member key '" + key
+                + "' has no descriptor separator; the widening it needs cannot be recorded");
+            return;
+        }
+        var name = key.substring(0, colon);
+        var desc = key.substring(colon + 1);
+        var list = memberWidenings.computeIfAbsent(declaringClass, ignored -> new ArrayList<>());
+        for (var iterator = list.iterator(); iterator.hasNext(); ) {
+            var existing = iterator.next();
+            if (existing.field() == field && existing.name().equals(name)
+                    && existing.desc().equals(desc)) {
+                if (finalStrip) {
+                    // One member gets one record: an access widening already
+                    // drops ACC_FINAL where the JVM allows it, so it answers a
+                    // final-strip request too, and a strip is never added over
+                    // an existing widening.
+                    return;
+                }
+                iterator.remove();
+                break;
+            }
+        }
+        list.add(new MemberWidening(field, name, desc, finalStrip));
     }
 
     // ------------------------------------------------------------------
@@ -479,7 +553,7 @@ public final class AccessRequirements {
         if ((member & Opcodes.ACC_PRIVATE) != 0 && nestmates(referrer, declaringClass)) {
             return;
         }
-        widenForAccess.add(declaringClass);
+        widenMember(declaringClass, key, field, false);
     }
 
     /** Walks the vanilla superclass chain looking for a final member we override. */
@@ -492,7 +566,7 @@ public final class AccessRequirements {
             }
             var access = current.methods.get(member);
             if (access != null && (access & Opcodes.ACC_FINAL) != 0) {
-                widenForFinal.add(current.name);
+                widenMember(current.name, member, false, true);
                 return;
             }
             current = info(current.superName);
@@ -766,10 +840,12 @@ public final class AccessRequirements {
      * claim a reader should be able to check against the numbers.
      */
     public static String describe(Result result) {
+        var members = result.memberWidenings().values().stream().mapToInt(List::size).sum();
         return result.wideningRequired().size() + " class"
             + (result.wideningRequired().size() == 1 ? "" : "es")
-            + " need widening (" + result.referencesDeclared() + " of "
-            + result.referencesIntoVanilla()
+            + " need header widening, " + members + " member"
+            + (members == 1 ? "" : "s") + " flagged (" + result.referencesDeclared()
+            + " of " + result.referencesIntoVanilla()
             + " references into vanilla resolved to a declaration)";
     }
 }

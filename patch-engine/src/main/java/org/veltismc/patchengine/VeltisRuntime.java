@@ -72,8 +72,8 @@ import java.util.zip.ZipFile;
  *
  * <p>The development source pipeline is deliberately confined to a checkout. A
  * server installation never widens, decompiles or compiles anything: it has no
- * {@code Shulker/}, no decompiled source and no javac, and adding those to an
- * operator's machine would be re-introducing the build step this design
+ * {@code server/Shulker/}, no decompiled source and no javac, and adding those
+ * to an operator's machine would be re-introducing the build step this design
  * exists to remove.
  *
  * <h2>Why a runtime is either complete or absent</h2>
@@ -97,8 +97,16 @@ public final class VeltisRuntime {
     private static final org.apache.logging.log4j.Logger LOG =
         org.apache.logging.log4j.LogManager.getLogger(VeltisRuntime.class);
 
-    /** One line of {@link RuntimeIdentity#JAR_GUARD_ENTRY}. */
-    public record GuardedClass(String compiledSha1, String baselineSha1) {
+    /**
+     * One line of {@link RuntimeIdentity#JAR_GUARD_ENTRY}.
+     *
+     * @param compiledSha256 SHA-256 of the class bytes as packaged — the merged
+     *                       class a class delta produced, or the whole payload
+     *                       for an entry the baseline lacked
+     * @param baselineSha256 SHA-256 of the vanilla class those bytes replaced,
+     *                       or {@link BytecodePatch#ABSENT} for an added entry
+     */
+    public record GuardedClass(String compiledSha256, String baselineSha256) {
     }
 
     private final VeltisWorkspace workspace;
@@ -136,13 +144,13 @@ public final class VeltisRuntime {
      * and the layout an IDE reads.
      *
      * <p>This is the only layout that runs the development source pipeline, and
-     * the only one that generates a bytecode patch set: it has {@code Shulker/},
-     * a decompiled tree to apply them to, and a compiler to compile the result
-     * with.
+     * the only one that generates a bytecode patch set: it has
+     * {@code server/Shulker/}, a decompiled tree to apply them to, and a
+     * compiler to compile the result with.
      *
      * @param workspaceBase the project root; the workspace it creates lives in
      *                      {@code build/minecraft/<version>}
-     * @param patchesDirectory {@code Shulker/} in the project
+     * @param patchesDirectory {@code server/Shulker/} in the project
      */
     public static VeltisRuntime fromDirectory(Path workspaceBase, MinecraftVersion version,
                                               Path patchesDirectory, int workers,
@@ -218,7 +226,7 @@ public final class VeltisRuntime {
                 "[VeltisPatch] The Veltis patch set is empty"
                     + "\n  Reason: an empty patch set produces a server that starts, runs"
                     + " vanilla and gives no sign that no patch was applied"
-                    + "\n  Fix: put at least one patch under Shulker/code, or check that"
+                    + "\n  Fix: put at least one patch under server/Shulker/code, or check that"
                     + " this jar was built with a patch set");
         }
         return discovered;
@@ -359,7 +367,8 @@ public final class VeltisRuntime {
 
             phase = System.nanoTime();
             var generated = BytecodePatchGenerator.generate(workspace, version,
-                metadata.serverArtifact().sha1(), classFileRelease);
+                metadata.serverArtifact().sha1(), classFileRelease, sourceRevision,
+                sourcePatches.size(), workers);
             report("Generated the bytecode patch set", phase);
             // Read back what was written. This is a round trip rather than a
             // re-use of the in-memory metadata on purpose: the applier reads
@@ -422,11 +431,28 @@ public final class VeltisRuntime {
      */
     private Optional<BytecodePatch> loadBytecodePatch() {
         if (packagedPatch != null) {
+            // The jar's own patch set is not derived at runtime: if it cannot be
+            // read, the jar is broken and there is nothing to rebuild it from.
             return Optional.of(BytecodePatch.readPackaged(packagedPatch, version.toString()));
         }
         var file = workspace.bytecodePatchFile();
         if (Files.isRegularFile(file)) {
-            return Optional.of(BytecodePatch.read(file));
+            try {
+                return Optional.of(BytecodePatch.read(file));
+            } catch (PatchEngineException e) {
+                // A workspace patch set is derived: this run regenerates it from
+                // the sources when it does not validate, so an unreadable one —
+                // an older format after an engine upgrade, a write interrupted
+                // by a killed build — means "rebuild", not "refuse". Nothing
+                // from this file is ever applied: at most it was consulted to
+                // decide whether the existing runtime could be reused, and an
+                // empty optional sends that decision down the rebuilding path.
+                // The freshly generated file is read back and validated before
+                // anything is applied, so the fail-closed chain is unchanged.
+                LOG.warn("[Veltis] Discarding the bytecode patch set at {}: it cannot be read"
+                    + "\n  Reason: {}", file, MojangMetadata.rootMessage(e));
+                return Optional.empty();
+            }
         }
         return Optional.empty();
     }
@@ -999,6 +1025,7 @@ public final class VeltisRuntime {
         vanillaLoad = System.nanoTime() - vanillaLoad;
 
         long replacement = 0L;
+        long deltaNanos = 0L;
         long copyNanos = 0L;
         long writeNanos = 0L;
         int patchedEntries = 0;
@@ -1037,19 +1064,20 @@ public final class VeltisRuntime {
                         copiedEntries++;
                         continue;
                     }
-                    // Replaced or removed — the reason a patch set exists.
+                    // Replaced, removed, or spliced from a class delta — the
+                    // reason a patch set exists.
                     long change = System.nanoTime();
                     byte[] original;
                     try (var in = baseline.getInputStream(source)) {
                         original = in.readAllBytes();
                     }
-                    var originalSha1 = sha1Hex(original);
-                    if (!originalSha1.equalsIgnoreCase(indexEntry.originalSha1())) {
+                    var originalSha = BytecodePatch.sha256Hex(original);
+                    if (!originalSha.equalsIgnoreCase(indexEntry.originalSha256())) {
                         throw new PatchEngineException(
                             "[Veltis] The Minecraft classes jar does not match this patch set at "
                                 + name
-                                + "\n  Expected SHA-1: " + indexEntry.originalSha1()
-                                + "\n  Actual SHA-1:   " + originalSha1
+                                + "\n  Expected SHA-256: " + indexEntry.originalSha256()
+                                + "\n  Actual SHA-256:   " + originalSha
                                 + "\n  Reason: the index records what the baseline held when the"
                                 + " patch was cut, so a different hash means these are not the"
                                 + " classes the patch was written against"
@@ -1070,20 +1098,50 @@ public final class VeltisRuntime {
                                 + " incomplete and applying it would produce a jar the index"
                                 + " does not describe");
                     }
-                    var resultSha1 = sha1Hex(payload);
-                    if (!resultSha1.equalsIgnoreCase(indexEntry.resultSha1())) {
+                    var payloadSha = BytecodePatch.sha256Hex(payload);
+                    if (!payloadSha.equalsIgnoreCase(indexEntry.payloadSha256())) {
                         throw new PatchEngineException(
                             "[Veltis] Bytecode patch payload for " + name + " is corrupt"
-                                + "\n  Expected SHA-1: " + indexEntry.resultSha1()
-                                + "\n  Actual SHA-1:   " + resultSha1
-                                + "\n  Reason: the index records what every payload must hash"
+                                + "\n  Expected SHA-256: " + indexEntry.payloadSha256()
+                                + "\n  Actual SHA-256:   " + payloadSha
+                                + "\n  Reason: the index records what every stored payload hashes"
                                 + " to, so a mismatch is a truncated or mixed-up patch set"
                                 + "\n  Nothing has been written; the artifact is unchanged.");
                     }
+                    byte[] served;
+                    String resultSha;
+                    if (indexEntry.kind() == BytecodePatch.Kind.CLASS) {
+                        // A class delta: verified vanilla bytes in, verified
+                        // merged class out — the delta re-checks the vanilla
+                        // hash, its own result hash and its fingerprint against
+                        // the values it carries, and the cross-check below ties
+                        // those to this index line.
+                        long deltaStarted = System.nanoTime();
+                        var delta = ClassDelta.apply(original, payload);
+                        deltaNanos += System.nanoTime() - deltaStarted;
+                        crossCheckDelta(indexEntry, delta.metadata());
+                        served = delta.bytes();
+                        resultSha = BytecodePatch.sha256Hex(served);
+                    } else {
+                        served = payload;
+                        resultSha = payloadSha;
+                    }
+                    if (!resultSha.equalsIgnoreCase(indexEntry.resultSha256())) {
+                        throw new PatchEngineException(
+                            "[Veltis] The bytecode patch set does not produce what it promises"
+                                + " for " + name
+                                + "\n  Expected SHA-256: " + indexEntry.resultSha256()
+                                + "\n  Actual SHA-256:   " + resultSha
+                                + "\n  Reason: the index records what every entry must hash to"
+                                + " after the patch is applied, so a mismatch means the result"
+                                + " is not the result that was verified when this patch set was"
+                                + " cut"
+                                + "\n  Nothing has been written; the artifact is unchanged.");
+                    }
                     replacement += System.nanoTime() - change;
-                    writer.put(name, payload);
+                    writer.put(name, served);
                     if (name.endsWith(".class")) {
-                        guard.put(name, new GuardedClass(resultSha1, originalSha1));
+                        guard.put(name, new GuardedClass(resultSha, originalSha));
                     }
                     patchedEntries++;
                 }
@@ -1095,11 +1153,11 @@ public final class VeltisRuntime {
                 // like this".
                 for (var indexEntry : pending.values()) {
                     long change = System.nanoTime();
-                    if (!BytecodePatch.ABSENT.equals(indexEntry.originalSha1())) {
+                    if (!BytecodePatch.ABSENT.equals(indexEntry.originalSha256())) {
                         throw new PatchEngineException(
                             "[Veltis] The bytecode patch set expects " + indexEntry.name()
                                 + " in the Minecraft classes jar, but it has no such entry"
-                                + "\n  Expected original SHA-1: " + indexEntry.originalSha1()
+                                + "\n  Expected original SHA-256: " + indexEntry.originalSha256()
                                 + "\n  Reason: the index says this entry existed when the patch"
                                 + " was cut and it does not exist now, so the patch set and the"
                                 + " baseline disagree about the same jar"
@@ -1113,28 +1171,51 @@ public final class VeltisRuntime {
                                 + " set was cut from a different jar than this one"
                                 + "\n  Nothing has been written; the artifact is unchanged.");
                     }
+                    if (indexEntry.kind() == BytecodePatch.Kind.CLASS) {
+                        // A class delta can only be spliced onto a baseline
+                        // class, and this entry has none — so the index row and
+                        // the payload cannot have come from one generator.
+                        throw new PatchEngineException(
+                            "[Veltis] The bytecode patch set carries a class delta for "
+                                + indexEntry.name()
+                                + " but the Minecraft classes jar never had it"
+                                + "\n  Reason: a delta splices onto verified vanilla bytes, so"
+                                + " this entry names a baseline that does not exist"
+                                + "\n  Nothing has been written; the artifact is unchanged.");
+                    }
                     var payload = patch.payload(indexEntry.name());
                     if (payload == null) {
                         throw new PatchEngineException(
                             "[Veltis] The bytecode patch set has no payload for "
                                 + indexEntry.name());
                     }
-                    var resultSha1 = sha1Hex(payload);
-                    if (!resultSha1.equalsIgnoreCase(indexEntry.resultSha1())) {
+                    var payloadSha = BytecodePatch.sha256Hex(payload);
+                    if (!payloadSha.equalsIgnoreCase(indexEntry.payloadSha256())) {
                         throw new PatchEngineException(
                             "[Veltis] Bytecode patch payload for " + indexEntry.name()
                                 + " is corrupt"
-                                + "\n  Expected SHA-1: " + indexEntry.resultSha1()
-                                + "\n  Actual SHA-1:   " + resultSha1
-                                + "\n  Reason: the index records what every payload must hash"
+                                + "\n  Expected SHA-256: " + indexEntry.payloadSha256()
+                                + "\n  Actual SHA-256:   " + payloadSha
+                                + "\n  Reason: the index records what every stored payload hashes"
                                 + " to, so a mismatch is a truncated or mixed-up patch set"
+                                + "\n  Nothing has been written; the artifact is unchanged.");
+                    }
+                    if (!payloadSha.equalsIgnoreCase(indexEntry.resultSha256())) {
+                        throw new PatchEngineException(
+                            "[Veltis] The bytecode patch set does not produce what it promises"
+                                + " for " + indexEntry.name()
+                                + "\n  Expected SHA-256: " + indexEntry.resultSha256()
+                                + "\n  Actual SHA-256:   " + payloadSha
+                                + "\n  Reason: an entry the baseline lacks is written as-is, so"
+                                + " its payload and its promised result are the same bytes and"
+                                + " must hash alike"
                                 + "\n  Nothing has been written; the artifact is unchanged.");
                     }
                     replacement += System.nanoTime() - change;
                     writer.put(indexEntry.name(), payload);
                     if (indexEntry.name().endsWith(".class")) {
                         guard.put(indexEntry.name(),
-                            new GuardedClass(resultSha1, BytecodePatch.ABSENT));
+                            new GuardedClass(payloadSha, BytecodePatch.ABSENT));
                     }
                     patchedEntries++;
                 }
@@ -1158,11 +1239,13 @@ public final class VeltisRuntime {
                 Files.move(staging, out, StandardCopyOption.REPLACE_EXISTING);
             }
             LOG.info("[Veltis] Patch stages: baseline verification {}, patch payload loading {},"
-                    + " changed-class replacement {}, unchanged copying {}, ZIP writing {},"
-                    + " final verification {} (total {}; {} entr{}, {} copied unchanged)",
+                    + " changed-class replacement {} (of which class delta splicing {}),"
+                    + " unchanged copying {}, ZIP writing {}, final verification {}"
+                    + " (total {}; {} entr{}, {} copied unchanged)",
                 VeltisConsole.formatDuration(vanillaLoad),
                 VeltisConsole.formatDuration(patch.timing().payloadNanos()),
                 VeltisConsole.formatDuration(replacement),
+                VeltisConsole.formatDuration(deltaNanos),
                 VeltisConsole.formatDuration(copyNanos),
                 VeltisConsole.formatDuration(writeNanos),
                 VeltisConsole.formatDuration(verification),
@@ -1192,6 +1275,47 @@ public final class VeltisRuntime {
                 // A staging file left behind is deleted by the next run before
                 // it writes anything, so it can never be mistaken for a jar.
             }
+        }
+    }
+
+    /**
+     * Ties a class delta's own metadata to the index row that carried it.
+     *
+     * <p>Both values were written by the same generator in the same run, and
+     * {@link ClassDelta#apply} has already checked the delta against the vanilla
+     * bytes it spliced onto. What it cannot see from inside is the index: a
+     * delta whose recorded target, baseline hash or result hash disagrees with
+     * its index line means the payload and the index come from different builds,
+     * or one of them was edited after the fingerprint was taken. Either way the
+     * pair is refused rather than trusted — one of the two is wrong, and the
+     * applier has no basis for guessing which.
+     *
+     * @param entry the index line the payload arrived with
+     * @param meta  the metadata the payload carries inside itself
+     */
+    private static void crossCheckDelta(BytecodePatch.IndexEntry entry, ClassDelta.Metadata meta) {
+        var mismatches = new ArrayList<String>();
+        if (!entry.name().equals(meta.target() + ".class")) {
+            mismatches.add("  target:         index says " + entry.name() + ", delta says "
+                + meta.target() + ".class");
+        }
+        if (!meta.vanillaSha256().equalsIgnoreCase(entry.originalSha256())) {
+            mismatches.add("  vanilla SHA-256: index says " + entry.originalSha256()
+                + ", delta says " + meta.vanillaSha256());
+        }
+        if (!meta.patchedSha256().equalsIgnoreCase(entry.resultSha256())) {
+            mismatches.add("  result SHA-256:  index says " + entry.resultSha256()
+                + ", delta says " + meta.patchedSha256());
+        }
+        if (!mismatches.isEmpty()) {
+            throw new PatchEngineException(
+                "[Veltis] The class delta for " + entry.name()
+                    + " disagrees with its index line"
+                    + "\n" + String.join("\n", mismatches)
+                    + "\n  Reason: both were written by one generator in one run, so a"
+                    + " disagreement means the payload and the index come from different"
+                    + " patch sets or one of them was edited afterwards"
+                    + "\n  Nothing has been written; the artifact is unchanged.");
         }
     }
 
@@ -1270,13 +1394,13 @@ public final class VeltisRuntime {
                 try (var in = zip.getInputStream(zipEntry)) {
                     inJar = in.readAllBytes();
                 }
-                var actual = sha1Hex(inJar);
-                if (!actual.equalsIgnoreCase(entry.resultSha1())) {
+                var actual = BytecodePatch.sha256Hex(inJar);
+                if (!actual.equalsIgnoreCase(entry.resultSha256())) {
                     throw new PatchEngineException(
                         "[VeltisGuard] " + jar + " contains a different " + entry.name()
                             + " than the patch set produces"
-                            + "\n  Expected SHA-1: " + entry.resultSha1()
-                            + "\n  Actual SHA-1:   " + actual
+                            + "\n  Expected SHA-256: " + entry.resultSha256()
+                            + "\n  Actual SHA-256:   " + actual
                             + "\n  Reason: the packaged bytes and the patch set disagree, so the"
                             + " jar would not run what it claims to");
                 }
@@ -1421,15 +1545,15 @@ public final class VeltisRuntime {
         var text = new StringBuilder();
         for (var entry : guard.entrySet()) {
             text.append(entry.getKey()).append('\t')
-                .append(entry.getValue().compiledSha1()).append('\t')
-                .append(entry.getValue().baselineSha1()).append('\n');
+                .append(entry.getValue().compiledSha256()).append('\t')
+                .append(entry.getValue().baselineSha256()).append('\n');
         }
         return text.toString().getBytes(StandardCharsets.UTF_8);
     }
 
     /**
-     * Every guarded class in a packaged runtime: entry name to the SHA-1 of the
-     * compiled bytes and of the baseline they replaced.
+     * Every guarded class in a packaged runtime: entry name to the SHA-256 of the
+     * packaged bytes and of the baseline they replaced.
      *
      * <p>Empty when the jar is absent or carries no record, which is what every
      * caller wants to know before it starts comparing anything.
@@ -1601,10 +1725,12 @@ public final class VeltisRuntime {
      *       This is what makes a loose {@code classes/} directory, a stale build
      *       tree or a differently-ordered classpath a hard failure rather than a
      *       silent downgrade.</li>
-     *   <li>Do the bytes the loader will hand out hash to the SHA-1 recorded for
-     *       the class when it was packaged? When the build's own class files are
-     *       still present they are compared byte for byte as well, which is the
-     *       stronger of the two and the one that catches a hand-edited jar.</li>
+     *   <li>Do the bytes the loader will hand out hash to the SHA-256 recorded
+     *       for the class when it was packaged? The same bytes are then
+     *       re-derived independently: the verified vanilla class plus the delta
+     *       this runtime ships are spliced together again, and the result must
+     *       hash to the same value — which catches a hand-edited jar without
+     *       trusting anything the jar says about itself.</li>
      *   <li>Are those bytes still different from the baseline class they
      *       replaced? A patch that silently applied nothing produces a class
      *       identical to the one it replaced, and a server that runs it looks
@@ -1625,7 +1751,77 @@ public final class VeltisRuntime {
                     + "\n  Reason: a runtime jar that cannot say which classes it was built"
                     + " from cannot be checked, and an unchecked runtime is not started");
         }
-        var classes = workspace.classesDirectory();
+        // Re-derivation needs both inputs the applier had: the delta set (from
+        // the workspace in a checkout) and the verified vanilla classes to
+        // splice it onto. A server installation is not allowed to keep either —
+        // its work tree is discarded on purpose — so there the guard checks
+        // what the jar alone can prove: every guarded class resolves, matches
+        // the record written when the jar was verified, loads from this jar and
+        // links. In a checkout, where both inputs exist, the record is not
+        // trusted: every class is re-derived from the baseline and the shipped
+        // payload, and the record only has to agree with the result.
+        var vanillaClasses = workspace.vanillaClassesJar();
+        BytecodePatch patch = null;
+        var rows = new LinkedHashMap<String, BytecodePatch.IndexEntry>();
+        if (Files.isRegularFile(vanillaClasses)) {
+            var loaded = loadBytecodePatch();
+            if (loaded.isEmpty()) {
+                throw new PatchEngineException(
+                    "[VeltisGuard] " + jar + " cannot be re-verified: no bytecode patch set is"
+                        + " available"
+                        + "\n  Reason: the guard re-derives every guarded class from the patch set"
+                        + " that produced it, and without the patch set the guard's hashes are only"
+                        + " claims the jar makes about itself");
+            }
+            patch = loaded.get();
+            for (var row : patch.entries()) {
+                rows.put(row.name(), row);
+            }
+        }
+        if (patch == null) {
+            try {
+                return checkGuardedClasses(loader, jar, guard, null, rows, null, null);
+            } catch (IOException e) {
+                throw new PatchEngineException(
+                    "[VeltisGuard] Failed while checking the guarded classes"
+                        + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
+            }
+        }
+        try (var vanillaZip = new ZipFile(vanillaClasses.toFile())) {
+            return checkGuardedClasses(loader, jar, guard, patch, rows, vanillaZip,
+                vanillaClasses);
+        } catch (IOException e) {
+            throw new PatchEngineException(
+                "[VeltisGuard] Failed to read " + vanillaClasses
+                    + " while re-deriving the guarded classes"
+                    + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
+        }
+    }
+
+    /**
+     * The per-class half of {@link #verifyPatchedClasses}, run with the
+     * resources the re-derivation needs already opened around it: every guarded
+     * class is resolved by the live loader, hashed against the guard, loaded
+     * from this jar and linked. When the re-derivation inputs are present —
+     * they are, in a checkout — each class is additionally re-derived from the
+     * verified vanilla class plus the payload the patch set ships for it.
+     *
+     * @param loader         the classloader that would serve the server
+     * @param jar            the packaged runtime the guard was read from
+     * @param guard          the guarded classes, in file order
+     * @param patch          the bytecode patch set that produced them, or
+     *                       {@code null} when the work tree that carried it was
+     *                       discarded (a server installation)
+     * @param rows           the patch set's index rows, keyed by entry name
+     * @param vanilla        the open baseline jar to re-derive class deltas
+     *                       from, or {@code null} when there is no baseline
+     * @param vanillaClasses its path, for failure messages
+     * @return the one-line report the caller returns
+     */
+    private String checkGuardedClasses(ClassLoader loader, Path jar,
+            Map<String, GuardedClass> guard, BytecodePatch patch,
+            Map<String, BytecodePatch.IndexEntry> rows, ZipFile vanilla,
+            Path vanillaClasses) throws IOException {
         int verified = 0;
         for (var guarded : guard.entrySet()) {
             var resource = guarded.getKey();
@@ -1646,31 +1842,62 @@ public final class VeltisRuntime {
                     + " through the runtime classloader", e);
             }
 
-            var servedSha1 = sha1Hex(served);
-            if (!servedSha1.equals(record.compiledSha1())) {
+            var servedSha = BytecodePatch.sha256Hex(served);
+            if (!servedSha.equals(record.compiledSha256())) {
                 throw guardFailure("the runtime classloader resolves " + resource
-                    + " to bytes whose SHA-1 is " + servedSha1 + " but the packaged class is "
-                    + record.compiledSha1(), resource, jar, loaderUrlOf(loader, resource));
+                    + " to bytes whose SHA-256 is " + servedSha + " but the packaged class is "
+                    + record.compiledSha256(), resource, jar, loaderUrlOf(loader, resource));
             }
-            if (servedSha1.equals(record.baselineSha1())) {
+            if (servedSha.equals(record.baselineSha256())) {
                 throw guardFailure("the class the loader will use is byte-for-byte identical to"
                     + " the baseline " + binaryName + " it is supposed to replace",
                     resource, jar, loaderUrlOf(loader, resource));
             }
-            if (Files.isRegularFile(classes.resolve(resource))) {
-                // The strongest comparison, and available only while the build
-                // tree still exists — which is exactly when it is worth making.
-                byte[] compiled;
-                try {
-                    compiled = Files.readAllBytes(classes.resolve(resource));
-                } catch (IOException e) {
-                    throw new PatchEngineException(
-                        "[VeltisGuard] Failed to read " + classes.resolve(resource), e);
+
+            // Re-derive rather than trust: verified vanilla bytes plus the delta
+            // this runtime ships must produce exactly what the guard records —
+            // an independent path to the same value, taken again on every
+            // launch instead of remembered from the run that packaged the jar.
+            // A server installation has neither input by design, so there the
+            // record, the origin and the link above are the whole check.
+            if (patch != null) {
+                var row = rows.get(resource);
+                if (row == null) {
+                    throw guardFailure("the patch set does not name the class it guards, so the"
+                        + " guard's record cannot be reproduced from the patch set that claims to"
+                        + " have produced it", resource, jar, null);
                 }
-                if (!Arrays.equals(compiled, served)) {
-                    throw guardFailure("the runtime classloader resolves " + resource
-                        + " to a different copy than the one that was compiled",
-                        resource, jar, loaderUrlOf(loader, resource));
+                if (row.kind() == BytecodePatch.Kind.DELETE) {
+                    throw guardFailure("the patch set marks the class for removal while the guard"
+                        + " records it as packaged", resource, jar, null);
+                }
+                var payload = patch.payload(resource);
+                if (payload == null) {
+                    throw guardFailure("the patch set carries no payload for the class",
+                        resource, jar, null);
+                }
+                byte[] expected;
+                if (row.kind() == BytecodePatch.Kind.CLASS) {
+                    var vanillaEntry = vanilla.getEntry(resource);
+                    if (vanillaEntry == null) {
+                        throw guardFailure("the Minecraft classes jar no longer contains the"
+                            + " baseline class the shipped delta is spliced onto",
+                            resource, jar, vanillaClasses);
+                    }
+                    byte[] baselineBytes;
+                    try (var in = vanilla.getInputStream(vanillaEntry)) {
+                        baselineBytes = in.readAllBytes();
+                    }
+                    expected = ClassDelta.apply(baselineBytes, payload).bytes();
+                } else {
+                    expected = payload;
+                }
+                var expectedSha = BytecodePatch.sha256Hex(expected);
+                if (!expectedSha.equals(record.compiledSha256())) {
+                    throw guardFailure("re-applying the shipped payload to the verified vanilla"
+                        + " class produces bytes whose SHA-256 is " + expectedSha
+                        + " but the guard records " + record.compiledSha256(),
+                        resource, jar, vanillaClasses);
                 }
             }
 
@@ -1700,7 +1927,9 @@ public final class VeltisRuntime {
             verified++;
         }
         return "Verified " + verified + " patched class" + (verified == 1 ? "" : "es")
-            + " loaded from " + jar;
+            + " loaded from " + jar
+            + (patch == null ? " (record and origin; the work tree that carried the patch set"
+                + " was discarded)" : "");
     }
 
     private PatchEngineException guardFailure(String detail, String resource,

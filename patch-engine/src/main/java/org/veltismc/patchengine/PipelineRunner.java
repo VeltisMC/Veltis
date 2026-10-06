@@ -45,7 +45,7 @@ public final class PipelineRunner {
                   downloadLibraries      fetch and verify Mojang's declared libraries
                   widenServerJarAccess   widen access in the verified classes jar
                   decompileMinecraft     decompile the widened jar into the pristine tree
-                  applyVeltisPatches     mirror source/ and apply Shulker/{code,data,modules}
+                  applyVeltisPatches     mirror source/ and apply server/Shulker/{code,data,modules}
                   prepareVeltisRuntime   run the whole chain and record the runtime marker
                   verifyVeltisRuntime    load the runtime classpath and prove it is the patched one
                   rebuildVeltisPatches   regenerate the patch set from patched/

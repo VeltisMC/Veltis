@@ -7,14 +7,13 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
-import java.util.TreeSet;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
 import java.util.zip.ZipFile;
@@ -30,19 +29,24 @@ import java.util.zip.ZipFile;
  * <h2>What goes in</h2>
  *
  * <ul>
- *   <li><b>Every compiled class that differs from vanilla.</b> Classes javac
- *       merely derived from a patched file are included too — an anonymous class
- *       left at vanilla's copy beside a patched outer class is a class loading
+ *   <li><b>One class delta per compiled class that differs from vanilla</b>,
+ *       produced by {@link ClassDeltaGenerator}: only the members that actually
+ *       changed after normalisation, the members that vanished, and the flags
+ *       that differ — never the unchanged Mojang methods javac reproduced on the
+ *       way through, never a whole compiled class. Classes javac merely derived
+ *       from a patched file are compared too — an anonymous class left at
+ *       vanilla's copy beside a patched outer class is a class loading
  *       disagreement three frames deep in vanilla code. Classes that happen to
  *       be byte-identical to vanilla are dropped, because a patch set is only
  *       supposed to carry what differs.</li>
- *   <li><b>Exactly the vanilla classes that need widening</b>, decided by
- *       {@link AccessRequirements} from the references the patched classes
- *       actually make. This is the difference between shipping a handful of
- *       classes and shipping seven thousand: the development pipeline widens
- *       everything because it has to hand a whole tree to a decompiler, but a
- *       patch set only has to widen what the patched bytecode reaches. Measured
- *       against Minecraft 26.3, that set is empty.</li>
+ *   <li><b>Flag-only deltas for the vanilla classes that need widening</b>,
+ *       decided by {@link AccessRequirements} from the references the patched
+ *       classes actually make: one delta whose header or whose recorded members
+ *       get rewritten flags, and no bodies at all. This is the difference
+ *       between shipping a handful of classes and shipping seven thousand: the
+ *       development pipeline widens everything because it has to hand a whole
+ *       tree to a decompiler, but a patch set only has to widen what the patched
+ *       bytecode reaches. Measured against Minecraft 26.3, that set is empty.</li>
  *   <li><b>The patched resources</b>, from {@code resources/}, which is the
  *       {@code data} and {@code modules} delta and never a copy of Minecraft's
  *       own files.</li>
@@ -65,23 +69,13 @@ public final class BytecodePatchGenerator {
     private static final Logger LOG = LogManager.getLogger(BytecodePatchGenerator.class);
 
     /**
-     * The suffix a class file carries inside a jar.
-     *
-     * <p>Compiled classes are keyed by internal name — {@code a/b/C} — because
-     * that is how the analyser resolves references; an index line is a jar entry
-     * name — {@code a/b/C.class} — because that is what the applier looks up.
-     * Keeping the conversion in one place is what stops a patch set from
-     * carrying entries no jar has ever contained.
-     */
-    private static final String CLASS_SUFFIX = ".class";
-
-    /**
      * What one generation did.
      *
      * @param file         where the patch set was written
      * @param metadata     the metadata block that was written
-     * @param patchedClasses how many compiled classes differ from vanilla
-     * @param widenedClasses how many vanilla classes had to be widened to link
+     * @param patchedClasses how many compiled classes differ from vanilla and
+     *                       therefore became class-bearing entries
+     * @param widenedClasses how many vanilla classes needed a flag-only widening delta
      * @param resources    how many patched resources are included
      * @param removals     how many baseline entries are removed
      * @param analysisNanos how long deciding the widening set took
@@ -98,12 +92,19 @@ public final class BytecodePatchGenerator {
     /**
      * Generates the bytecode patch set for a workspace.
      *
-     * @param workspace       the development workspace holding {@code classes/}
-     *                        and {@code resources/}
-     * @param version         the Minecraft version the baseline belongs to
-     * @param serverSha1      Mojang's published SHA-1 for that version, recorded
-     *                        so an application can refuse a re-published artifact
+     * @param workspace        the development workspace holding {@code classes/}
+     *                         and {@code resources/}
+     * @param version          the Minecraft version the baseline belongs to
+     * @param serverSha1       Mojang's published SHA-1 for that version, recorded
+     *                         so an application can refuse a re-published artifact
      * @param classFileRelease the release javac compiled the payloads to
+     * @param sourceRevision   the fingerprint of the source patch set, recorded in
+     *                         every delta so a delta cannot be applied out of its
+     *                         patch set's context
+     * @param sourcePatchCount how many source patches produced this build, for the
+     *                         metadata block and the §25 summary lines
+     * @param workers          the bounded pool size for class comparison and delta
+     *                         generation
      * @return what was written
      * @throws PatchEngineException when the workspace is not ready, when the
      *                              patched classes would not link against the
@@ -111,8 +112,10 @@ public final class BytecodePatchGenerator {
      *                              the applier generates itself
      */
     public static Result generate(VeltisWorkspace workspace, MinecraftVersion version,
-                                  String serverSha1, int classFileRelease) {
+                                  String serverSha1, int classFileRelease,
+                                  String sourceRevision, int sourcePatchCount, int workers) {
         Objects.requireNonNull(workspace, "workspace cannot be null");
+        Objects.requireNonNull(sourceRevision, "sourceRevision cannot be null");
         var vanillaJar = workspace.vanillaClassesJar();
         if (!Files.isRegularFile(vanillaJar)) {
             throw new PatchEngineException(
@@ -157,44 +160,21 @@ public final class BytecodePatchGenerator {
                     + " it, or keep the member the vanilla class had");
         }
         long analysisNanos = System.nanoTime() - analysisStarted;
+        LOG.info("[Veltis] Baseline analysis: {}", AccessRequirements.describe(analysis));
 
-        var records = new ArrayList<BytecodePatch.ProducedEntry>();
-        int patchedClasses = 0;
-        for (var name : new TreeSet<>(compiled.keySet())) {
-            var bytes = compiled.get(name);
-            var original = vanillaClasses.get(name + CLASS_SUFFIX);
-            if (original != null && Arrays.equals(original, bytes)) {
-                // Identical to vanilla, so there is no difference to distribute.
-                continue;
-            }
-            records.add(new BytecodePatch.ProducedEntry(name + CLASS_SUFFIX, bytes,
-                original == null ? BytecodePatch.ABSENT : BytecodePatch.sha1Hex(original)));
-            patchedClasses++;
-        }
+        // One delta per distinct modified class, compared and verified against
+        // the baseline bytes — bounded pool, deterministic order.
+        var classResult = ClassDeltaGenerator.generate(vanillaClasses, compiled,
+            version.toString(), sourceRevision, workers);
+        var records = new ArrayList<>(classResult.entries());
+        int patchedClasses = classResult.entries().size();
 
-        int widenedClasses = 0;
-        for (var name : new TreeSet<>(analysis.wideningRequired())) {
-            var original = vanillaClasses.get(name + CLASS_SUFFIX);
-            if (original == null) {
-                continue;
-            }
-            byte[] widened;
-            try {
-                widened = AccessWidener.widenClass(original);
-            } catch (RuntimeException e) {
-                throw new PatchEngineException(
-                    "[Veltis] The patched classes need " + name + " widened but it cannot be"
-                        + "\n  Reason: " + MojangMetadata.rootMessage(e)
-                        + "\n  Fix: avoid the reference that requires widening; a patch set that"
-                        + " cannot be generated cannot be shipped either", e);
-            }
-            if (Arrays.equals(original, widened)) {
-                continue;
-            }
-            records.add(new BytecodePatch.ProducedEntry(name + CLASS_SUFFIX, widened,
-                BytecodePatch.sha1Hex(original)));
-            widenedClasses++;
-        }
+        // Flag-only deltas for vanilla classes the patched bytecode reaches into.
+        var wideningEntries =
+            ClassDeltaGenerator.wideningDeltas(vanillaClasses, analysis, version.toString(),
+                sourceRevision);
+        records.addAll(wideningEntries);
+        int widenedClasses = wideningEntries.size();
 
         var resources = collectResources(workspace.resourcesDirectory(), vanillaOtherSha1);
         records.addAll(resources.values());
@@ -210,8 +190,9 @@ public final class BytecodePatchGenerator {
                 try (var in = zip.getInputStream(entry)) {
                     bytes = in.readAllBytes();
                 }
-                records.add(new BytecodePatch.ProducedEntry(entry.getName(), null,
-                    BytecodePatch.sha1Hex(bytes)));
+                records.add(new BytecodePatch.ProducedEntry(entry.getName(),
+                    BytecodePatch.Kind.DELETE, null, BytecodePatch.sha256Hex(bytes),
+                    BytecodePatch.ABSENT));
                 removals++;
             }
         } catch (IOException e) {
@@ -224,25 +205,65 @@ public final class BytecodePatchGenerator {
         long writeStarted = System.nanoTime();
         var metadata = BytecodePatch.write(file, version.toString(),
             serverSha1.toLowerCase(Locale.ROOT), sha1OfFile(vanillaJar),
-            classFileRelease, records);
+            classFileRelease, sourcePatchCount, records);
         long writeNanos = System.nanoTime() - writeStarted;
+        writeExploded(workspace.runtimePatchesDirectory(), records);
 
-        LOG.info("[Veltis] Generated the bytecode patch set: {} class{} ({} widened), {}"
-                + " resource{}, {} removal{} (analyzed in {}, written in {})",
-            patchedClasses, patchedClasses == 1 ? "" : "es", widenedClasses,
-            resources.size(), resources.size() == 1 ? "" : "s",
-            removals, removals == 1 ? "" : "s",
+        var timings = classResult.timings();
+        var runtimeClassPatches = classResult.deltaCount() + widenedClasses;
+        LOG.info("[Veltis] Generated {} runtime class patches.", runtimeClassPatches);
+        LOG.info("[Veltis] Runtime patches: {} classes modified / {} Shulker source patches"
+                + " / {} unchanged classes",
+            metadata.classCount(), sourcePatchCount, classResult.unchanged());
+        LOG.info("[Veltis] Runtime patch generation: analysis {}, class comparison {}, delta"
+                + " generation {}, verification {}, write {} ({} workers)",
             VeltisConsole.formatDuration(analysisNanos),
-            VeltisConsole.formatDuration(writeNanos));
-        LOG.info("[Veltis] Baseline analysis: {}", AccessRequirements.describe(analysis));
+            VeltisConsole.formatDuration(timings.comparisonNanos()),
+            VeltisConsole.formatDuration(timings.generationNanos()),
+            VeltisConsole.formatDuration(timings.verificationNanos()),
+            VeltisConsole.formatDuration(writeNanos), timings.workers());
         return new Result(file, metadata, patchedClasses, widenedClasses, resources.size(),
             removals, analysisNanos, writeNanos);
     }
 
     /**
+     * Writes the exploded mirror of the payload directory: same names, same
+     * bytes, plain files.
+     *
+     * <p>The tree is removed first, so a payload deleted from the patch set in a
+     * later build cannot linger here and read as present — the container and this
+     * directory are two views of one run, and the second must not remember the
+     * first.
+     */
+    private static void writeExploded(Path directory, List<BytecodePatch.ProducedEntry> records) {
+        try {
+            if (Files.exists(directory)) {
+                try (Stream<Path> walk = Files.walk(directory)) {
+                    for (var path : walk.sorted(Comparator.reverseOrder()).toList()) {
+                        Files.deleteIfExists(path);
+                    }
+                }
+            }
+            Files.createDirectories(directory);
+            for (var record : records) {
+                if (record.payload() == null) {
+                    continue;
+                }
+                var target = directory.resolve(record.name());
+                Files.createDirectories(target.getParent());
+                Files.write(target, record.payload());
+            }
+        } catch (IOException e) {
+            throw new PatchEngineException(
+                "[Veltis] Failed to write the exploded runtime patches to " + directory
+                    + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
+        }
+    }
+
+    /**
      * Collects the patched resources.
      *
-     * <p>Each one records the SHA-1 of the vanilla entry it replaces, or
+     * <p>Each one records the SHA-256 of the vanilla entry it replaces, or
      * {@code -} when vanilla has no such entry. The applier checks that claim in
      * both directions, so a resource written against a vanilla jar that does not
      * have the state the patch expects is refused rather than silently
@@ -285,8 +306,9 @@ public final class BytecodePatchGenerator {
                             + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
                 }
                 var original = vanillaOther.get(name);
-                collected.put(name, new BytecodePatch.ProducedEntry(name, bytes,
-                    original == null ? BytecodePatch.ABSENT : original));
+                collected.put(name, new BytecodePatch.ProducedEntry(name, BytecodePatch.Kind.ENTRY,
+                    bytes, original == null ? BytecodePatch.ABSENT : original,
+                    BytecodePatch.sha256Hex(bytes)));
             }
         } catch (IOException e) {
             throw new PatchEngineException(
@@ -320,7 +342,7 @@ public final class BytecodePatchGenerator {
                 if (entry.getName().endsWith(".class")) {
                     classes.put(entry.getName(), bytes);
                 } else {
-                    others.put(entry.getName(), BytecodePatch.sha1Hex(bytes));
+                    others.put(entry.getName(), BytecodePatch.sha256Hex(bytes));
                 }
             }
         }
