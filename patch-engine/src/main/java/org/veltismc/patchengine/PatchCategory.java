@@ -33,7 +33,7 @@ public enum PatchCategory {
         this.order = order;
     }
 
-    /** The directory under {@code Shulker/} that holds this category. */
+    /** The directory under {@code server/Shulker/} that holds this category. */
     public String directoryName() {
         return directoryName;
     }

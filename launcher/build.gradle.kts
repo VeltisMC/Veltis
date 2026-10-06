@@ -61,16 +61,17 @@ val centralLibraryBase = "https://repo1.maven.org/maven2/"
 /**
  * Everything `veltismc.jar` puts on the JVM's system classpath, and why.
  *
- * Five entries, and the count is the point. Each one is reachable from the
+ * Seven entries, and the count is the point. Each one is reachable from the
  * server's own start-up path — Log4j because `VeltisConsole` configures it
  * before anything logs, Gson because `MojangMetadata` parses Mojang's version
  * document with it, the JUL bridge because the server installs Log4j's
- * `LogManager` as `java.util.logging.manager`, and SnakeYAML because
- * `VeltisConfig` reads `veltis.yml`. Nothing else in the build's runtime
- * classpath is used by the running server, so nothing else is listed: ASM
- * widens access at build time, Vineflower decompiles at build time, and
- * `javax.tools` compiles at build time. None of the three is present in the jar
- * at all.
+ * `LogManager` as `java.util.logging.manager`, SnakeYAML because `VeltisConfig`
+ * reads `veltis.yml`, and ASM because applying the bytecode patch set splices
+ * class deltas onto the verified vanilla classes with `ClassDelta`, which parses
+ * both sides to do it. Nothing else in the build's runtime classpath is used by
+ * the running server, so nothing else is listed: Vineflower decompiles at build
+ * time and `javax.tools` compiles at build time, and neither is present in the
+ * jar at all.
  *
  * Mojang membership is not asserted here — it is read from
  * `metadata/libraries.txt`, the coordinate list the build derived from Mojang's
@@ -91,6 +92,11 @@ val bootstrapCoordinates = listOf(
     "org.apache.logging.log4j:log4j-jul",
     // `veltis.yml`. Mojang does not publish this one.
     "org.yaml:snakeyaml",
+    // The class-file reader and writer the delta applier parses both sides of
+    // a splice with: vanilla class in, merged class out.
+    "org.ow2.asm:asm",
+    // The tree API that reader feeds; `ClassDelta` works on ClassNode/MethodNode.
+    "org.ow2.asm:asm-tree",
 )
 
 fun sha1Of(file: java.io.File): String {
@@ -281,7 +287,7 @@ val oursRoots = listOf("org/veltismc", "META-INF/veltis")
  * bytecode patch set, verify the result and start the server. The decompiler,
  * `javac`, the source patch engine, the access widener and the pipeline's own
  * main do that work inside the Gradle build — and `VeltisLauncher` says so out
- * loud when a `Shulker/` directory turns up beside the jar: there is no
+ * loud when a `server/Shulker/` directory turns up beside the jar: there is no
  * pipeline here to run it with, so it refuses instead of starting a server that
  * quietly ignores the patches. Shipping the classes anyway would contradict
  * that claim in the one direction a reader cannot check by running anything:
@@ -289,12 +295,13 @@ val oursRoots = listOf("org/veltismc", "META-INF/veltis")
  *
  * Matched on the simple class name, so an inner class (`X$Y`) goes with `X`.
  * `PatchCategory` is deliberately not here: the launcher executes it when it
- * looks for a `Shulker/` directory, before it can decide to refuse one.
+ * looks for a `server/Shulker/` directory, before it can decide to refuse one.
  */
 val developmentClasses = setOf(
     "AccessRequirements",     // the access widener's model of what to widen
     "AccessWidener",          // ASM-based widening; ASM is not in the jar
     "BytecodePatchGenerator", // cuts the bytecode patch set, build time
+    "ClassDeltaGenerator",    // compares, builds and verifies class deltas; build time
     "DiffGenerator",          // source diffs for rebuildPatches
     "MinecraftDecompiler",    // Vineflower integration; Vineflower is not in the jar
     "ParsedPatch",            // source patch parsing
@@ -358,13 +365,13 @@ tasks.register("uberJar", Jar::class) {
         )
     }
 
-    // The patch set travels inside the jar, as bytecode with both hashes on
-    // every entry. This is what removes the build step from the operator's
-    // path: `java -jar server.jar` needs nothing on disk but the jar, and the
-    // difference between it and vanilla Minecraft is in it.
+    // The patch set travels inside the jar, as class deltas with three hashes
+    // on every index line. This is what removes the build step from the
+    // operator's path: `java -jar server.jar` needs nothing on disk but the
+    // jar, and the difference between it and vanilla Minecraft is in it.
     //
-    // The development source patches under `Shulker/` deliberately are not.
-    // They are how a contributor writes a change; a running server has no
+    // The development source patches under `server/Shulker/` deliberately are
+    // not. They are how a contributor writes a change; a running server has no
     // decompiler to apply them with and no compiler to run the result through,
     // so packaging them would ship a second patch representation nobody can
     // use. One format ships, and it is the bytecode one.

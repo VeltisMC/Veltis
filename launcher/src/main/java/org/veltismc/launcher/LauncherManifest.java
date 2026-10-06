@@ -30,7 +30,8 @@ public final class LauncherManifest {
 
     /**
      * @param launcherDirectory the directory this jar was loaded from, used to
-     *                          find a developer checkout's {@code Shulker/}
+     *                          find a developer checkout's
+     *                          {@code server/Shulker/}
      */
     public static LauncherManifest from(String[] args, Path launcherDirectory) {
         var flags = parseFlags(args);
@@ -144,20 +145,27 @@ public final class LauncherManifest {
     /**
      * The patch set to build the runtime from.
      *
-     * <p>An explicit {@code --patches} wins, then a {@code Shulker/} directory
-     * beside the jar. The second rule is what gives a developer a live editing
-     * loop: edit a patch, restart the server, and it is your patch that gets
-     * applied, with no repackaging step. When neither is present — an operator who
-     * has only {@code server.jar} — the patch set packaged inside the jar is used,
-     * which is the same one the build would have produced.
+     * <p>An explicit {@code --patches} wins, then {@code server/Shulker/} beside
+     * the jar — the one directory the development pipeline reads. A bare
+     * {@code Shulker/} beside the jar is the older layout, and it is refused
+     * rather than ignored too: a patch directory nobody applies is exactly the
+     * silence this check exists to prevent. When none is present — an operator
+     * who has only {@code server.jar} — the patch set packaged inside the jar is
+     * used, which is the same one the build would have produced.
      */
     private static Path detectPatches(Map<String, String> flags, Path launcherDirectory) {
         var override = flags.get("patches");
         if (override != null) {
             return Paths.get(override).toAbsolutePath().normalize();
         }
-        if (isPatchDirectory(launcherDirectory.resolve(PatchDiscovery.SHULKER_DIRECTORY))) {
-            return launcherDirectory.resolve(PatchDiscovery.SHULKER_DIRECTORY);
+        var canonical = launcherDirectory.resolve("server")
+            .resolve(PatchDiscovery.SHULKER_DIRECTORY);
+        if (isPatchDirectory(canonical)) {
+            return canonical;
+        }
+        var legacy = launcherDirectory.resolve(PatchDiscovery.SHULKER_DIRECTORY);
+        if (isPatchDirectory(legacy)) {
+            return legacy;
         }
         return null;
     }

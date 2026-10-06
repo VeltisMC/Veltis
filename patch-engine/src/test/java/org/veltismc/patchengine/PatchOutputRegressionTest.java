@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Byte-for-byte output regression for the patch pipeline.
  *
  * <p>The corpus below exercises the production path end to end: patch files on
- * disk in {@code Shulker/code} -> {@link PatchDiscovery} ->
+ * disk in {@code server/Shulker/code} -> {@link PatchDiscovery} ->
  * {@link VeltisPatcher} -> Git applying the set -> written source files. It
  * covers:
  *

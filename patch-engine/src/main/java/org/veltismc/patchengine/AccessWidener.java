@@ -344,7 +344,15 @@ public final class AccessWidener {
         return cw.toByteArray();
     }
 
-    private static int widenClassAccess(int access) {
+    /**
+     * The widened form of a class header: public, and not final unless the
+     * class's own kind forbids dropping it (enums and annotations keep the
+     * flag the JVM requires).
+     *
+     * <p>Package-private so the class-delta generator applies exactly this
+     * transform when it records a header rewrite.</p>
+     */
+    static int widenClassAccess(int access) {
         // Remove ACC_FINAL from classes, but not from enums
         if ((access & Opcodes.ACC_ENUM) == 0 && (access & Opcodes.ACC_ANNOTATION) == 0) {
             access = access & ~(Opcodes.ACC_PRIVATE | Opcodes.ACC_PROTECTED | Opcodes.ACC_FINAL);
@@ -357,7 +365,18 @@ public final class AccessWidener {
         return access;
     }
 
-    private static int widenAll(int access, boolean keepFinal) {
+    /**
+     * The widened form of a member's access flags: public, non-private, and
+     * not final unless {@code keepFinal} (interface and annotation owners, whose
+     * fields the JVM declares final regardless) or the member's own enum-ness
+     * requires the flag to stay.
+     *
+     * <p>Package-private so the class-delta generator normalises with exactly
+     * this transform — the same one the development pipeline applied before
+     * decompiling, which is what makes a pre-existing widening difference
+     * count as "not a change the patch introduced".</p>
+     */
+    static int widenAll(int access, boolean keepFinal) {
         access = access & ~(Opcodes.ACC_PRIVATE | Opcodes.ACC_PROTECTED);
         if ((access & Opcodes.ACC_PUBLIC) == 0) {
             access |= Opcodes.ACC_PUBLIC;
@@ -366,5 +385,24 @@ public final class AccessWidener {
             access = access & ~Opcodes.ACC_FINAL;
         }
         return access;
+    }
+
+    /**
+     * The widened form of a method's access flags, with the two exemptions the
+     * class-file rules force: an enum constructor must stay non-public and a
+     * static initialiser must stay package-private, because widening either
+     * produces a class file the JVM rejects outright. Used both when widening
+     * a class and when recording — or comparing — a single method's flags.
+     *
+     * @param access     the vanilla method flags
+     * @param ownerIsEnum whether the declaring class is an enum
+     * @param name       the method name, for the {@code <init>} exemption
+     * @return the flags a patched compilation would have seen
+     */
+    static int widenMethod(int access, boolean ownerIsEnum, String name) {
+        if ((ownerIsEnum && "<init>".equals(name)) || "<clinit>".equals(name)) {
+            return access;
+        }
+        return widenAll(access, false);
     }
 }

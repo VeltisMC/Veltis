@@ -40,15 +40,21 @@ class BytecodePatchTest {
     private static List<BytecodePatch.ProducedEntry> sampleEntries() {
         return List.of(
             new BytecodePatch.ProducedEntry("net/minecraft/server/MinecraftServer.class",
-                new byte[] {1, 2, 3, 4}, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+                BytecodePatch.Kind.ENTRY, new byte[] {1, 2, 3, 4},
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                BytecodePatch.sha256Hex(new byte[] {1, 2, 3, 4})),
             new BytecodePatch.ProducedEntry("assets/veltis/lang/en_us.json",
-                "{\"a\":1}".getBytes(StandardCharsets.UTF_8), BytecodePatch.ABSENT),
-            new BytecodePatch.ProducedEntry("META-INF/OLD.SF", null,
-                "cccccccccccccccccccccccccccccccccccccccc"));
+                BytecodePatch.Kind.ENTRY, "{\"a\":1}".getBytes(StandardCharsets.UTF_8),
+                BytecodePatch.ABSENT,
+                BytecodePatch.sha256Hex("{\"a\":1}".getBytes(StandardCharsets.UTF_8))),
+            new BytecodePatch.ProducedEntry("META-INF/OLD.SF",
+                BytecodePatch.Kind.DELETE, null,
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                BytecodePatch.ABSENT));
     }
 
     private static Path writeSample(Path target) {
-        BytecodePatch.write(target, "26.3", SERVER_SHA1, CLASSES_SHA1, 26, sampleEntries());
+        BytecodePatch.write(target, "26.3", SERVER_SHA1, CLASSES_SHA1, 26, 1, sampleEntries());
         return target;
     }
 
@@ -146,18 +152,18 @@ class BytecodePatchTest {
 
         assertEquals(BytecodePatch.Kind.ENTRY,
             byName.get("net/minecraft/server/MinecraftServer.class").kind());
-        assertEquals("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            byName.get("net/minecraft/server/MinecraftServer.class").originalSha1());
-        assertEquals(BytecodePatch.sha1Hex(new byte[] {1, 2, 3, 4}),
-            byName.get("net/minecraft/server/MinecraftServer.class").resultSha1());
+        assertEquals("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            byName.get("net/minecraft/server/MinecraftServer.class").originalSha256());
+        assertEquals(BytecodePatch.sha256Hex(new byte[] {1, 2, 3, 4}),
+            byName.get("net/minecraft/server/MinecraftServer.class").resultSha256());
 
         assertEquals(BytecodePatch.ABSENT,
-            byName.get("assets/veltis/lang/en_us.json").originalSha1(),
+            byName.get("assets/veltis/lang/en_us.json").originalSha256(),
             "'-' means the baseline does not have this entry, which is itself a claim"
                 + " the applier checks against the vanilla jar");
 
         assertEquals(BytecodePatch.Kind.DELETE, byName.get("META-INF/OLD.SF").kind());
-        assertEquals(BytecodePatch.ABSENT, byName.get("META-INF/OLD.SF").resultSha1());
+        assertEquals(BytecodePatch.ABSENT, byName.get("META-INF/OLD.SF").resultSha256());
     }
 
     // ------------------------------------------------------------------
@@ -167,9 +173,9 @@ class BytecodePatchTest {
     @Test
     void twoWritesOverTheSameInputsProduceOneByteString(@TempDir Path tmp) throws Exception {
         var first = BytecodePatch.write(tmp.resolve("a.zip"), "26.3", SERVER_SHA1, CLASSES_SHA1,
-            26, sampleEntries());
+            26, 1, sampleEntries());
         var second = BytecodePatch.write(tmp.resolve("b.zip"), "26.3", SERVER_SHA1, CLASSES_SHA1,
-            26, new ArrayList<>(List.copyOf(sampleEntries().reversed())));
+            26, 1, new ArrayList<>(List.copyOf(sampleEntries().reversed())));
 
         assertArrayEquals(Files.readAllBytes(tmp.resolve("a.zip")),
             Files.readAllBytes(tmp.resolve("b.zip")),
@@ -181,22 +187,28 @@ class BytecodePatchTest {
     @Test
     void theFingerprintChangesWhenAndOnlyWhenContentDoes(@TempDir Path tmp) throws Exception {
         var base = BytecodePatch.write(tmp.resolve("base.zip"), "26.3", SERVER_SHA1, CLASSES_SHA1,
-            26, sampleEntries()).fingerprint();
+            26, 1, sampleEntries()).fingerprint();
 
         var sameAgain = BytecodePatch.write(tmp.resolve("again.zip"), "26.3", SERVER_SHA1,
-            CLASSES_SHA1, 26, sampleEntries()).fingerprint();
+            CLASSES_SHA1, 26, 1, sampleEntries()).fingerprint();
         assertEquals(base, sameAgain,
             "a patch set rebuilt from the same inputs must keep its fingerprint, or every"
                 + " second build would re-download and re-apply");
 
         var changed = BytecodePatch.write(tmp.resolve("changed.zip"), "26.3", SERVER_SHA1,
-            CLASSES_SHA1, 26, List.of(
+            CLASSES_SHA1, 26, 1, List.of(
                 new BytecodePatch.ProducedEntry("net/minecraft/server/MinecraftServer.class",
-                    new byte[] {1, 2, 3, 5}, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+                    BytecodePatch.Kind.ENTRY, new byte[] {1, 2, 3, 5},
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    BytecodePatch.sha256Hex(new byte[] {1, 2, 3, 5})),
                 new BytecodePatch.ProducedEntry("assets/veltis/lang/en_us.json",
-                    "{\"a\":1}".getBytes(StandardCharsets.UTF_8), BytecodePatch.ABSENT),
-                new BytecodePatch.ProducedEntry("META-INF/OLD.SF", null,
-                    "cccccccccccccccccccccccccccccccccccccccc"))).fingerprint();
+                    BytecodePatch.Kind.ENTRY, "{\"a\":1}".getBytes(StandardCharsets.UTF_8),
+                    BytecodePatch.ABSENT,
+                    BytecodePatch.sha256Hex("{\"a\":1}".getBytes(StandardCharsets.UTF_8))),
+                new BytecodePatch.ProducedEntry("META-INF/OLD.SF",
+                    BytecodePatch.Kind.DELETE, null,
+                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    BytecodePatch.ABSENT))).fingerprint();
         assertNotEquals(base, changed,
             "one byte of payload differs, and the cache identity must notice");
     }
@@ -225,8 +237,8 @@ class BytecodePatchTest {
         var file = writeSample(tmp.resolve("patch.zip"));
         var index = new String(indexOf(file), StandardCharsets.UTF_8);
         var tampered = index.replace("1, 2, 3, 4", "9, 9, 9, 9")
-            .replace("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                "dddddddddddddddddddddddddddddddddddddddd");
+            .replace("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
 
         var failure = refusal(() -> rewrite(file,
             Map.of(BytecodePatch.INDEX_ENTRY, tampered.getBytes(StandardCharsets.UTF_8)),
@@ -360,18 +372,23 @@ class BytecodePatchTest {
     @Test
     void anEntryNameThatCouldEscapeTheContainerIsRefused(@TempDir Path tmp) {
         var failure = refusal(() -> BytecodePatch.write(tmp.resolve("evil.zip"), "26.3",
-            SERVER_SHA1, CLASSES_SHA1, 26,
+            SERVER_SHA1, CLASSES_SHA1, 26, 1,
             List.of(new BytecodePatch.ProducedEntry("../../etc/passwd",
-                new byte[] {1}, BytecodePatch.ABSENT))));
+                BytecodePatch.Kind.ENTRY, new byte[] {1}, BytecodePatch.ABSENT,
+                BytecodePatch.sha256Hex(new byte[] {1})))));
         assertTrue(failure.getMessage().contains("unsafe entry name"), failure.getMessage());
     }
 
     @Test
     void theSameEntryTwiceIsRefused(@TempDir Path tmp) {
         var failure = refusal(() -> BytecodePatch.write(tmp.resolve("twice.zip"), "26.3",
-            SERVER_SHA1, CLASSES_SHA1, 26,
-            List.of(new BytecodePatch.ProducedEntry("a.txt", new byte[] {1}, BytecodePatch.ABSENT),
-                new BytecodePatch.ProducedEntry("a.txt", new byte[] {2}, BytecodePatch.ABSENT))));
+            SERVER_SHA1, CLASSES_SHA1, 26, 1,
+            List.of(new BytecodePatch.ProducedEntry("a.txt",
+                    BytecodePatch.Kind.ENTRY, new byte[] {1}, BytecodePatch.ABSENT,
+                    BytecodePatch.sha256Hex(new byte[] {1})),
+                new BytecodePatch.ProducedEntry("a.txt",
+                    BytecodePatch.Kind.ENTRY, new byte[] {2}, BytecodePatch.ABSENT,
+                    BytecodePatch.sha256Hex(new byte[] {2})))));
         assertTrue(failure.getMessage().contains("twice"), failure.getMessage());
     }
 

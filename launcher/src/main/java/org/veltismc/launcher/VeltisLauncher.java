@@ -214,12 +214,12 @@ public final class VeltisLauncher {
 
         var version = resolveVersion(manifest);
 
-        // A Shulker/ directory beside this jar -- or an explicit --patches --
-        // means someone wants the development loop: apply the source patches to
-        // a decompiled tree, widen, compile, rebuild. None of that is here, and
-        // it cannot be: the distributable deliberately carries no decompiler, no
-        // javac and no source patch engine, because shipping them would turn
-        // every start into a build.
+        // A server/Shulker/ directory beside this jar -- or an explicit
+        // --patches -- means someone wants the development loop: apply the
+        // source patches to a decompiled tree, widen, compile, rebuild. None of
+        // that is here, and it cannot be: the distributable deliberately carries
+        // no decompiler, no javac and no source patch engine, because shipping
+        // them would turn every start into a build.
         //
         // Refusing is the only honest answer. Carrying on with the packaged
         // patch set would start a server that quietly ignores the very patches
@@ -230,13 +230,13 @@ public final class VeltisLauncher {
             LOG.error("[Veltis] This build carries no source patch pipeline"
                 + "\n  Patches: " + sourcePatches.get()
                 + "\n  Reason: a distributable ships Minecraft's changes as compiled"
-                + " bytecode with both hashes on every entry, so it has no decompiler,"
-                + " no compiler and no source patch engine to apply a Shulker/ directory"
+                + " bytecode with three hashes on every index line, so it has no decompiler,"
+                + " no compiler and no source patch engine to apply a server/Shulker/ directory"
                 + " with. Those live in the Gradle build."
                 + "\n  Fix: rebuild the runtime from your patches -- ./gradlew applyPatches,"
                 + " edit build/minecraft/<version>/patched/, then ./gradlew rebuildPatches"
                 + " and ./gradlew buildVeltisMC -- and run the jar that produces; or run"
-                + " this jar from a directory with no Shulker/ beside it, which uses the"
+                + " this jar from a directory with no server/Shulker/ beside it, which uses the"
                 + " patch set packaged inside it.");
             System.exit(1);
             return;

@@ -10,7 +10,7 @@ import java.util.List;
  * Finds the patch set for a run, in a fixed and reproducible order.
  *
  * <p>Exactly three directories are consulted, in category order:
- * {@code Shulker/code}, {@code Shulker/data}, {@code Shulker/modules}. Within a
+ * {@code server/Shulker/code}, {@code server/Shulker/data}, {@code server/Shulker/modules}. Within a
  * directory, patch files are applied in file-name order. There is no discovery
  * by classpath scan, no search of well-known locations, and no
  * numbered-name-renaming: the file name is the patch's identity, so
@@ -22,13 +22,16 @@ import java.util.List;
  * sorted explicitly before it is returned.
  *
  * <p>A missing category directory is not an error — a project may legitimately
- * have no data patches. A missing {@code Shulker/} root is an error, because that
+ * have no data patches. A missing {@code server/Shulker/} root is an error, because that
  * means the build was pointed at the wrong directory and silently applying
  * nothing would produce a server that is quietly just vanilla.
  */
 public final class PatchDiscovery {
 
-    /** Directory under the project root that holds the patch set. */
+    /**
+     * The patch set's leaf directory name: under the project root it lives at
+     * {@code server/Shulker}.
+     */
     public static final String SHULKER_DIRECTORY = "Shulker";
 
     private PatchDiscovery() {
@@ -42,7 +45,8 @@ public final class PatchDiscovery {
      * That also means a malformed patch fails here, before a single source file
      * has been written.
      *
-     * @param patchesRoot      the {@code Shulker/} directory
+     * @param patchesRoot      the patch-set directory, {@code server/Shulker/} in a
+     *                         checkout
      * @param minecraftVersion reported in any failure
      * @return patches in application order: code, then data, then modules
      */
@@ -80,10 +84,10 @@ public final class PatchDiscovery {
         return List.copyOf(patches);
     }
 
-    /** Discovers the patch set under {@code projectDirectory/Shulker}. */
+    /** Discovers the patch set under {@code projectDirectory/server/Shulker}. */
     public static List<VeltisPatch> discover(Path projectDirectory, String minecraftVersion) {
-        return discover(projectDirectory.resolve(SHULKER_DIRECTORY), minecraftVersion,
-            new PatchStats());
+        return discover(projectDirectory.resolve("server").resolve(SHULKER_DIRECTORY),
+            minecraftVersion, new PatchStats());
     }
 
     /**
