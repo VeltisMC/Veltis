@@ -31,6 +31,7 @@ public final class VeltisBootstrap {
     public static volatile Object MINECRAFT_SERVER;
 
     private static volatile org.veltismc.runtime.ServerRuntime runtime;
+    private static volatile org.veltismc.world.nms.VeltisWorldIntegration worldIntegration;
 
     private VeltisBootstrap() {}
 
@@ -50,9 +51,11 @@ public final class VeltisBootstrap {
         if (MINECRAFT_SERVER != null) return;
         MINECRAFT_SERVER = server;
         startRuntime();
+        bindMinecraftLevels(server);
     }
 
     public static void onServerStopping() {
+        unbindMinecraftLevels();
         MINECRAFT_SERVER = null;
         stopRuntime();
     }
@@ -80,6 +83,39 @@ public final class VeltisBootstrap {
         } catch (Throwable t) {
             runtime = null;
             LOG.error("[VeltisMC] Failed to start VeltisMC runtime", rootCause(t));
+        }
+    }
+
+    /**
+     * Binds every existing ServerLevel to its own Veltis world, only after the
+     * world engine has started (so no world exists before it runs). One level
+     * maps to one world, named after its dimension. Never fatal: a failure
+     * leaves the engine running without level bindings, matching how a failed
+     * {@link #startRuntime()} leaves the vanilla server usable.
+     */
+    private static void bindMinecraftLevels(Object server) {
+        var rt = runtime;
+        if (rt == null) {
+            return;
+        }
+        try {
+            worldIntegration =
+                    org.veltismc.world.nms.VeltisWorldIntegration.install(rt.worldEngine(), server);
+        } catch (Throwable t) {
+            worldIntegration = null;
+            LOG.error("[VeltisMC] Failed to bind Minecraft levels to Veltis worlds", rootCause(t));
+        }
+    }
+
+    /** Drops every level hook and binding before the runtime shuts down. */
+    private static void unbindMinecraftLevels() {
+        var integration = worldIntegration;
+        worldIntegration = null;
+        if (integration == null) return;
+        try {
+            integration.shutdown();
+        } catch (Throwable t) {
+            LOG.error("[VeltisMC] Failed to clear Minecraft level bindings", rootCause(t));
         }
     }
 

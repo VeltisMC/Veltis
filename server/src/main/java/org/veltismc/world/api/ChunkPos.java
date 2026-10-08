@@ -23,6 +23,11 @@ public record ChunkPos(int x, int z) {
         return ((long) x << 32) ^ (z & 0xFFFFFFFFL);
     }
 
+    /** Decodes a position packed by {@link #key()}. */
+    public static ChunkPos ofKey(long key) {
+        return new ChunkPos((int) (key >> 32), (int) key);
+    }
+
     @Override
     public String toString() {
         return "(" + x + ", " + z + ")";

@@ -332,6 +332,19 @@ project(":server") {
         // compiles against are its output.
         dependsOn(":prepareVeltisRuntime")
     }
+    tasks.withType<Test>().configureEach {
+        // The NMS integration tests load real Minecraft classes. The JVM refuses
+        // a package whose classes come from both a signed and an unsigned jar:
+        // `classes/` (patched, unsigned) and `server-classes.jar` (verified,
+        // signed) share `net.minecraft.*` packages. The widened jar carries
+        // every vanilla class unsigned and is byte-identical for loading, so
+        // prepending it ahead of the signed jar — which the existing order
+        // already puts after `classes/` — leaves the signed jar fully shadowed
+        // and the test classpath signature-clean. Compile classpaths are
+        // deliberately untouched: :server must keep compiling against the
+        // unwidened baseline so access errors stay build errors.
+        classpath = files(classesDir, widenedServerJar, this.classpath)
+    }
 }
 
 /**
