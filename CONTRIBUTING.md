@@ -29,13 +29,13 @@ Build the project:
 ### Windows
 
 ```powershell
-.\gradlew.bat build
+.\gradlew.bat buildVeltisMC
 ```
 
 ### Linux / macOS
 
 ```bash
-./gradlew build
+./gradlew buildVeltisMC
 ```
 
 ## Project structure
@@ -176,7 +176,7 @@ For meaningful performance changes, include benchmark or profiling results in th
 Before opening a pull request, run at least:
 
 ```bash
-./gradlew clean build
+./gradlew clean buildVeltisMC
 ```
 
 If your change affects Shulker, also verify that the patches apply cleanly.
