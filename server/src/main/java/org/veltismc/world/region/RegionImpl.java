@@ -41,6 +41,7 @@ public final class RegionImpl implements Region, RegionInbox {
     private final long seed;
     private final LockFreeQueue<JobEnvelope> inbox = new LockFreeQueue<>();
     private final ConcurrentHashMap<Long, Chunk> chunks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, Chunk> activeChunks = new ConcurrentHashMap<>();
     private final LockFreeQueue<BlockUpdateJob> updateQueue = new LockFreeQueue<>();
     private final TreeMap<Long, EntityHandleImpl> entities = new TreeMap<>();
     private final AtomicBoolean tickScheduled = new AtomicBoolean();
@@ -135,6 +136,8 @@ public final class RegionImpl implements Region, RegionInbox {
     /** Removes a chunk from the region and returns it to the chunk pool. */
     public void removeChunk(Chunk chunk) {
         chunks.remove(chunk.pos().key());
+        activeChunks.remove(chunk.pos().key());
+
         world.lightingImpl().onChunkUnloaded(chunk.pos());
         chunk.releaseSections();
         world.chunkPool().release(chunk);
@@ -168,6 +171,28 @@ public final class RegionImpl implements Region, RegionInbox {
     /** Snapshot of loaded chunks (internal, for save/unload scans). */
     public List<Chunk> chunksSnapshot() {
         return new ArrayList<>(chunks.values());
+    }
+
+    public List<Chunk> activeChunksSnapshot() {
+        return new ArrayList<>(activeChunks.values());
+    }
+
+    public void setChunkActive(ChunkPos chunkPos, boolean active) {
+        if (!owns(chunkPos)) {
+            throw new IllegalArgumentException(
+                    "Chunk does not belong to this region: " + chunkPos
+            );
+        }
+
+        if (active) {
+            Chunk chunk = chunks.get(chunkPos.key());
+
+            if (chunk != null && chunk.isLoaded()) {
+                activeChunks.put(chunkPos.key(), chunk);
+            }
+        } else {
+            activeChunks.remove(chunkPos.key());
+        }
     }
 
     /** Owner-thread-only entity registry (ascending id order for deterministic ticks). */

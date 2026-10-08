@@ -23,6 +23,12 @@ import java.util.ArrayList;
  * worker. Random ticks, block updates, and entity ticks all happen here, which
  * keeps the region's simulation state single-threaded and deterministic.
  * Reschedules itself as a delayed job while simulation is running.
+ * <p>
+ * <b>Ownership model:</b> This job only processes {@link Chunk}s that appear in
+ * {@link RegionImpl#activeChunksSnapshot()}. Chunks in activeChunks are
+ * Veltis-owned; Minecraft must skip ticking those chunks to prevent
+ * double-ticking. The{@link #tick(long)} method consumes the activity state
+ * supplied by the NMS integration and never determines activity itself.
  */
 public final class RegionTickJob implements RegionJob {
 
@@ -70,7 +76,10 @@ public final class RegionTickJob implements RegionJob {
         SimulationContextImpl simCtx = new SimulationContextImpl(region, region.seed());
         BlockSimulator blockSim = world.simulationImpl().simulator();
 
-        for (Chunk chunk : region.chunksSnapshot()) {
+        // Minecraft decides which chunks are simulation-active (mirrored into the
+        // region by the NMS activity sync); the region tick consumes that state
+        // and never determines it itself.
+        for (Chunk chunk : region.activeChunksSnapshot()) {
             tickChunk(cfg, simCtx, blockSim, chunk);
         }
 

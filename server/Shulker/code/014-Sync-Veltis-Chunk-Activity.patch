@@ -1,0 +1,59 @@
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -29,6 +29,7 @@
+ import java.util.concurrent.Executor;
+ import java.util.concurrent.atomic.AtomicInteger;
+ import java.util.function.BooleanSupplier;
++import java.util.function.Consumer;
+ import java.util.function.Function;
+ import java.util.function.Predicate;
+ import java.util.stream.Collectors;
+@@ -223,6 +224,10 @@
+     public StructureCheck structureCheck;
+     public boolean tickTime;
+     public LevelDebugSynchronizers debugSynchronizers = new LevelDebugSynchronizers(this);
++    // Veltis: per-level callback into the Veltis world engine, installed by
++    // VeltisBootstrap once the engine is running and cleared on shutdown.
++    // Null without the Veltis runtime; ServerLevel.tick() reads it every tick.
++    public volatile Consumer<ServerLevel> veltisActivitySync;
+ 
+     public ServerLevel(
+         final MinecraftServer server,
+@@ -404,6 +409,14 @@
+ 
+         profiler.popPush("chunkSource");
+         this.getChunkSource().tick(haveTime, true);
++        // Veltis: the chunk source just ran its DistanceManager/chunk-state
++        // updates for this tick, so vanilla's ticking-chunk state is final.
++        // Hand this level to the Veltis world engine, which mirrors which
++        // chunks are simulation-active. Null without the Veltis runtime.
++        Consumer<ServerLevel> veltisActivitySync = this.veltisActivitySync;
++        if (veltisActivitySync != null) {
++            veltisActivitySync.accept(this);
++        }
+         profiler.popPush("blockEvents");
+         if (runs) {
+             this.runBlockEvents();
+@@ -1230,15 +1243,14 @@
+         final WeightedList<ExplosionParticleInfo> blockParticles,
+         final Holder<SoundEvent> explosionSound
+     ) {
+-        Explosion.BlockInteraction blockInteraction = switch (<unrepresentable>.$SwitchMap$net$minecraft$world$level$Level$ExplosionInteraction[interactionType.ordinal()]) {
+-            case 1 -> Explosion.BlockInteraction.KEEP;
+-            case 2 -> this.getDestroyType(GameRules.BLOCK_EXPLOSION_DROP_DECAY);
+-            case 3 -> this.getGameRules().<Boolean>get(GameRules.MOB_GRIEFING)
++        Explosion.BlockInteraction blockInteraction = switch (interactionType) {
++            case NONE -> Explosion.BlockInteraction.KEEP;
++            case BLOCK -> this.getDestroyType(GameRules.BLOCK_EXPLOSION_DROP_DECAY);
++            case MOB -> this.getGameRules().<Boolean>get(GameRules.MOB_GRIEFING)
+                 ? this.getDestroyType(GameRules.MOB_EXPLOSION_DROP_DECAY)
+                 : Explosion.BlockInteraction.KEEP;
+-            case 4 -> this.getDestroyType(GameRules.TNT_EXPLOSION_DROP_DECAY);
+-            case 5 -> Explosion.BlockInteraction.TRIGGER_BLOCK;
+-            default -> throw new MatchException(null, null);
++            case TNT -> this.getDestroyType(GameRules.TNT_EXPLOSION_DROP_DECAY);
++            case TRIGGER -> Explosion.BlockInteraction.TRIGGER_BLOCK;
+         };
+         Vec3 center = new Vec3(x, y, z);
+         ServerExplosion explosion = new ServerExplosion(this, source, damageSource, damageCalculator, center, r, fire, blockInteraction);
