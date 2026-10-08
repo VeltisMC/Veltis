@@ -21,5 +21,6 @@ enableFeaturePreview("STABLE_CONFIGURATION_CACHE")
 include(
     ":launcher",
     ":patch-engine",
-    ":server"
+    ":server",
+    ":veltis-api"
 )

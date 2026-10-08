@@ -1,5 +1,8 @@
 package org.veltismc.runtime;
 
+import org.veltismc.plugins.PluginLoader;
+import org.veltismc.VeltisServer;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -32,6 +35,8 @@ public final class VeltisBootstrap {
 
     private static volatile org.veltismc.runtime.ServerRuntime runtime;
     private static volatile org.veltismc.world.nms.VeltisWorldIntegration worldIntegration;
+
+    private static volatile PluginLoader pluginLoader;
 
     private VeltisBootstrap() {}
 
@@ -80,6 +85,12 @@ public final class VeltisBootstrap {
             var rt = new DefaultServerRuntime();
             runtime = rt;
             rt.start().join();
+
+            org.slf4j.Logger slf4jLogger = org.slf4j.LoggerFactory.getLogger("PluginEngine");
+            
+            pluginLoader = new PluginLoader(homeDir, new VeltisServer(), slf4jLogger);
+            pluginLoader.loadAllPlugins();
+
         } catch (Throwable t) {
             runtime = null;
             LOG.error("[VeltisMC] Failed to start VeltisMC runtime", rootCause(t));
@@ -120,6 +131,16 @@ public final class VeltisBootstrap {
     }
 
     private static void stopRuntime() {
+        var loader = pluginLoader;
+        pluginLoader = null;
+        if (loader != null) {
+            try {
+                loader.unloadAllPlugins();
+            } catch (Throwable t) {
+                LOG.error("[VeltisMC] Failed to cleanly unload plugins", rootCause(t));
+            }
+        }
+
         var rt = runtime;
         runtime = null;
         if (rt == null) return;

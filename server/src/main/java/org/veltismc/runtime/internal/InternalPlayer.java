@@ -59,7 +59,7 @@ public interface InternalPlayer {
         }
 
         public Position withZ(double z) {
-            return new Position(x, z, z, yaw, pitch);
+            return new Position(x, y, z, yaw, pitch);
         }
 
         public Position withYaw(float yaw) {

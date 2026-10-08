@@ -7,6 +7,9 @@ import org.veltismc.patchengine.VeltisConsole;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 import java.util.Set;
 
 public final class Main {
@@ -163,11 +166,13 @@ public final class Main {
         var eulaFile = homeDir.resolve("eula.txt");
         if (Files.exists(eulaFile)) return;
         try {
+            var now = ZonedDateTime.now();
+            var formatter = DateTimeFormatter.ofPattern("EEE MMM dd HH:mm:ss z yyyy", Locale.ENGLISH);
             var eula = """
                 #By changing the setting below to TRUE you are indicating your agreement to our EULA (https://aka.ms/MinecraftEULA).
-                #Sat Jun 20 12:39:46 IST 2026
+                #%s
                 eula=false
-                """;
+                """.formatted(now.format(formatter));
             Files.writeString(eulaFile, eula, StandardCharsets.UTF_8);
             LOG.info("Generated eula.txt (eula=false); set eula=true to accept the Minecraft EULA");
         } catch (Exception e) {
