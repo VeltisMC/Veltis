@@ -59,7 +59,7 @@ The current development target is:
 
 ```text
 Minecraft 26.3
-Java 25+ and LTS
+Java 25+
 ```
 
 Veltis is under active development, so version support and APIs may change.
@@ -68,7 +68,7 @@ Veltis is under active development, so version support and APIs may change.
 
 Requirements:
 
-- JDK 25+
+- JDK 26
 - Git
 - Internet connection for the first Minecraft download
 
@@ -95,29 +95,12 @@ build/distributions/
 Once you have the Veltis distribution:
 
 ```bash
-java -jar veltismc.jar --nogui
+java -jar server.jar --nogui
 ```
 
 Veltis obtains the required Minecraft server files from Mojang, verifies them, prepares the Veltis runtime, and starts the server.
 
 Minecraft itself is not redistributed with Veltis.
-
-### Off-thread compression (opt-in)
-
-Network compression can be moved off the Netty event loop so a large packet does not stall unrelated connections on a single core. It is **off by default** until it has proven itself in production:
-
-```text
--Dveltis.network.offThreadCompression=true
-```
-
-Supporting knobs, if the defaults need tuning:
-
-```text
--Dveltis.network.compressionThreads=<n>   # default: max(1, min(4, cpus / 2))
--Dveltis.network.compressionQueue=<n>     # default: 1024
-```
-
-When the bounded queue is full the calling thread performs the compression itself, so backpressure can never drop or reorder a packet.
 
 ## Contributing
 
