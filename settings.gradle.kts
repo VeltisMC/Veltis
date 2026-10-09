@@ -21,5 +21,8 @@ enableFeaturePreview("STABLE_CONFIGURATION_CACHE")
 include(
     ":launcher",
     ":patch-engine",
-    ":server"
+    ":server",
+    ":model",
+    ":plugins",
+    ":container"
 )
