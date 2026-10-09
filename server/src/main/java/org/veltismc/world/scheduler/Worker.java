@@ -137,10 +137,14 @@ public final class Worker implements Runnable {
     private void execute(JobEnvelope env) {
         RegionJob job = env.job;
         JobHandleImpl handle = env.handle;
-        if (handle.isCancelled() || job.isCancelled()) {
+        
+        // Atomically attempt to start the job. This prevents race conditions where
+        // the job could be cancelled between the initial check and execution.
+        if (!handle.tryStart()) {
             handle.markDone();
             return;
         }
+        
         long start = System.nanoTime();
         env.startNanos = start;
         busy.set(true);
