@@ -281,6 +281,9 @@ class GradlePipelineTest {
         assertTrue(uberJar.contains("\":writePackagedVersion\""),
             "the jar must depend on the task that records the version it was built for,"
                 + " so an unflagged start has a default that cannot drift from the build");
+        assertTrue(uberJar.contains("\":writePackagedJavaVersion\""),
+            "and the task that records the Java release it targets, so the version guard"
+                + " can name the runtime to install without a constant that could drift");
     }
 
     @Test
@@ -357,6 +360,28 @@ class GradlePipelineTest {
                 + " operator receives");
         assertTrue(entries.contains("org/veltismc/launcher/VeltisLauncher.class"),
             "and the launcher entry point, or `java -jar` has no Main-Class to find");
+        assertTrue(entries.contains("org/veltismc/launcher/JavaVersionGuard.class"),
+            "and the Java-8 version guard, or a runtime too old to load the launcher"
+                + " fails with a raw UnsupportedClassVersionError instead of the message"
+                + " that names the Java release to install");
+        assertTrue(entries.contains("META-INF/veltis/java-version.txt"),
+            "and the recorded minimum Java release the guard reads, so it cannot drift"
+                + " from the release the classes were compiled for");
+
+        // The guard has to be what the JVM actually follows from a bare `java -jar`,
+        // not merely present: a manifest still pointing at the Java-25 launcher
+        // would put the version check behind the class it is meant to protect.
+        var manifest = distributableText("META-INF/MANIFEST.MF");
+        var mainClass = manifest.lines()
+            .map(String::strip)
+            .filter(line -> line.startsWith("Main-Class:"))
+            .map(line -> line.substring("Main-Class:".length()).strip())
+            .findFirst()
+            .orElseThrow(() -> new IllegalStateException(
+                "the distributable has no Main-Class, so java -jar cannot start it"));
+        assertEquals("org.veltismc.launcher.JavaVersionGuard", mainClass,
+            "the Java-8 guard must be the manifest entry point; the real launcher is"
+                + " compiled to the target release and cannot load on an older JVM");
     }
 
     private static byte[] distributableEntry(String entry) {
@@ -687,7 +712,23 @@ class GradlePipelineTest {
         var root = read("build.gradle.kts");
         assertTrue(root.contains("patch-targets.txt"),
             "Gradle must read the manifest the patcher wrote, not re-parse patch text");
-        assertFalse(root.contains("Regex("),
+        var regexNearPatchContext = false;
+        var lines = root.lines().toList();
+        for (int i = 0; i < lines.size(); i++) {
+            var line = lines.get(i);
+            if (line.contains("Regex(")) {
+                // Look back and forward a bit for patch-related terms
+                var window = new StringBuilder();
+                for (int j = Math.max(0, i - 5); j < Math.min(lines.size(), i + 5); j++) {
+                    window.append(lines.get(j)).append('\n');
+                }
+                if (window.toString().toLowerCase().contains("patch")) {
+                    regexNearPatchContext = true;
+                    break;
+                }
+            }
+        }
+        assertFalse(regexNearPatchContext,
             "no patch text may be parsed in a Gradle script");
         assertTrue(root.contains("inputs.files(patchTargetsFile)")
                 || root.contains("patchTargetsFile.asFile"),

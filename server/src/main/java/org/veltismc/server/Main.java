@@ -2,6 +2,7 @@ package org.veltismc.server;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.veltismc.patchengine.MinecraftEula;
 import org.veltismc.patchengine.VeltisConsole;
 
 import java.nio.charset.StandardCharsets;
@@ -40,45 +41,19 @@ public final class Main {
 
         var serverHome = resolveHomeDir(args);
         generateServerProperties(serverHome);
-        generateEula(serverHome);
+        // Refuse an unagreed EULA before the runtime is loaded: no Minecraft
+        // class, no world, no download. This is the second of the two places the
+        // gate runs -- the launcher checks before it fetches anything at all, and
+        // this covers a direct entry into Main. It exits non-zero and prints the
+        // exact sentence hosting panels look for.
+        MinecraftEula.require(serverHome);
         bootRuntime(args);
-        if (!agreedToEula(serverHome)) {
-            // Raw console output, like the bootstrap lines: the refusal is the
-            // server's only answer to an unagreed EULA, and it must read as
-            // exactly that sentence. The check itself never modifies eula.txt
-            // and never enters Minecraft.
-            VeltisConsole.bootstrap("You need to agree to the EULA in order to"
-                + " run the server. Go to eula.txt for more info.");
-            return;
-        }
         var mcArgs = filterMinecraftArgs(args);
         try {
             net.minecraft.server.Main.main(mcArgs);
         } catch (Exception e) {
             LOG.error("Failed to start Minecraft server", e);
             System.exit(1);
-        }
-    }
-
-    /**
-     * True when {@code eula.txt} in the server home declares {@code eula=true}.
-     *
-     * <p>Case-insensitive, {@code #} comments and blank lines ignored, and a
-     * missing or unreadable file is a refusal rather than an acceptance: the
-     * only thing that starts the vanilla entry point is an explicit agreement.
-     */
-    private static boolean agreedToEula(Path homeDir) {
-        var eulaFile = homeDir.resolve("eula.txt");
-        if (!Files.isRegularFile(eulaFile)) return false;
-        try {
-            return Files.readAllLines(eulaFile, StandardCharsets.UTF_8).stream()
-                .map(String::trim)
-                .filter(line -> !line.isEmpty() && !line.startsWith("#"))
-                .anyMatch(line -> line.toLowerCase(java.util.Locale.ROOT)
-                    .startsWith("eula=true"));
-        } catch (Exception e) {
-            LOG.warn("Could not read {}; refusing to start: {}", eulaFile, e.toString());
-            return false;
         }
     }
 
@@ -199,19 +174,4 @@ public final class Main {
         }
     }
 
-    private static void generateEula(Path homeDir) {
-        var eulaFile = homeDir.resolve("eula.txt");
-        if (Files.exists(eulaFile)) return;
-        try {
-            var eula = """
-                #By changing the setting below to TRUE you are indicating your agreement to our EULA (https://aka.ms/MinecraftEULA).
-                #Sat Jun 20 12:39:46 IST 2026
-                eula=false
-                """;
-            Files.writeString(eulaFile, eula, StandardCharsets.UTF_8);
-            LOG.debug("Generated eula.txt (eula=false); set eula=true to accept the Minecraft EULA");
-        } catch (Exception e) {
-            LOG.error("Failed to generate eula.txt", e);
-        }
-    }
 }

@@ -339,6 +339,36 @@ fun mayShip(entry: String, isDirectory: Boolean): Boolean {
     return oursRoots.any { it == directory || it.startsWith("$directory/") }
 }
 
+/**
+ * The version guard, and the one class in this jar compiled to Java 8 bytecode.
+ *
+ * <p>Everything else is compiled to the target release (25 for Minecraft 26.3),
+ * which means the JVM cannot even load {@code VeltisLauncher} on an older
+ * runtime — it fails with a raw {@code UnsupportedClassVersionError} before any
+ * VeltisMC code can explain what to install. So the manifest's entry point is
+ * this guard: Java 8 bytecode, only JDK 8 APIs, and it reads the minimum release
+ * the build recorded before deciding whether to delegate to the real launcher.
+ *
+ * <p>It lives in its own source set rather than in {@code src/main/java} because
+ * a single Gradle {@code JavaCompile} has one release. Keeping it separate is
+ * also what makes the constraint checkable: this task has an empty classpath, so
+ * a reference to anything but the JDK is a compile error rather than something
+ * discovered on a Java 8 JVM at runtime.
+ */
+val compileJavaVersionGuard = tasks.register<JavaCompile>("compileJavaVersionGuard") {
+    description = "Compiles the Java-version guard the launcher entry point delegates through"
+    group = "build"
+    source = fileTree("src/bootstrap/java")
+    classpath = files()
+    destinationDirectory.set(layout.buildDirectory.dir("classes/javaVersionGuard"))
+    options.release.set(8)
+    // Java 8 is deliberately obsolete output: the guard exists to run on a JVM
+    // too old to load anything else in the jar. Silence the deprecation of that
+    // choice, which is the whole point of the task.
+    options.compilerArgs.add("-Xlint:-options")
+    options.encoding = "UTF-8"
+}
+
 tasks.register("uberJar", Jar::class) {
     dependsOn(
         ":patch-engine:jar",
@@ -348,6 +378,8 @@ tasks.register("uberJar", Jar::class) {
         // runtime that the jar later builds.
         ":publishBytecodePatch",
         ":writePackagedVersion",
+        ":writePackagedJavaVersion",
+        compileJavaVersionGuard,
         writeBootstrapLibraries
     )
     archiveBaseName.set("veltismc")
@@ -356,14 +388,22 @@ tasks.register("uberJar", Jar::class) {
 
     manifest {
         attributes(
-            "Main-Class" to "org.veltismc.launcher.VeltisLauncher",
-            "Multi-Release" to "true",
+            // The Java-8-compiled guard, not VeltisLauncher: the JVM has to be
+            // able to load *something* on an unsupported runtime in order to say
+            // which Java to install. The guard delegates to VeltisLauncher once
+            // the version check passes.
+            "Main-Class" to "org.veltismc.launcher.JavaVersionGuard",
             // Read at runtime as the Veltis version recorded in every packaged
             // veltis-server.jar, so the build number lives in one place instead
             // of a constant beside the thing it identifies.
             "Implementation-Version" to project.version.toString()
         )
     }
+
+    // The guard and the real launcher are both in the jar; the guard only has to
+    // run first. It is added from its own source set's output because that is
+    // the only compilation target that emits Java 8 bytecode.
+    from(compileJavaVersionGuard)
 
     // The patch set travels inside the jar, as class deltas with three hashes
     // on every index line. This is what removes the build step from the

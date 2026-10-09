@@ -2,6 +2,7 @@ package org.veltismc.launcher;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.veltismc.patchengine.MinecraftEula;
 import org.veltismc.patchengine.MinecraftVersion;
 import org.veltismc.patchengine.VeltisConsole;
 import org.veltismc.patchengine.VeltisRuntime;
@@ -251,9 +252,19 @@ public final class VeltisLauncher {
             return;
         }
 
+        // The EULA gate runs here, before the runtime is prepared: the next
+        // statement fetches Mojang's artifact and applies the patch set, which
+        // is the expensive part of a first start. A panel with eula=false must
+        // hear the refusal in seconds, not after a download it is going to throw
+        // away, and it must be able to read the outcome from the exit code.
+        // This mirrors the check inside server.Main, which covers a direct
+        // entry; whichever runs first refuses, and neither ever writes
+        // eula=true.
+        MinecraftEula.require(homeDir);
+
         var runtime = VeltisRuntime.fromPackagedPatches(manifest.workspaceBase(), version,
             VeltisLauncher.class.getClassLoader(), manifest.patchWorkers(),
-            Runtime.version().feature());
+            PackagedJavaRelease.minimum());
 
         // Whether this run actually applied the patch set: a run whose runtime
         // was current returns false and performs no patching at all. The

@@ -539,6 +539,12 @@ public final class VeltisRuntime {
     }
 
     RuntimeIdentity identityFor(BytecodePatch.Metadata patch, String sourceRevision) {
+        // The release this runtime was asked to build at — the same value the
+        // checkout path compiles and generates with, and, on a server install,
+        // the release recorded in the packaged jar rather than the running JVM's.
+        // That is what lets one prepared workspace serve Java 25 and Java 26
+        // without a rebuild, while still invalidating it when the build target
+        // itself changes.
         return new RuntimeIdentity(
             version.toString(),
             patch.serverSha1().toLowerCase(Locale.ROOT),
