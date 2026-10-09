@@ -119,7 +119,7 @@ public final class BytecodePatchGenerator {
         var vanillaJar = workspace.vanillaClassesJar();
         if (!Files.isRegularFile(vanillaJar)) {
             throw new PatchEngineException(
-                "[Veltis] Cannot generate a bytecode patch set: the verified Minecraft classes"
+                "Cannot generate a bytecode patch set: the verified Minecraft classes"
                     + " jar is missing: " + vanillaJar
                     + "\n  Reason: there is no baseline to diff against, and a patch set with"
                     + " no baseline would have to guess what vanilla looks like");
@@ -127,7 +127,7 @@ public final class BytecodePatchGenerator {
         var compiled = readCompiledClasses(workspace.classesDirectory());
         if (compiled.isEmpty()) {
             throw new PatchEngineException(
-                "[Veltis] Cannot generate a bytecode patch set: " + workspace.classesDirectory()
+                "Cannot generate a bytecode patch set: " + workspace.classesDirectory()
                     + " holds no class files"
                     + "\n  Reason: compilation did not produce output, so there is nothing to"
                     + " ship");
@@ -142,13 +142,13 @@ public final class BytecodePatchGenerator {
             vanillaOtherSha1 = loaded.others();
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Cannot read the Minecraft classes jar " + vanillaJar
+                "Cannot read the Minecraft classes jar " + vanillaJar
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
         var analysis = AccessRequirements.analyze(vanillaClasses, compiled);
         if (!analysis.acceptable()) {
             throw new PatchEngineException(
-                "[Veltis] The patched classes are not safe to ship over the vanilla jar"
+                "The patched classes are not safe to ship over the vanilla jar"
                     + "\n  Baseline: " + vanillaJar
                     + "\n  Reasons:"
                     + "\n    " + String.join("\n    ", analysis.violations())
@@ -160,7 +160,7 @@ public final class BytecodePatchGenerator {
                     + " it, or keep the member the vanilla class had");
         }
         long analysisNanos = System.nanoTime() - analysisStarted;
-        LOG.info("[Veltis] Baseline analysis: {}", AccessRequirements.describe(analysis));
+        LOG.debug("Baseline analysis: {}", AccessRequirements.describe(analysis));
 
         // One delta per distinct modified class, compared and verified against
         // the baseline bytes — bounded pool, deterministic order.
@@ -197,7 +197,7 @@ public final class BytecodePatchGenerator {
             }
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Cannot scan " + vanillaJar + " for signature entries"
+                "Cannot scan " + vanillaJar + " for signature entries"
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
 
@@ -211,11 +211,11 @@ public final class BytecodePatchGenerator {
 
         var timings = classResult.timings();
         var runtimeClassPatches = classResult.deltaCount() + widenedClasses;
-        LOG.info("[Veltis] Generated {} runtime class patches.", runtimeClassPatches);
-        LOG.info("[Veltis] Runtime patches: {} classes modified / {} Shulker source patches"
+        LOG.debug("Generated {} runtime class patches.", runtimeClassPatches);
+        LOG.debug("Runtime patches: {} classes modified / {} Shulker source patches"
                 + " / {} unchanged classes",
             metadata.classCount(), sourcePatchCount, classResult.unchanged());
-        LOG.info("[Veltis] Runtime patch generation: analysis {}, class comparison {}, delta"
+        LOG.debug("Runtime patch generation: analysis {}, class comparison {}, delta"
                 + " generation {}, verification {}, write {} ({} workers)",
             VeltisConsole.formatDuration(analysisNanos),
             VeltisConsole.formatDuration(timings.comparisonNanos()),
@@ -255,7 +255,7 @@ public final class BytecodePatchGenerator {
             }
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to write the exploded runtime patches to " + directory
+                "Failed to write the exploded runtime patches to " + directory
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
     }
@@ -282,7 +282,7 @@ public final class BytecodePatchGenerator {
                     // A class is not a resource. Compilers put them in classes/;
                     // something naming one here would silently duplicate it.
                     throw new PatchEngineException(
-                        "[Veltis] The resource delta " + file + " is a class file"
+                        "The resource delta " + file + " is a class file"
                             + "\n  Entry name: " + name
                             + "\n  Reason: class payloads come from the compiled output, and"
                             + " letting a resource shadow one would make the served bytes"
@@ -292,7 +292,7 @@ public final class BytecodePatchGenerator {
                         || RuntimeIdentity.JAR_GUARD_ENTRY.equals(name)
                         || JarFile.MANIFEST_NAME.equals(name)) {
                     throw new PatchEngineException(
-                        "[Veltis] The resource delta targets " + name
+                        "The resource delta targets " + name
                             + "\n  Reason: the applier generates that entry from the identity of"
                             + " the artifact it is writing, so a patch for it would be"
                             + " overwritten by the very thing that applies it");
@@ -302,7 +302,7 @@ public final class BytecodePatchGenerator {
                     bytes = Files.readAllBytes(file);
                 } catch (IOException e) {
                     throw new PatchEngineException(
-                        "[Veltis] Failed to read the patched resource " + file
+                        "Failed to read the patched resource " + file
                             + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
                 }
                 var original = vanillaOther.get(name);
@@ -312,7 +312,7 @@ public final class BytecodePatchGenerator {
             }
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to read the patched resources in " + resources
+                "Failed to read the patched resources in " + resources
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
         return collected;
@@ -358,7 +358,7 @@ public final class BytecodePatchGenerator {
             return classes;
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to read the compiled classes in " + directory
+                "Failed to read the compiled classes in " + directory
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
     }
@@ -368,7 +368,7 @@ public final class BytecodePatchGenerator {
             return MojangMetadata.sha1(file).toLowerCase(Locale.ROOT);
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to hash the baseline " + file
+                "Failed to hash the baseline " + file
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
     }

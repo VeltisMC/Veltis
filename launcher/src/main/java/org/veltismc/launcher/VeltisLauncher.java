@@ -123,7 +123,7 @@ public final class VeltisLauncher {
             var child = new ProcessBuilder(command).inheritIO().start();
             System.exit(child.waitFor());
         } catch (Exception e) {
-            System.err.println("[Veltis] Stage 0 fetched this jar's libraries but"
+            System.err.println("Stage 0 fetched this jar's libraries but"
                 + " could not restart the server"
                 + "\n  Reason: " + (e.getMessage() == null
                     ? e.getClass().getSimpleName() : e.getMessage())
@@ -200,12 +200,21 @@ public final class VeltisLauncher {
             }
         }
 
+        // The bootstrap's first line, stated once before anything else speaks:
+        // every line after it is either this process's own preparation or
+        // vanilla's logging. A relaunching parent stays silent, because its
+        // output would show the line for a process that is about to
+        // disappear and then again from the child that keeps running.
+        if (!relaunch.needed()) {
+            VeltisConsole.bootstrap("org.veltismc.launcher.VeltisLauncher");
+        }
+
         // One home-dir message, printed by whichever process is going to keep
         // running. The relaunching parent says nothing, because its output
         // never reaches the log file — and a line printed twice, once by a
         // process that is about to disappear, is worse than not printing it.
         if (!relaunch.needed()) {
-            LOG.info("Server home: {}", homeDir.toAbsolutePath());
+            LOG.debug("Server home: {}", homeDir.toAbsolutePath());
         }
         relaunchIfNeeded(args, relaunch);
         if (verbose) {
@@ -227,14 +236,14 @@ public final class VeltisLauncher {
         // to notice.
         var sourcePatches = manifest.patchesRoot();
         if (sourcePatches.isPresent()) {
-            LOG.error("[Veltis] This build carries no source patch pipeline"
+            LOG.error("This build carries no source patch pipeline"
                 + "\n  Patches: " + sourcePatches.get()
                 + "\n  Reason: a distributable ships Minecraft's changes as compiled"
                 + " bytecode with three hashes on every index line, so it has no decompiler,"
                 + " no compiler and no source patch engine to apply a server/Shulker/ directory"
                 + " with. Those live in the Gradle build."
                 + "\n  Fix: rebuild the runtime from your patches -- ./gradlew applyPatches,"
-                + " edit build/minecraft/<version>/patched/, then ./gradlew rebuildPatches"
+                + " edit minecraft/workspace/<version>/patched/, then ./gradlew rebuildPatches"
                 + " and ./gradlew buildVeltisMC -- and run the jar that produces; or run"
                 + " this jar from a directory with no server/Shulker/ beside it, which uses the"
                 + " patch set packaged inside it.");
@@ -246,8 +255,13 @@ public final class VeltisLauncher {
             VeltisLauncher.class.getClassLoader(), manifest.patchWorkers(),
             Runtime.version().feature());
 
+        // Whether this run actually applied the patch set: a run whose runtime
+        // was current returns false and performs no patching at all. The
+        // success line below is gated on this, so it is only ever printed by a
+        // run that rebuilt the runtime.
+        boolean rebuilt;
         try {
-            runtime.prepare();
+            rebuilt = runtime.prepare();
         } catch (RuntimeException e) {
             // The engine's report is already complete: which stage, which patch,
             // which target, which reason. A stack trace on top of it buries the
@@ -268,8 +282,17 @@ public final class VeltisLauncher {
             var classLoader = runtime.newClassLoader(locateOwnJar());
 
             // Before a single Minecraft class is initialised, and before the
-            // server entry point is even loaded.
-            LOG.info("[VeltisGuard] {}", runtime.verifyPatchedClasses(classLoader));
+            // server entry point is even loaded. The success line follows it
+            // deliberately: it is printed only once the guard has proven the
+            // runtime loads the patched classes, never before — and only on a
+            // run that actually applied the patch set, so a regular warm start
+            // says nothing about work it did not do. The guard's own report is
+            // a diagnostic and stays behind --verbose.
+            LOG.debug("{}", runtime.verifyPatchedClasses(classLoader));
+            if (rebuilt) {
+                VeltisConsole.bootstrap("Vanilla code had been kidnapped successfully"
+                    + " and replaced with our code!!");
+            }
 
             var mainClass = Class.forName("org.veltismc.server.Main", true, classLoader);
             var mainMethod = mainClass.getMethod("main", String[].class);
@@ -483,11 +506,11 @@ public final class VeltisLauncher {
                 LOG.error("Cannot create server directory {}", target, e);
                 System.exit(1);
             }
-            LOG.info("Working directory was {}; restarting in {} so server data stays together",
+            LOG.debug("Working directory was {}; restarting in {} so server data stays together",
                 Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize(), target);
         }
         if (!missingOptions.isEmpty()) {
-            LOG.info("Restarting with {} so the JVM that runs VeltisMC is the one that"
+            LOG.debug("Restarting with {} so the JVM that runs VeltisMC is the one that"
                 + " accepts it", String.join(" ", missingOptions));
         }
 

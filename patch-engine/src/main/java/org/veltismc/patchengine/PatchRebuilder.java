@@ -351,7 +351,7 @@ public final class PatchRebuilder {
         }
         var fresh = slots.values().stream().filter(slot -> !slot.existing).toList();
         if (fresh.isEmpty()) {
-            log.warn("[Veltis] -PpatchName=\"{}\" was ignored: this rebuild created no new patch",
+            log.warn("-PpatchName=\"{}\" was ignored: this rebuild created no new patch",
                 requested);
             return;
         }
@@ -375,7 +375,7 @@ public final class PatchRebuilder {
         if (slot.description.equals(previous)) {
             return;
         }
-        log.info("[Veltis] Naming the new patch {} (was {})", slot.description, previous);
+        log.info("Naming the new patch {} (was {})", slot.description, previous);
     }
 
     /** Where a path belongs. Stated once so every rebuild agrees. */
@@ -557,16 +557,16 @@ public final class PatchRebuilder {
             if (slot.existing) {
                 regenerated++;
                 if (!slot.oldName.equals(slot.finalName)) {
-                    log.info("[Veltis] Renumbered {}/{} to {}/{}", slot.category.directoryName(),
+                    log.info("Renumbered {}/{} to {}/{}", slot.category.directoryName(),
                         slot.oldName, slot.category.directoryName(), slot.finalName);
                 } else {
-                    log.info("[Veltis] Regenerated {}/{} ({} file{})",
+                    log.info("Regenerated {}/{} ({} file{})",
                         slot.category.directoryName(), slot.finalName,
                         slot.sections.size(), slot.sections.size() == 1 ? "" : "s");
                 }
             } else {
                 created++;
-                log.info("[Veltis] Created {}/{} for {}", slot.category.directoryName(),
+                log.info("Created {}/{} for {}", slot.category.directoryName(),
                     slot.finalName, String.join(", ", slot.sections.keySet()));
             }
         }
@@ -579,7 +579,7 @@ public final class PatchRebuilder {
         var path = patchesRoot.resolve(slot.category.directoryName()).resolve(file);
         try {
             if (Files.deleteIfExists(path)) {
-                log.info("[Veltis] Removed {}/{} (nothing differs any more)",
+                log.info("Removed {}/{} (nothing differs any more)",
                     slot.category.directoryName(), file);
                 return true;
             }

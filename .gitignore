@@ -30,9 +30,13 @@ tmp/
 *.userdata
 run/
 
-# The Minecraft pipeline workspace. Everything here is reproducible with
-# `./gradlew prepareMinecraft`, and none of it belongs in version control. The
-# development layout lives under `build/`, which is already ignored above.
+# The Minecraft pipeline development cache. Everything here is reproducible with
+# `./gradlew prepareMinecraft`, and none of it belongs in version control: the
+# pristine decompile at `minecraft/<version>/` (only the decompile step writes
+# it) and the workspace at `minecraft/workspace/<version>/`. It lives outside
+# `build/` deliberately — neither `./gradlew clean` nor an IDE's blanket build/
+# exclusion may hide the tree the toolchain reads.
+/minecraft/
 #
 # A server install started from the repository root — `java -jar server.jar`
 # with the checkout as the working directory — lays out Vanilla/ and Veltis/

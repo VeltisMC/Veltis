@@ -43,7 +43,7 @@ public final class VeltisBootstrap {
         try {
             org.veltismc.runtime.config.VeltisConfig.load(homeDir);
         } catch (Exception e) {
-            LOG.warn("[VeltisMC] Config load failed: {}", e.getMessage());
+            LOG.warn("Config load failed: {}", e.getMessage());
         }
     }
 
@@ -82,7 +82,7 @@ public final class VeltisBootstrap {
             rt.start().join();
         } catch (Throwable t) {
             runtime = null;
-            LOG.error("[VeltisMC] Failed to start VeltisMC runtime", rootCause(t));
+            LOG.error("Failed to start runtime", rootCause(t));
         }
     }
 
@@ -103,7 +103,7 @@ public final class VeltisBootstrap {
                     org.veltismc.world.nms.VeltisWorldIntegration.install(rt.worldEngine(), server);
         } catch (Throwable t) {
             worldIntegration = null;
-            LOG.error("[VeltisMC] Failed to bind Minecraft levels to Veltis worlds", rootCause(t));
+            LOG.error("Failed to bind Minecraft levels to Veltis worlds", rootCause(t));
         }
     }
 
@@ -115,7 +115,7 @@ public final class VeltisBootstrap {
         try {
             integration.shutdown();
         } catch (Throwable t) {
-            LOG.error("[VeltisMC] Failed to clear Minecraft level bindings", rootCause(t));
+            LOG.error("Failed to clear Minecraft level bindings", rootCause(t));
         }
     }
 
@@ -123,12 +123,12 @@ public final class VeltisBootstrap {
         var rt = runtime;
         runtime = null;
         if (rt == null) return;
-        LOG.info("Stopping VeltisMC");
+        LOG.info("Stopping runtime");
         try {
             rt.shutdown().join();
             LOG.info("VeltisMC stopped");
         } catch (Throwable t) {
-            LOG.error("[VeltisMC] Failed to stop VeltisMC runtime", rootCause(t));
+            LOG.error("Failed to stop runtime", rootCause(t));
         }
     }
 

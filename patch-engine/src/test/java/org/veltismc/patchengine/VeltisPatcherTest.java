@@ -152,6 +152,12 @@ class VeltisPatcherTest {
         // delta that the data and module patches changed, so the runtime
         // classpath can prefer a patched resource over the vanilla copy in the
         // widened jar without a second full copy of Minecraft's resources.
+        //
+        // `source/` is deliberately absent from the list: since the split
+        // layout the pristine decompile lives beside the workspace at
+        // minecraft/<version>/ rather than inside it, so the workspace root
+        // carries products only and a source/ copy reappearing under it would
+        // be a second tree to keep in step.
         var dirs = fixture.directoriesUnderRoot();
         assertEquals(List.of(
             "", "build", "classes", "libraries", "metadata", "patched",
@@ -160,13 +166,19 @@ class VeltisPatcherTest {
             "patched/net/minecraft/server",
             "patched/net/minecraft/server/dedicated",
             "resources",
-            "source",
-            "source/net",
-            "source/net/minecraft",
-            "source/net/minecraft/server",
-            "source/net/minecraft/server/dedicated",
             "vanilla"),
             dirs, "the workspace layout must be exactly the declared one");
+
+        // The half the workspace walk cannot see: the source the patches apply
+        // against must exist, and must not be under the root the assertion
+        // above just enumerated — outside it is the whole point of the split.
+        var workspace = fixture.workspace();
+        assertFalse(workspace.sourceDirectory().startsWith(workspace.root()),
+            "the pristine decompile must stay outside the workspace root: "
+                + workspace.sourceDirectory());
+        assertTrue(Files.isRegularFile(workspace.sourceDirectory().resolve(SERVER)),
+            "the pristine source the patches applied against must still exist"
+                + " outside the root");
 
         // One staging name across the whole pipeline. The point is that it is
         // derived from the target file rather than generated, so a crashed run

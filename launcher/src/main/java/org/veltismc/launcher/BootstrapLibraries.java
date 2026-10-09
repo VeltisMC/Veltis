@@ -246,7 +246,7 @@ final class BootstrapLibraries {
                 var parts = trimmed.split("\t", -1);
                 if (parts.length != 3 || parts[0].isBlank() || parts[1].isBlank()
                         || parts[2].isBlank()) {
-                    throw new IllegalStateException("[Veltis] This jar's library table is"
+                    throw new IllegalStateException("This jar's library table is"
                         + " malformed"
                         + "\n  Entry: " + trimmed
                         + "\n  Reason: the build writes one tab-separated"
@@ -258,7 +258,7 @@ final class BootstrapLibraries {
             }
             return List.copyOf(rows);
         } catch (IOException e) {
-            throw new IllegalStateException("[Veltis] This jar's library table could not"
+            throw new IllegalStateException("This jar's library table could not"
                 + " be read"
                 + "\n  Reason: " + messageOf(e)
                 + "\n  Fix: rebuild it with ./gradlew buildVeltisMC");
@@ -298,7 +298,7 @@ final class BootstrapLibraries {
     private static Path resolveWithin(Path root, String relative) {
         var target = root.resolve(relative).normalize();
         if (!target.startsWith(root)) {
-            throw new IllegalStateException("[Veltis] This jar's library table names a"
+            throw new IllegalStateException("This jar's library table names a"
                 + " path outside its library directory"
                 + "\n  Entry: " + relative
                 + "\n  Reason: resolving it would write to " + target
@@ -312,7 +312,7 @@ final class BootstrapLibraries {
     // ------------------------------------------------------------------
 
     private static String report(Row row, String reason, String fix) {
-        return "[Veltis] A required library could not be made available"
+        return "A required library could not be made available"
             + "\n  Library: " + row.path()
             + "\n  URL: " + row.url()
             + "\n  Expected SHA-1: " + row.sha1()
