@@ -137,7 +137,7 @@ public final class Worker implements Runnable {
     private void execute(JobEnvelope env) {
         RegionJob job = env.job;
         JobHandleImpl handle = env.handle;
-        if (!handle.tryStart()) {
+        if (handle.isCancelled() || job.isCancelled()) {
             handle.markDone();
             return;
         }
