@@ -142,10 +142,10 @@ public final class PipelineRunner {
             ? runtime.vanillaFirstClassLoader(runtime.workspace().root())
             : runtime.newClassLoader(runtime.workspace().root());
         if (canary) {
-            LOG.warn("[VeltisGuard] -PveltisGuardCanary: vanilla classes placed ahead of the"
+            LOG.warn("-PveltisGuardCanary: vanilla classes placed ahead of the"
                 + " runtime artifact on purpose; this run is expected to fail");
         }
-        LOG.info("[VeltisGuard] {}", runtime.verifyPatchedClasses(loader));
+        LOG.info("{}", runtime.verifyPatchedClasses(loader));
     }
 
     /**
@@ -201,7 +201,7 @@ public final class PipelineRunner {
             sha1 = MojangMetadata.sha1(classes);
         } catch (java.io.IOException e) {
             throw new PatchEngineException(
-                "[VeltisMC] Cannot widen " + classes + ": it is missing."
+                "Cannot widen " + classes + ": it is missing."
                     + "\n  Reason: run the downloadMinecraft step first;"
                     + " widening operates on verified Minecraft classes", e);
         }
@@ -238,13 +238,13 @@ public final class PipelineRunner {
         var patches = PatchDiscovery.discover(workspace.shulkerDirectory(), version.toString(),
             stats);
         if (patches.isEmpty()) {
-            LOG.warn("[Veltis] No patches found in {}; the build will be unpatched",
+            LOG.warn("No patches found in {}; the build will be unpatched",
                 workspace.shulkerDirectory());
         }
 
         var mirrored = VeltisPatcher.mirrorPristineSource(
             workspace.sourceDirectory(), workspace.patchedDirectory());
-        LOG.info("[Veltis] Mirrored {} pristine source file{} into {} in {}",
+        LOG.info("Mirrored {} pristine source file{} into {} in {}",
             mirrored, mirrored == 1 ? "" : "s", workspace.patchedDirectory(),
             VeltisConsole.formatDuration(System.nanoTime() - mirrorStarted));
 
@@ -258,7 +258,7 @@ public final class PipelineRunner {
         var started = System.nanoTime();
         var result = new PatchRebuilder().rebuild(workspace, workspace.shulkerDirectory(),
             version.toString());
-        LOG.info("[Veltis] Patch set rebuilt: {} regenerated, {} created, {} removed,"
+        LOG.info("Patch set rebuilt: {} regenerated, {} created, {} removed,"
                 + " {} file{} covered ({})",
             result.regenerated(), result.created(), result.removed(), result.targets(),
             result.targets() == 1 ? "" : "s",
@@ -280,9 +280,9 @@ public final class PipelineRunner {
             Files.deleteIfExists(workspace.veltisServerJar());
         } catch (java.io.IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to remove " + workspace.veltisServerJar(), e);
+                "Failed to remove " + workspace.veltisServerJar(), e);
         }
-        LOG.info("[Veltis] Cleared the patched workspace and compiled classes in {}",
+        LOG.info("Cleared the patched workspace and compiled classes in {}",
             workspace.root());
     }
 

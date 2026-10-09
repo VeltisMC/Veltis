@@ -29,11 +29,16 @@ version = "1.0.0-SNAPSHOT"
 // ---------------------------------------------------------------------------
 // Minecraft pipeline configuration
 //
-// The development workspace lives at build/minecraft/<minecraftVersion>/,
-// laid out by patch-engine's VeltisWorkspace. There are no temporary or
-// per-run directories anywhere: every step reads and writes fixed, named
-// locations, and `build/` is where a build's generated state belongs — the
-// directory `./gradlew clean` already knows how to remove.
+// The development cache lives at minecraft/<minecraftVersion>/, laid out by
+// patch-engine's VeltisWorkspace: the pristine decompile gets its own tree at
+// minecraft/<version>/ — the only directory the decompile step writes, and the
+// one a contributor reads as minecraft/<version>/net/minecraft/... — and
+// everything else the pipeline produces sits in the workspace beside it at
+// minecraft/workspace/<version>/. There are no temporary or per-run
+// directories anywhere: every step reads and writes fixed, named locations,
+// and the whole tree is git-ignored and outside `build/`, so neither
+// `./gradlew clean` nor an IDE's blanket build/ exclusion can hide the
+// workspace from the toolchain that reads it.
 //
 // A server installation uses a different layout (Vanilla/<v> and Veltis/<v>
 // beside the server, with its work tree in the system temporary directory);
@@ -53,11 +58,17 @@ val patchWorkers = providers.gradleProperty("patchWorkers")
     .orElse(maxOf(1, Runtime.getRuntime().availableProcessors() - 1))
     .get()
 
-val workspaceDir = layout.projectDirectory.dir("build/minecraft/$minecraftVersion")
+val workspaceDir = layout.projectDirectory.dir("minecraft/workspace/$minecraftVersion")
 val vanillaDir = workspaceDir.dir("vanilla")
 val metadataDir = workspaceDir.dir("metadata")
 val librariesDir = workspaceDir.dir("libraries")
-val sourceDir = workspaceDir.dir("source")
+// Beside the workspace, not inside it: the pristine decompile is the tree only
+// the decompile step writes, and separating it keeps Gradle's snapshot of it
+// meaningful (a rebuild under classes/ must not look like a change to the
+// baseline every patch applies to). It is also the path a contributor reads —
+// minecraft/<version>/net/minecraft/... — and the source root the IDE attaches
+// to the Minecraft library.
+val sourceDir = layout.projectDirectory.dir("minecraft/$minecraftVersion")
 val patchedDir = workspaceDir.dir("patched")
 val classesDir = workspaceDir.dir("classes")
 val resourcesDir = workspaceDir.dir("resources")
@@ -72,6 +83,14 @@ val patchesDir = layout.projectDirectory.dir("server/Shulker")
 val vanillaServerJar = vanillaDir.file("server.jar")
 val vanillaClassesJar = vanillaDir.file("server-classes.jar")
 val widenedServerJar = vanillaDir.file("server-widened.jar")
+/**
+ * The patched runtime artifact, at the path {@code VeltisWorkspace}'s
+ * development layout gives it. Vanilla plus the Veltis bytecode patches, one
+ * complete class set: the same jar `VeltisRuntime.classpath` puts first on the
+ * live server's classpath, and the same one this build hands javac and the IDE,
+ * so there is never a question of which copy of a class wins.
+ */
+val veltisServerJar = workspaceDir.file("veltis-server.jar")
 val versionMetadataFile = metadataDir.file("version.json")
 val libraryCoordinatesFile = metadataDir.file("libraries.txt")
 val patchTargetsFile = buildStateDir.file("patch-targets.txt")
@@ -222,29 +241,94 @@ val minecraft by sourceSets.creating {
 // A contributor who imports this directory as a Gradle project gets the source
 // root from the model above and needs to do nothing. `gradlew idea` is the
 // other way in, and it writes .iml files directly: Gradle's Idea plugin fills
-// those from the main and test source sets only, so without this the root
-// module it emits would carry no source roots at all and the legacy import
-// would be blind to MinecraftServer, Level, Entity and Commands. The folder is
-// read back out of the source set rather than written here, so there is still
-// one declaration of where the patched tree lives and the version in it cannot
-// go stale.
+// those from the main and test source sets only, so without the sourceDirs line
+// below the root module it emits would carry no source roots at all and the
+// legacy import would be blind to MinecraftServer, Level, Entity and Commands.
+// The folder is read back out of the source set rather than written here, so
+// there is still one declaration of where the patched tree lives and the
+// version in it cannot go stale.
 //
-// The blanket `build` exclusion IDEA gives every root project is opened up the
-// same way: un-exclude `build` as a whole, then re-exclude its children one at
-// a time with the workspace left off the list. Excluding a folder that contains
-// a source root is a conflict the IDE settles by dropping the root, and the
-// symptom is the manual "Mark Directory as Sources Root" this build exists to
-// make unnecessary — worse, everything else about the import looks healthy
-// while Ctrl+Click silently does nothing.
+// Minecraft itself arrives as a library, not as project source: classes from
+// the pipeline's compiled output and verified baseline, sources from the
+// pristine decompile at minecraft/<version>. Gradle's Idea plugin already
+// emits file dependencies as classpath libraries, but a file dependency has no
+// concept of sources — so the source attachment for those that carry Minecraft
+// is declared here, and Ctrl+Click opens decompiled source instead of a
+// FernFlower view of a class file. The whole tree lives under minecraft/,
+// outside build/, so neither the blanket build/ exclusion nor a clean can hide
+// it from the IDE.
 idea {
     module {
-        val rootBuild = layout.projectDirectory.dir("build").asFile
-        val workspace = layout.projectDirectory.dir("build/minecraft").asFile
-        val generated = (rootBuild.listFiles()?.toList() ?: emptyList())
-            .filter { it != workspace }
-        excludeDirs = ((excludeDirs - rootBuild) + generated + file(".gradle")).toMutableSet()
+        excludeDirs = excludeDirs + setOf(file("build"), file(".gradle"))
         sourceDirs = sourceDirs + minecraft.allSource.sourceDirectories.files
+        iml {
+            withXml(Action<org.gradle.api.XmlProvider> {
+                val module = asElement()
+                val document = module.ownerDocument
+                // `.iml` regeneration merges with what is already on disk, so
+                // re-running `gradlew idea` must not append this library a
+                // second (third, ...) time: the guard makes the whole line
+                // idempotent.
+                // The name is ASCII on purpose: the .iml writer normalises the
+                // em-dash, and a guard that compared the un-normalised string
+                // would never recognise the entry a previous run wrote.
+                val libraryName = "Minecraft $minecraftVersion - Veltis Patched"
+                val alreadyDeclared = document.getElementsByTagName("library")
+                    .let { libs -> (0 until libs.length).any { i ->
+                        (libs.item(i) as? org.w3c.dom.Element)
+                            ?.getAttribute("name") == libraryName } }
+                if (!alreadyDeclared) {
+                    val entry = document.createElement("orderEntry")
+                    entry.setAttribute("type", "module-library")
+                    val library = document.createElement("library")
+                    library.setAttribute("name", libraryName)
+                    library.appendChild(rootsElement(document, "CLASSES", minecraftLibraryClasses()))
+                    library.appendChild(document.createElement("JAVADOC"))
+                    // Only the pristine decompile: patched/ is this module's own source
+                    // root, and a file that is both a module source and a library source
+                    // is indexed twice for no gain. Unpatched classes — the ones not in
+                    // patched/ — resolve through here.
+                    library.appendChild(rootsElement(document, "SOURCES",
+                        listOf(sourceDir.asFile)))
+                    entry.appendChild(library)
+                    module.appendChild(entry)
+                }
+            })
+        }
     }
+}
+
+/**
+ * A `<CLASSES>`/`<SOURCES>` element holding one `<root>` per file, in the .iml
+ * URL form (`file://…` for a directory, `jar://…!/` for an archive).
+ */
+fun rootsElement(document: org.w3c.dom.Document, tag: String, files: List<File>): org.w3c.dom.Element {
+    val element = document.createElement(tag)
+    for (file in files) {
+        val root = document.createElement("root")
+        val path = file.invariantSeparatorsPath
+        root.setAttribute("url", if (file.isDirectory) "file://$path" else "jar://$path!/")
+        element.appendChild(root)
+    }
+    return element
+}
+
+/**
+ * Every class root Minecraft resolves from in the IDE: the patched runtime
+ * artifact (vanilla plus the Veltis bytecode patches — the same jar the server
+ * runs and javac compiles against) and Mojang's declared libraries — the same
+ * entries `VeltisRuntime.classpath` builds for the live server, minus this
+ * process's own jar.
+ *
+ * <p>No directory of loose class files and no separate vanilla jar: a second
+ * copy of a class on the library's root list is how "which one wins" becomes a
+ * question that has to be answered at all, and the artifact is complete.
+ */
+fun minecraftLibraryClasses(): List<File> {
+    val jars = librariesDir.asFile.walkTopDown()
+        .filter { it.isFile && it.extension == "jar" }
+        .toList()
+    return listOf(veltisServerJar.asFile) + jars
 }
 
 /**
@@ -274,23 +358,25 @@ fun patchTargets(category: String): FileCollection = files(provider {
 /**
  * The classpath :server compiles against.
  *
- * <p>Order is significant and intentional: the compiled patched classes come
- * first so they shadow the same classes in the vanilla jar, which is what makes
- * the server run VeltisMC's implementation rather than vanilla's. It is the same
- * order `VeltisRuntime.classpath` builds for the live server, so a class that
- * resolves here resolves there too.
+ * <p>Two kinds of entry, in this order: the patched runtime artifact and
+ * Mojang's declared libraries. It is exactly `VeltisRuntime.classpath` for the
+ * live server minus this process's own jar, so a class that resolves here
+ * resolves there too — javac sees the definition the runtime loads, never a
+ * baseline copy of it. The artifact is complete (vanilla with the Veltis
+ * bytecode patches applied), so a patched class appears once and there is no
+ * "which entry wins" question to answer.
  *
- * <p>The baseline is deliberately the <em>unwidened</em> classes jar. The
- * development pipeline widens roughly seven thousand vanilla classes so its own
- * decompiled sources can be recompiled over them, and shipping that widened jar
- * is exactly what the bytecode patch set exists to avoid. Compiling :server
- * against it would let javac accept a reference the unwidened runtime cannot
- * resolve, and the failure would then surface on an operator's machine as an
- * IllegalAccessError instead of as a build error here. The compiler is the
- * cheapest guard available: it is already running, it reports the file and the
- * line, and it cannot be bypassed by a configuration mistake. The widened jar
- * stays on {@code minecraftSourceSetClasspath}, where the decompiled sources
- * need it and where nothing outside the pipeline looks at it.
+ * <p>The artifact is the <em>unwidened</em> runtime. The development pipeline
+ * widens roughly seven thousand vanilla classes so its own decompiled sources
+ * can be recompiled over them, and shipping that widened jar is exactly what
+ * the bytecode patch set exists to avoid. Compiling :server against it would
+ * let javac accept a reference the unwidened runtime cannot resolve, and the
+ * failure would then surface on an operator's machine as an IllegalAccessError
+ * instead of as a build error here. The compiler is the cheapest guard
+ * available: it is already running, it reports the file and the line, and it
+ * cannot be bypassed by a configuration mistake. The widened jar stays on
+ * {@code minecraftSourceSetClasspath}, where the decompiled sources need it
+ * and where nothing outside the pipeline looks at it.
  *
  * <p>Produced by {@code prepareVeltisRuntime}, which is why :server depends on
  * that task rather than on the individual pipeline steps: the runtime is the
@@ -298,8 +384,7 @@ fun patchTargets(category: String): FileCollection = files(provider {
  * separate contract this build has to re-derive.
  */
 val minecraftCompileClasspath: FileCollection = files(
-    classesDir,
-    vanillaClassesJar,
+    veltisServerJar,
     fileTree(librariesDir) { include("**/*.jar") },
 )
 
@@ -327,22 +412,79 @@ project(":server") {
     dependencies {
         implementation(files(rootProject.files(minecraftCompileClasspath)))
     }
+    idea {
+        module {
+            // Gradle's Idea plugin already turns the file dependencies above into
+            // classpath libraries, but a file dependency has no concept of
+            // sources: Ctrl+Click on ServerLevel would open a FernFlower view of
+            // a class file instead of the file being edited. Attach the patched
+            // tree first — it holds the classes the patch set addresses, and it
+            // is where the patched definitions of everything else live too — and
+            // the pristine decompile behind it. Only to the entries that
+            // actually carry Minecraft's classes: the library jars are somebody
+            // else's code, and pointing their sources at the decompile would
+            // open the wrong file for a right click.
+            iml {
+                withXml(Action<org.gradle.api.XmlProvider> {
+                    val module = asElement()
+                    val document = module.ownerDocument
+                    val entries = module.getElementsByTagName("orderEntry")
+                    for (i in 0 until entries.length) {
+                        val entry = entries.item(i) as? org.w3c.dom.Element ?: continue
+                        if (entry.getAttribute("type") != "module-library") continue
+                        val classes = entry.getElementsByTagName("CLASSES")
+                        if (classes.length == 0) continue
+                        val urls = mutableListOf<String>()
+                        val roots = classes.item(0).childNodes
+                        for (j in 0 until roots.length) {
+                            val node = roots.item(j) as? org.w3c.dom.Element ?: continue
+                            if (node.tagName == "root") urls += node.getAttribute("url")
+                        }
+                        val carriesMinecraft = urls.any { url ->
+                            // The .iml URL form for a jar is `jar://…!/`, so an
+                            // archive is matched by its file name, not by where
+                            // it ends.
+                            (url.endsWith("/classes")
+                                || url.contains("/vanilla/")
+                                || url.contains("/veltis-server.jar"))
+                                && url.contains("/minecraft/")
+                        }
+                        if (!carriesMinecraft) continue
+                        val sources = entry.getElementsByTagName("SOURCES")
+                        if (sources.length > 0) {
+                            // In the .iml an orderEntry's CLASSES/JAVADOC/SOURCES
+                            // live under its inner <library>, so the replacement
+                            // has to happen there, not on the orderEntry.
+                            val oldSources = sources.item(0) as? org.w3c.dom.Element ?: continue
+                            val library = oldSources.parentNode as? org.w3c.dom.Element
+                            if (library != null) {
+                                library.replaceChild(
+                                    rootsElement(document, "SOURCES",
+                                        listOf(patchedDir.asFile, sourceDir.asFile)),
+                                    oldSources,
+                                )
+                            }
+                        }
+                    }
+                })
+            }
+        }
+    }
     tasks.named("compileJava") {
         // The runtime must exist before javac runs: the patched classes it
         // compiles against are its output.
         dependsOn(":prepareVeltisRuntime")
     }
     tasks.withType<Test>().configureEach {
-        // The NMS integration tests load real Minecraft classes. The JVM refuses
-        // a package whose classes come from both a signed and an unsigned jar:
-        // `classes/` (patched, unsigned) and `server-classes.jar` (verified,
-        // signed) share `net.minecraft.*` packages. The widened jar carries
-        // every vanilla class unsigned and is byte-identical for loading, so
-        // prepending it ahead of the signed jar — which the existing order
-        // already puts after `classes/` — leaves the signed jar fully shadowed
-        // and the test classpath signature-clean. Compile classpaths are
-        // deliberately untouched: :server must keep compiling against the
-        // unwidened baseline so access errors stay build errors.
+        // The NMS integration tests load real Minecraft classes. Prepending the
+        // dev-visible classes and the widened jar keeps them running against
+        // the same patched classes javac and the IDE see, ahead of the packaged
+        // artifact, and keeps every `net.minecraft.*` class unsigned: the
+        // compile classpath carries the unsigned runtime artifact now, but the
+        // prepend is what guarantees no test can ever pull a class from a jar
+        // whose signature disagrees with another entry's. Compile classpaths
+        // are deliberately untouched: :server must keep compiling against the
+        // unwidened runtime so access errors stay build errors.
         classpath = files(classesDir, widenedServerJar, this.classpath)
     }
 }
@@ -467,9 +609,13 @@ fun pipelineStep(
     // `-PveltisPipelineDebug` adds the Java stack trace to a failure. The
     // engine's own messages are written to be readable on their own, but a
     // message that comes from deep inside the JDK or a decompiler is not, and
-    // without a stack there is nowhere to look.
+    // without a stack there is nowhere to look. The same flag also turns the
+    // pipeline JVMs' root logger to DEBUG: every preparation diagnostic the
+    // engine prints is DEBUG (normal server startup shows only the bootstrap
+    // lines), and the build's phase timings are behind this flag.
     if (providers.gradleProperty("veltisPipelineDebug").isPresent) {
         systemProperty("veltismc.debug", "true")
+        systemProperty("veltis.log.level", "DEBUG")
     }
 }
 
@@ -678,6 +824,11 @@ val prepareVeltisRuntime = pipelineStep(
         outputs.dir(buildStateDir).withPropertyName("pipelineState")
         outputs.file(runtimeMarkerFile).withPropertyName("runtimeIdentity")
         outputs.dir(runtimePatchesDir).withPropertyName("runtimePatches")
+        // The patched runtime artifact: the same jar the launcher runs and the
+        // same one :server's classpath hands javac and the IDE. Declared so a
+        // deleted or stale artifact re-runs the build instead of the compiler
+        // silently reading last week's classes.
+        outputs.file(veltisServerJar).withPropertyName("veltisServerJar")
 
         // The per-stage tasks and this one both produce the workspace, which Gradle
         // will call an overlapping output and refuse to cache. It is a real
@@ -758,7 +909,7 @@ val publishBytecodePatch by tasks.registering {
             StandardCopyOption.REPLACE_EXISTING,
         )
         logger.lifecycle(
-            "[Veltis] Published {} ({} bytes) as META-INF/veltis/patches/{}.zip",
+            "Published {} ({} bytes) as META-INF/veltis/patches/{}.zip",
             source.asFile,
             target.length(),
             version,

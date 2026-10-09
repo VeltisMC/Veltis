@@ -187,8 +187,9 @@ public final class PatchBench {
         if (!Files.isDirectory(patchesRoot)) {
             throw new IOException("server/Shulker/ missing - run from a VeltisMC checkout");
         }
+        var workspace = VeltisWorkspace.of(repo, TestWorkspace.VERSION);
         var version = resolveWorkspace(repo);
-        var source = version.resolve("source");
+        var source = workspace.sourceDirectory();
         if (!Files.isDirectory(source)) {
             throw new IOException(source + " missing - run ./gradlew decompileMinecraft first");
         }
@@ -216,14 +217,14 @@ public final class PatchBench {
             }
         }
         return new Corpus("patch-only", source, version.resolve("patched"),
-            VeltisWorkspace.of(repo, TestWorkspace.VERSION), patchesRoot,
+            workspace, patchesRoot,
             targets, expected, patches.size());
     }
 
-    /** The first {@code build/minecraft/<version>} directory present. */
+    /** The first {@code minecraft/workspace/<version>} directory present. */
     private static Path resolveWorkspace(Path repo) throws IOException {
-        var root = repo.resolve(VeltisWorkspace.BUILD_DIRECTORY)
-            .resolve(VeltisWorkspace.MINECRAFT_DIRECTORY);
+        var root = repo.resolve(VeltisWorkspace.MINECRAFT_DIRECTORY)
+            .resolve(VeltisWorkspace.WORKSPACE_DIRECTORY);
         if (!Files.isDirectory(root)) {
             throw new IOException(root + " missing - run ./gradlew decompileMinecraft first");
         }

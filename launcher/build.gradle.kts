@@ -130,9 +130,9 @@ val writeBootstrapLibraries by tasks.registering {
     val serverRuntime = project(":server").configurations.named("runtimeClasspath")
     val minecraftVersion = providers.gradleProperty("minecraftVersion").orElse("26.3").get()
     val mojangCoordinates = rootProject.layout.projectDirectory
-        .file("build/minecraft/$minecraftVersion/metadata/libraries.txt")
+        .file("minecraft/workspace/$minecraftVersion/metadata/libraries.txt")
     val mojangLibraries = rootProject.layout.projectDirectory
-        .dir("build/minecraft/$minecraftVersion/libraries")
+        .dir("minecraft/workspace/$minecraftVersion/libraries")
 
     inputs.files(serverRuntime).withPropertyName("resolvedBootstrapLibraries")
     inputs.property("bootstrapCoordinates", bootstrapCoordinates)
@@ -167,7 +167,7 @@ val writeBootstrapLibraries by tasks.registering {
         val rows = bootstrapCoordinates.map { coordinate ->
             val (version, file) = resolved[coordinate]
                 ?: throw GradleException(
-                    "[VeltisMC] The server start-up needs $coordinate but the build does"
+                    "The server start-up needs $coordinate but the build does"
                         + " not resolve it"
                         + "\n  Reason: veltismc.jar names it in its Class-Path and stages it"
                         + " beside itself, so it has to come from the build"
@@ -185,7 +185,7 @@ val writeBootstrapLibraries by tasks.registering {
                 val copy = File(mojangLibraries.asFile, path)
                 if (!copy.isFile) {
                     throw GradleException(
-                        "[VeltisMC] $coordinate does not match the version Mojang ships"
+                        "$coordinate does not match the version Mojang ships"
                             + "\n  Build resolves:  $coordinate:$version"
                             + "\n  Mojang publishes: $coordinate:$declaredByMojang"
                             + "\n  Reason: both end up on one classpath — the build's copy"
@@ -201,7 +201,7 @@ val writeBootstrapLibraries by tasks.registering {
                 val fetched = sha1Of(copy)
                 if (fetched != built) {
                     throw GradleException(
-                        "[VeltisMC] The build's $coordinate is not the jar Mojang publishes"
+                        "The build's $coordinate is not the jar Mojang publishes"
                             + "\n  Path:     $path"
                             + "\n  Mojang:   $fetched"
                             + "\n  Build:    $built"
@@ -239,7 +239,7 @@ val writeBootstrapLibraries by tasks.registering {
         }
 
         logger.lifecycle(
-            "[VeltisMC] Wrote {} bootstrap libraries to {}",
+            "Wrote {} bootstrap libraries to {}",
             rows.size, target.get().asFile
         )
     }
@@ -398,7 +398,7 @@ tasks.register("uberJar", Jar::class) {
     // would ship Minecraft. The entry allowlist below would catch them anyway;
     // filtering the jar out first means not opening a 60 MB archive to find out.
     val minecraftWorkspace = rootProject.layout.projectDirectory
-        .dir("build/minecraft").asFile.absolutePath + File.separator
+        .dir("minecraft").asFile.absolutePath + File.separator
     fun notMinecraftArtifact(file: File) = !file.absolutePath.startsWith(minecraftWorkspace)
 
     // The server module's own runtime dependencies. They are folded in as
@@ -444,7 +444,7 @@ tasks.register("uberJar", Jar::class) {
         val table = bootstrapTableFile.get().asFile
         if (!table.isFile) {
             throw GradleException(
-                "[VeltisMC] The bootstrap library table is missing"
+                "The bootstrap library table is missing"
                     + "\n  Expected: " + table.absolutePath
                     + "\n  Reason: the manifest Class-Path is read from it, and a jar"
                     + " that points at libraries it never named cannot start"
@@ -458,7 +458,7 @@ tasks.register("uberJar", Jar::class) {
                 val path = row.split("\t").first()
                 if (path.isBlank()) {
                     throw GradleException(
-                        "[VeltisMC] The bootstrap library table has a row with no path"
+                        "The bootstrap library table has a row with no path"
                             + "\n  Row: " + row
                             + "\n  Fix: run :writeBootstrapLibraries again"
                     )
@@ -549,7 +549,7 @@ val verifyDistributableContent by tasks.registering {
         }
 
         val file = distributable.get().asFile
-        logger.lifecycle("[Veltis] Distributable content report: {}", file)
+        logger.lifecycle("Distributable content report: {}", file)
         logger.lifecycle("  Classes:                  {}", classes)
         logger.lifecycle("  Resources:                {}", resources)
         logger.lifecycle("  Nested JARs:              {}", nestedJars)
@@ -559,7 +559,7 @@ val verifyDistributableContent by tasks.registering {
 
         if (violations.isNotEmpty()) {
             throw GradleException(
-                "[Veltis] The distributable must not ship build-only content"
+                "The distributable must not ship build-only content"
                     + "\n  Jar: " + file
                     + violations.joinToString("") { "\n  - $it" }
                     + "\n  Reason: the jar is what an operator runs; every entry above"

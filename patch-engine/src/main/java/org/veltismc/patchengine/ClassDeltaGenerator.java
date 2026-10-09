@@ -193,13 +193,13 @@ public final class ClassDeltaGenerator {
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         throw new PatchEngineException(
-                            "[Veltis] Interrupted while generating class deltas", e);
+                            "Interrupted while generating class deltas", e);
                     } catch (ExecutionException e) {
                         if (e.getCause() instanceof PatchEngineException patchError) {
                             throw patchError;
                         }
                         throw new PatchEngineException(
-                            "[Veltis] Failed to generate a class delta: "
+                            "Failed to generate a class delta: "
                                 + MojangMetadata.rootMessage(e), e);
                     }
                 }
@@ -1013,7 +1013,7 @@ public final class ClassDeltaGenerator {
 
     private static PatchEngineException mismatch(String target, String detail, String reason) {
         return new PatchEngineException(
-            "[Veltis] The class delta for " + target + " " + detail
+            "The class delta for " + target + " " + detail
                 + "\n  Reason: " + reason
                 + "\n  The patch set was not written."
                 + "\n  Fix: regenerate the patch set.");

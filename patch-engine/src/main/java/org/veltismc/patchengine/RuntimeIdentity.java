@@ -293,7 +293,7 @@ public record RuntimeIdentity(
             Files.deleteIfExists(workspace.runtimeMarker());
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to invalidate the runtime marker in " + workspace, e);
+                "Failed to invalidate the runtime marker in " + workspace, e);
         }
     }
 

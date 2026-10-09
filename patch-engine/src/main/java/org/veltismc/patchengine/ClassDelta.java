@@ -210,13 +210,13 @@ public final class ClassDelta {
             new ClassReader(vanillaBytes).accept(vanilla, 0);
         } catch (RuntimeException e) {
             throw new PatchEngineException(
-                "[Veltis] The vanilla class for " + meta.target() + " is not readable"
+                "The vanilla class for " + meta.target() + " is not readable"
                     + "\n  Reason: " + MojangMetadata.rootMessage(e)
                     + "\n  Nothing has been applied.", e);
         }
         if (!Objects.equals(meta.target(), delta.name)) {
             throw new PatchEngineException(
-                "[Veltis] Class delta metadata and payload disagree about the target class"
+                "Class delta metadata and payload disagree about the target class"
                     + "\n  Metadata target: " + meta.target()
                     + "\n  Payload target:  " + delta.name
                     + "\n  Reason: a delta that names one class but carries another would"
@@ -226,7 +226,7 @@ public final class ClassDelta {
         }
         if (!Objects.equals(meta.target(), vanilla.name)) {
             throw new PatchEngineException(
-                "[Veltis] Class delta for " + meta.target() + " was applied to a different class"
+                "Class delta for " + meta.target() + " was applied to a different class"
                     + "\n  Delta target:     " + meta.target()
                     + "\n  Vanilla class:    " + vanilla.name
                     + "\n  Reason: the caller looked up a vanilla class that is not the one"
@@ -236,7 +236,7 @@ public final class ClassDelta {
         var actualVanilla = BytecodePatch.sha256Hex(vanillaBytes);
         if (!actualVanilla.equalsIgnoreCase(meta.vanillaSha256())) {
             throw new PatchEngineException(
-                "[Veltis] The vanilla class " + meta.target() + " does not match the class this"
+                "The vanilla class " + meta.target() + " does not match the class this"
                     + " delta was built against"
                     + "\n  Expected vanilla SHA-256: " + meta.vanillaSha256()
                     + "\n  Actual vanilla SHA-256:   " + actualVanilla
@@ -251,7 +251,7 @@ public final class ClassDelta {
             var actualResult = BytecodePatch.sha256Hex(merged);
             if (!actualResult.equalsIgnoreCase(meta.patchedSha256())) {
                 throw new PatchEngineException(
-                    "[Veltis] Applying the delta for " + meta.target() + " did not produce the"
+                    "Applying the delta for " + meta.target() + " did not produce the"
                         + " class it promises"
                         + "\n  Expected result SHA-256: " + meta.patchedSha256()
                         + "\n  Actual result SHA-256:   " + actualResult
@@ -265,7 +265,7 @@ public final class ClassDelta {
                 classPatchFingerprint(meta.vanillaSha256(), meta.patchedSha256(), meta.target());
             if (!fingerprint.equalsIgnoreCase(meta.classPatchFingerprint())) {
                 throw new PatchEngineException(
-                    "[Veltis] The class-patch fingerprint of " + meta.target() + " does not match"
+                    "The class-patch fingerprint of " + meta.target() + " does not match"
                         + " its own hashes"
                         + "\n  Recorded fingerprint: " + meta.classPatchFingerprint()
                         + "\n  Recomputed:           " + fingerprint
@@ -291,7 +291,7 @@ public final class ClassDelta {
             throw e;
         } catch (RuntimeException e) {
             throw new PatchEngineException(
-                "[Veltis] The class delta payload is not a readable class file"
+                "The class delta payload is not a readable class file"
                     + "\n  Size: " + deltaBytes.length + " bytes"
                     + "\n  Reason: " + MojangMetadata.rootMessage(e)
                     + "\n  Nothing has been applied."
@@ -307,7 +307,7 @@ public final class ClassDelta {
                 if (attribute instanceof DeltaAttribute deltaAttribute) {
                     if (found != null) {
                         throw new PatchEngineException(
-                            "[Veltis] The class delta payload declares " + ATTRIBUTE_TYPE
+                            "The class delta payload declares " + ATTRIBUTE_TYPE
                                 + " twice"
                                 + "\n  Target: " + delta.name
                                 + "\n  Reason: a delta has one set of metadata; two would make"
@@ -321,7 +321,7 @@ public final class ClassDelta {
         }
         if (found == null || found.metadata() == null) {
             throw new PatchEngineException(
-                "[Veltis] The class delta payload carries no " + ATTRIBUTE_TYPE + " attribute"
+                "The class delta payload carries no " + ATTRIBUTE_TYPE + " attribute"
                     + "\n  Reason: that attribute is where a delta declares its target, its"
                     + " hashes and its member lists. Without it the payload is an ordinary"
                     + " class file, not a delta, and applying it would replace a verified"
@@ -406,7 +406,7 @@ public final class ClassDelta {
 
     private static PatchEngineException contradiction(String target, MemberRef key, String verb) {
         return new PatchEngineException(
-            "[Veltis] The class delta for " + target + " both " + verb + " member "
+            "The class delta for " + target + " both " + verb + " member "
                 + key.name() + key.desc()
                 + "\n  Reason: a delta decides one way per member — carried members bring"
                 + " their own flags, the others are described by the removed and widened"
@@ -425,7 +425,7 @@ public final class ClassDelta {
                 key = new MemberRef(false, method.name, method.desc);
             } else {
                 throw new PatchEngineException(
-                    "[Veltis] Refusing to merge a class delta holding an unknown member node: "
+                    "Refusing to merge a class delta holding an unknown member node: "
                         + member.getClass().getName()
                         + "\n  Reason: only fields and methods can be spliced into a vanilla"
                         + " class, and anything else here would mean a malformed payload");
@@ -433,7 +433,7 @@ public final class ClassDelta {
             var previous = byKey.put(key, member);
             if (previous != null) {
                 throw new PatchEngineException(
-                    "[Veltis] The class delta carries member " + key.name() + key.desc()
+                    "The class delta carries member " + key.name() + key.desc()
                         + " twice"
                         + "\n  Reason: one class file has one member of a given name and"
                         + " descriptor, so a duplicate would make the result depend on order");
@@ -500,7 +500,7 @@ public final class ClassDelta {
     private static PatchEngineException unexpectedMember(String target, MemberRef key,
                                                          String verb) {
         return new PatchEngineException(
-            "[Veltis] The class delta for " + target + " " + verb + " member "
+            "The class delta for " + target + " " + verb + " member "
                 + key.name() + key.desc() + ", which the vanilla class does not declare"
                 + "\n  Reason: the vanilla class's hash matched the hash the delta was built"
                 + " against, so this delta was not built from these bytes"
@@ -662,7 +662,7 @@ public final class ClassDelta {
     private static byte[] parseHash(String hash, String label) {
         if (hash == null || hash.length() != HASH_BYTES * 2) {
             throw new PatchEngineException(
-                "[Veltis] The class delta's " + label + " hash is malformed: " + hash
+                "The class delta's " + label + " hash is malformed: " + hash
                     + "\n  Reason: a SHA-256 is " + HASH_BYTES * 2 + " hex characters; a"
                     + " different length means the metadata was written by hand or truncated");
         }
@@ -670,7 +670,7 @@ public final class ClassDelta {
             return HexFormat.of().parseHex(hash);
         } catch (IllegalArgumentException e) {
             throw new PatchEngineException(
-                "[Veltis] The class delta's " + label + " hash is not hexadecimal: " + hash
+                "The class delta's " + label + " hash is not hexadecimal: " + hash
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
     }
@@ -724,7 +724,7 @@ public final class ClassDelta {
                                    int maxLocals) {
             if (metadata == null) {
                 throw new PatchEngineException(
-                    "[Veltis] Refusing to serialise a " + ATTRIBUTE_TYPE + " prototype"
+                    "Refusing to serialise a " + ATTRIBUTE_TYPE + " prototype"
                         + "\n  Reason: the prototype carries no metadata, so writing it would"
                         + " produce a delta without target or hashes");
             }
@@ -746,7 +746,7 @@ public final class ClassDelta {
             data.write(parseHash(meta.classPatchFingerprint(), "class-patch fingerprint"));
             if (meta.removed().size() > 0xFFFF || meta.widened().size() > 0xFFFF) {
                 throw new PatchEngineException(
-                    "[Veltis] The class delta for " + meta.target() + " has too many members"
+                    "The class delta for " + meta.target() + " has too many members"
                         + "\n  Removed: " + meta.removed().size()
                         + "\n  Widened: " + meta.widened().size()
                         + "\n  Reason: the format counts members with a u2, and no real class"
@@ -765,7 +765,7 @@ public final class ClassDelta {
             return out.toByteArray();
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to encode the class delta metadata for " + meta.target()
+                "Failed to encode the class delta metadata for " + meta.target()
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
     }
@@ -774,7 +774,7 @@ public final class ClassDelta {
         var bytes = (value == null ? "" : value).getBytes(StandardCharsets.UTF_8);
         if (bytes.length > 0xFFFF) {
             throw new PatchEngineException(
-                "[Veltis] Refusing to encode a class delta string longer than "
+                "Refusing to encode a class delta string longer than "
                     + 0xFFFF + " bytes: " + bytes.length
                     + "\n  Reason: the format stores string lengths as u2");
         }
@@ -797,7 +797,7 @@ public final class ClassDelta {
         var format = buffer.getInt();
         if (format != FORMAT) {
             throw new PatchEngineException(
-                "[Veltis] Class delta uses format " + format + ", which this build does not"
+                "Class delta uses format " + format + ", which this build does not"
                     + " understand"
                     + "\n  Expected format version: " + FORMAT
                     + "\n  Actual format version:   " + format
@@ -825,7 +825,7 @@ public final class ClassDelta {
                 var kind = buffer.get();
                 if (kind != KIND_FIELD && kind != KIND_METHOD) {
                     throw new PatchEngineException(
-                        "[Veltis] The class delta names member kind " + kind
+                        "The class delta names member kind " + kind
                             + "\n  Reason: the format uses 0 for a field and 1 for a method; any"
                             + " other value would decide the merge on an unknown kind"
                             + "\n  Nothing has been applied.");
@@ -844,7 +844,7 @@ public final class ClassDelta {
             throw e;
         } catch (RuntimeException e) {
             throw new PatchEngineException(
-                "[Veltis] The class delta's " + ATTRIBUTE_TYPE + " attribute is malformed"
+                "The class delta's " + ATTRIBUTE_TYPE + " attribute is malformed"
                     + "\n  Reason: " + MojangMetadata.rootMessage(e)
                     + "\n  Nothing has been applied."
                     + "\n  Fix: regenerate the patch set.", e);
@@ -853,7 +853,7 @@ public final class ClassDelta {
 
     private static PatchEngineException truncated(String because) {
         return new PatchEngineException(
-            "[Veltis] The class delta's " + ATTRIBUTE_TYPE + " attribute is truncated: " + because
+            "The class delta's " + ATTRIBUTE_TYPE + " attribute is truncated: " + because
                 + "\n  Reason: the payload was cut short or written by another format"
                 + "\n  Nothing has been applied."
                 + "\n  Fix: regenerate the patch set.");
@@ -868,7 +868,7 @@ public final class ClassDelta {
         var field = buffer.get();
         if (field != KIND_FIELD && field != KIND_METHOD) {
             throw new PatchEngineException(
-                "[Veltis] The class delta names member kind " + field
+                "The class delta names member kind " + field
                     + "\n  Reason: the format uses 0 for a field and 1 for a method; any"
                     + " other value would decide the merge on an unknown kind"
                     + "\n  Nothing has been applied.");

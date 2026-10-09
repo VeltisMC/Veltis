@@ -120,7 +120,7 @@ public final class LauncherManifest {
      * config and the logs live in. That single rule is what makes the build and
      * the server agree on one installation rather than two competing caches: a
      * developer who runs {@code ./gradlew prepareVeltisRuntime} and then starts
-     * the jar from the project root works against the same {@code build/minecraft/}
+     * the jar from the project root works against the same {@code minecraft/}
      * tree the build wrote, and an operator who drops the jar into an empty
      * directory gets a self-contained {@code Vanilla/} and {@code Veltis/} there.
      * The override exists for CI, where several builds run against one checkout

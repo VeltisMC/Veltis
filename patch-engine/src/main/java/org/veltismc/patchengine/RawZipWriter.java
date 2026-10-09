@@ -279,7 +279,7 @@ final class RawZipWriter implements Closeable {
     }
 
     private static PatchEngineException broken(String subject, String reason) {
-        return new PatchEngineException("[Veltis] " + subject
+        return new PatchEngineException(subject
             + " is not a ZIP the bytecode applier can copy entry for entry"
             + "\n  Reason: " + reason);
     }
@@ -365,12 +365,12 @@ final class RawZipWriter implements Closeable {
     void put(String name, byte[] payload) throws IOException {
         long started = System.nanoTime();
         if (name == null || name.isEmpty()) {
-            throw new PatchEngineException("[Veltis] The bytecode applier cannot write an entry"
+            throw new PatchEngineException("The bytecode applier cannot write an entry"
                 + " with no name"
                 + "\n  Reason: an internal caller passed an empty name; no file was published");
         }
         if (!written.add(name)) {
-            throw new PatchEngineException("[Veltis] The bytecode applier would write the entry "
+            throw new PatchEngineException("The bytecode applier would write the entry "
                 + name + " twice"
                 + "\n  Reason: two writes of one name produce a jar with duplicate entries,"
                 + " which no reader can order"
@@ -394,7 +394,7 @@ final class RawZipWriter implements Closeable {
         byte[] compressed = buffer.toByteArray();
         long localLength = 30 + nameBytes.length;
         if (offset + localLength + compressed.length > 0xFFFFFFFEL) {
-            throw new PatchEngineException("[Veltis] The runtime artifact would exceed 4 GB"
+            throw new PatchEngineException("The runtime artifact would exceed 4 GB"
                 + "\n  Reason: that needs ZIP64, which the bytecode applier does not implement"
                 + "\n  Nothing has been published; the artifact is unchanged.");
         }
@@ -457,20 +457,20 @@ final class RawZipWriter implements Closeable {
         long started = System.nanoTime();
         var entry = index.get(name);
         if (entry == null) {
-            throw new PatchEngineException("[Veltis] The bytecode applier cannot copy " + name
+            throw new PatchEngineException("The bytecode applier cannot copy " + name
                 + "\n  Reason: the baseline's central directory does not list it under that"
                 + " name, so two readings of the same file disagree"
                 + "\n  Nothing has been published; the artifact is unchanged.");
         }
         if (entry.directory()) {
-            throw new PatchEngineException("[Veltis] The bytecode applier cannot copy the"
+            throw new PatchEngineException("The bytecode applier cannot copy the"
                 + " directory entry " + name
                 + "\n  Reason: directories are not carried into the artifact; the caller"
                 + " should not have asked for one"
                 + "\n  Nothing has been published; the artifact is unchanged.");
         }
         if (!written.add(name)) {
-            throw new PatchEngineException("[Veltis] The bytecode applier would write the entry "
+            throw new PatchEngineException("The bytecode applier would write the entry "
                 + name + " twice"
                 + "\n  Reason: two writes of one name produce a jar with duplicate entries,"
                 + " which no reader can order"
@@ -478,7 +478,7 @@ final class RawZipWriter implements Closeable {
         }
         long regionLength = entry.regionEnd() - entry.localOffset();
         if (regionLength > Integer.MAX_VALUE || offset + regionLength > 0xFFFFFFFEL) {
-            throw new PatchEngineException("[Veltis] The runtime artifact would exceed 4 GB"
+            throw new PatchEngineException("The runtime artifact would exceed 4 GB"
                 + "\n  Reason: that needs ZIP64, which the bytecode applier does not implement"
                 + "\n  Nothing has been published; the artifact is unchanged.");
         }
@@ -511,13 +511,13 @@ final class RawZipWriter implements Closeable {
      */
     void finish() throws IOException {
         if (finished) {
-            throw new PatchEngineException("[Veltis] The bytecode applier would finish the same"
+            throw new PatchEngineException("The bytecode applier would finish the same"
                 + " artifact twice"
                 + "\n  Reason: an internal caller repeated finish(); no file was published");
         }
         long started = System.nanoTime();
         if (records > 0xFFFE) {
-            throw new PatchEngineException("[Veltis] The runtime artifact would hold " + records
+            throw new PatchEngineException("The runtime artifact would hold " + records
                 + " entries"
                 + "\n  Reason: that needs ZIP64, which the bytecode applier does not implement"
                 + "\n  Nothing has been published; the artifact is unchanged.");
@@ -525,7 +525,7 @@ final class RawZipWriter implements Closeable {
         long centralStart = offset;
         byte[] centralBytes = central.toByteArray();
         if (centralStart > 0xFFFFFFFEL || centralBytes.length > 0xFFFFFFFEL) {
-            throw new PatchEngineException("[Veltis] The runtime artifact would exceed 4 GB"
+            throw new PatchEngineException("The runtime artifact would exceed 4 GB"
                 + "\n  Reason: that needs ZIP64, which the bytecode applier does not implement"
                 + "\n  Nothing has been published; the artifact is unchanged.");
         }

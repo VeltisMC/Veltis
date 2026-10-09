@@ -149,7 +149,9 @@ public final class VeltisRuntime {
      * compiler to compile the result with.
      *
      * @param workspaceBase the project root; the workspace it creates lives in
-     *                      {@code build/minecraft/<version>}
+     *                      {@code minecraft/workspace/<version>}, with the
+     *                      pristine decompile beside it at
+     *                      {@code minecraft/<version>}
      * @param patchesDirectory {@code server/Shulker/} in the project
      */
     public static VeltisRuntime fromDirectory(Path workspaceBase, MinecraftVersion version,
@@ -264,7 +266,7 @@ public final class VeltisRuntime {
      *                              so the next attempt starts from a known state
      */
     public boolean prepare() {
-        LOG.info("[Veltis] Minecraft version: {}", version.toString());
+        LOG.debug("Minecraft version: {}", version.toString());
         long started = System.nanoTime();
         var checkout = !workspace.isServerInstall();
 
@@ -280,7 +282,7 @@ public final class VeltisRuntime {
             sourcePatches = requirePatches();
             sourceRevision = RuntimeIdentity.sourceRevisionOf(sourcePatches);
             int addressed = sourcePatches.stream().mapToInt(p -> p.targets().size()).sum();
-            LOG.info("[Veltis] Source patch set: {} patch{} addressing {} file{} (discovered in"
+            LOG.debug("Source patch set: {} patch{} addressing {} file{} (discovered in"
                     + " {})",
                 sourcePatches.size(), sourcePatches.size() == 1 ? "" : "es",
                 addressed, addressed == 1 ? "" : "s",
@@ -290,7 +292,7 @@ public final class VeltisRuntime {
         var patch = loadBytecodePatch();
         if (patch.isPresent()) {
             requireVersionMatches(patch.get().metadata());
-            LOG.info("[Veltis] Bytecode patch set: {} entries ({} classes, {} resources),"
+            LOG.debug("Bytecode patch set: {} entries ({} classes, {} resources),"
                     + " format {}, fingerprint {}",
                 patch.get().metadata().entryCount(), patch.get().metadata().classCount(),
                 patch.get().metadata().resourceCount(),
@@ -301,7 +303,7 @@ public final class VeltisRuntime {
         var current = validateArtifact(patch.orElse(null), sourceRevision);
         if (current.isPresent()) {
             identity = current.get();
-            LOG.info("[Veltis] Runtime is current; not rebuilding it."
+            LOG.debug("Runtime is current; not rebuilding it."
                     + " Validated {} in {}.",
                 workspace.veltisServerJar().getFileName(),
                 VeltisConsole.formatDuration(System.nanoTime() - started));
@@ -321,7 +323,7 @@ public final class VeltisRuntime {
                     + "\n  Reason: the requested version is not the version Mojang publishes"
                     + "\n  Fix: check the minecraftVersion setting and that this version still exists");
         }
-        LOG.info("[Veltis] Resolved Minecraft {} against Mojang in {} (server SHA-1 {})",
+        LOG.debug("Resolved Minecraft {} against Mojang in {} (server SHA-1 {})",
             metadata.id(), VeltisConsole.formatDuration(System.nanoTime() - phase),
             metadata.serverArtifact().sha1());
 
@@ -329,7 +331,7 @@ public final class VeltisRuntime {
         // success, so a run that fails here has to be retried from the top
         // rather than resumed from a claim of completeness.
         RuntimeIdentity.invalidate(workspace);
-        LOG.info("[Veltis] Runtime is not built for this version and patch set; building it.");
+        LOG.debug("Runtime is not built for this version and patch set; building it.");
 
         if (patch.isPresent()) {
             requireArtifactMatches(patch.get().metadata(), metadata);
@@ -364,6 +366,13 @@ public final class VeltisRuntime {
             phase = System.nanoTime();
             verifyCompiledOutput(sourceRevision);
             report("Verified the compiled output", phase);
+            // The success line is deliberately NOT printed here. A checkout
+            // build finishes with the launcher's own runtime guard, and that
+            // guard prints it — once, after the classloader has proven the
+            // runtime serves patched classes, and only on the runs that
+            // prepare() reports as rebuilt. Printing it here too would put the
+            // line twice into a first start, and printing it on every start
+            // would claim work a warm start did not do.
 
             phase = System.nanoTime();
             var generated = BytecodePatchGenerator.generate(workspace, version,
@@ -381,20 +390,27 @@ public final class VeltisRuntime {
         }
 
         var finalPatch = patch.orElseThrow(() -> new PatchEngineException(
-            "[Veltis] No bytecode patch set for Minecraft " + version
+            "No bytecode patch set for Minecraft " + version
                 + "\n  Reason: " + (checkout
                     ? "the patch set was just generated and could not be read back"
                     : "this jar carries none for this version")
                 + "\n  Fix: rebuild the jar for " + version));
         var expected = identityFor(finalPatch.metadata(), sourceRevision);
 
+        if (!checkout) {
+            // A checkout has already printed it from VeltisPatcher.apply, where
+            // the source patches went on; an installation applies the bytecode
+            // patch set as its one patching step, so this is its "Applying
+            // Patches" moment and the only one.
+            VeltisConsole.bootstrap("Applying Patches");
+        }
         var applied = applyBytecodePatch(finalPatch, expected);
         long transformation = finalPatch.timing().payloadNanos() + applied.replacementNanos();
         long materialization = applied.copyNanos() + applied.jarWriteNanos();
         long validation = applied.vanillaLoadNanos() + applied.verificationNanos();
         long complete = finalPatch.timing().metadataNanos() + transformation + materialization
             + validation;
-        LOG.info("[Veltis] Bytecode patch complete in {} (patch metadata load {}, bytecode"
+        LOG.debug("Bytecode patch complete in {} (patch metadata load {}, bytecode"
                 + " transformation {}, runtime JAR materialization {}, verification {})",
             VeltisConsole.formatDuration(complete),
             VeltisConsole.formatDuration(finalPatch.timing().metadataNanos()),
@@ -410,7 +426,7 @@ public final class VeltisRuntime {
             expected.recordAsCurrent(workspace);
         }
         var discarded = workspace.discardWorkTree();
-        LOG.info("[Veltis] Runtime ready in {}.{}",
+        LOG.debug("Runtime ready in {}.{}",
             VeltisConsole.formatDuration(System.nanoTime() - started),
             discarded > 0
                 ? " Build work tree removed; the installation now holds only"
@@ -449,7 +465,7 @@ public final class VeltisRuntime {
                 // empty optional sends that decision down the rebuilding path.
                 // The freshly generated file is read back and validated before
                 // anything is applied, so the fail-closed chain is unchanged.
-                LOG.warn("[Veltis] Discarding the bytecode patch set at {}: it cannot be read"
+                LOG.warn("Discarding the bytecode patch set at {}: it cannot be read"
                     + "\n  Reason: {}", file, MojangMetadata.rootMessage(e));
                 return Optional.empty();
             }
@@ -463,7 +479,7 @@ public final class VeltisRuntime {
             return;
         }
         throw new PatchEngineException(
-            "[Veltis] Bytecode patch set targets Minecraft " + patch.minecraftVersion()
+            "Bytecode patch set targets Minecraft " + patch.minecraftVersion()
                 + " but this runtime is for " + version
                 + "\n  Expected Minecraft version: " + version
                 + "\n  Actual Minecraft version:   " + patch.minecraftVersion()
@@ -482,7 +498,7 @@ public final class VeltisRuntime {
             return;
         }
         throw new PatchEngineException(
-            "[Veltis] Mojang's server artifact is not the one this patch set was cut from"
+            "Mojang's server artifact is not the one this patch set was cut from"
                 + "\n  Minecraft version: " + metadata.id()
                 + "\n  Expected SHA-1: " + patch.serverSha1()
                 + "\n  Actual SHA-1:   " + resolved
@@ -497,7 +513,7 @@ public final class VeltisRuntime {
         var classes = workspace.vanillaClassesJar();
         if (!Files.isRegularFile(classes)) {
             throw new PatchEngineException(
-                "[Veltis] The verified Minecraft classes jar is missing: " + classes
+                "The verified Minecraft classes jar is missing: " + classes
                     + "\n  Reason: the download step reported success but produced no classes"
                     + " jar, and there is nothing to apply a patch set to");
         }
@@ -506,20 +522,20 @@ public final class VeltisRuntime {
             actual = MojangMetadata.sha1(classes).toLowerCase(Locale.ROOT);
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to hash the verified Minecraft classes jar " + classes
+                "Failed to hash the verified Minecraft classes jar " + classes
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
         if (patch.classesSha1().equalsIgnoreCase(actual)) {
             return;
         }
         throw new PatchEngineException(
-            "[Veltis] The Minecraft classes jar is not the baseline this patch set was cut from"
-                + "\n  Minecraft version: " + patch.minecraftVersion()
-                + "\n  Expected SHA-1: " + patch.classesSha1()
-                + "\n  Actual SHA-1:   " + actual
-                + "\n  Reason: the patch records the hash of the exact bytes it diffs against;"
-                + " anything else would be patched blind"
-                + "\n  Fix: delete " + classes + " and start again to re-extract it");
+                "The Minecraft classes jar is not the baseline this patch set was cut from"
+                    + "\n  Minecraft version: " + patch.minecraftVersion()
+                    + "\n  Expected SHA-1: " + patch.classesSha1()
+                    + "\n  Actual SHA-1:   " + actual
+                    + "\n  Reason: the patch records the hash of the exact bytes it diffs against;"
+                    + " anything else would be patched blind"
+                    + "\n  Fix: delete " + classes + " and start again to re-extract it");
     }
 
     RuntimeIdentity identityFor(BytecodePatch.Metadata patch, String sourceRevision) {
@@ -534,7 +550,7 @@ public final class VeltisRuntime {
     }
 
     private static void report(String what, long since) {
-        LOG.info("[Veltis] {} in {}", what, VeltisConsole.formatDuration(System.nanoTime() - since));
+        LOG.debug("{} in {}", what, VeltisConsole.formatDuration(System.nanoTime() - since));
     }
 
     /**
@@ -557,30 +573,30 @@ public final class VeltisRuntime {
      */
     Optional<RuntimeIdentity> validateArtifact(BytecodePatch patch, String sourceRevision) {
         if (patch == null) {
-            LOG.debug("[Veltis] There is no bytecode patch set to validate an artifact against");
+            LOG.debug("There is no bytecode patch set to validate an artifact against");
             return Optional.empty();
         }
         var jar = workspace.veltisServerJar();
         var recorded = RuntimeIdentity.readFromJar(jar);
         if (recorded.isEmpty()) {
-            LOG.debug("[Veltis] {} carries no usable runtime record", jar);
+            LOG.debug("{} carries no usable runtime record", jar);
             return Optional.empty();
         }
         var vanilla = workspace.vanillaServerJar();
         if (!Files.isRegularFile(vanilla)) {
-            LOG.info("[Veltis] {} is missing, so the runtime has to be rebuilt", vanilla);
+            LOG.debug("{} is missing, so the runtime has to be rebuilt", vanilla);
             return Optional.empty();
         }
         String actualSha1;
         try {
             actualSha1 = MojangMetadata.sha1(vanilla).toLowerCase(Locale.ROOT);
         } catch (IOException e) {
-            LOG.info("[Veltis] {} could not be hashed, so it cannot be trusted: {}",
+            LOG.debug("{} could not be hashed, so it cannot be trusted: {}",
                 vanilla, MojangMetadata.rootMessage(e));
             return Optional.empty();
         }
         if (!actualSha1.equalsIgnoreCase(patch.metadata().serverSha1())) {
-            LOG.info("[Veltis] {} is not the artifact this patch set was cut from"
+            LOG.debug("{} is not the artifact this patch set was cut from"
                     + " (patch expects {}, it is {}); rebuilding it",
                 vanilla.getFileName(), shorten(patch.metadata().serverSha1()),
                 shorten(actualSha1));
@@ -588,33 +604,33 @@ public final class VeltisRuntime {
         }
         var expected = identityFor(patch.metadata(), sourceRevision);
         if (!expected.equals(recorded.get())) {
-            LOG.info("[Veltis] {} describes a different runtime (patch fingerprint {}, Minecraft"
+            LOG.debug("{} describes a different runtime (patch fingerprint {}, Minecraft"
                     + " {}, artifact {}); rebuilding it",
                 jar.getFileName(), shorten(recorded.get().patchFingerprint()),
                 recorded.get().minecraftVersion(), shorten(recorded.get().serverSha1()));
             return Optional.empty();
         }
         if (MinecraftDownloader.libraryJars(workspace).isEmpty()) {
-            LOG.info("[Veltis] No Minecraft libraries beside {}, so the runtime has to be rebuilt",
+            LOG.debug("No Minecraft libraries beside {}, so the runtime has to be rebuilt",
                 vanilla);
             return Optional.empty();
         }
         var guard = readGuard(jar);
         if (guard.isEmpty()) {
-            LOG.info("[Veltis] {} records no guarded classes, so it cannot be trusted",
+            LOG.debug("{} records no guarded classes, so it cannot be trusted",
                 jar.getFileName());
             return Optional.empty();
         }
         try (var zip = new ZipFile(jar.toFile())) {
             for (var entry : guard.keySet()) {
                 if (zip.getEntry(entry) == null) {
-                    LOG.info("[Veltis] {} is missing {}; rebuilding it",
+                    LOG.debug("{} is missing {}; rebuilding it",
                         jar.getFileName(), entry);
                     return Optional.empty();
                 }
             }
         } catch (IOException e) {
-            LOG.info("[Veltis] {} is not a readable jar: {}", jar.getFileName(),
+            LOG.debug("{} is not a readable jar: {}", jar.getFileName(),
                 MojangMetadata.rootMessage(e));
             return Optional.empty();
         }
@@ -623,7 +639,7 @@ public final class VeltisRuntime {
             // A checkout also keeps classes/ and the marker, and both are read
             // by the IDE path. Their absence means the checkout is half-built
             // even though the jar is fine.
-            LOG.info("[Veltis] The compiled classes or their marker are missing from {}",
+            LOG.debug("The compiled classes or their marker are missing from {}",
                 workspace.root());
             return Optional.empty();
         }
@@ -643,11 +659,12 @@ public final class VeltisRuntime {
         var downloader = new MinecraftDownloader();
         var server = downloader.downloadServer(metadata, workspace);
         if (server.outcome() != MinecraftDownloader.Outcome.CACHED) {
-            LOG.info("[Veltis] Downloading the Minecraft {} server jar from {}...",
-                metadata.id(), metadata.serverArtifact().url());
+            VeltisConsole.bootstrap(
+                "Downloading vanilla " + metadata.id() + " server jar");
+            LOG.debug("Server jar URL: {}", metadata.serverArtifact().url());
         }
         int fetched = downloader.downloadLibraries(metadata, workspace);
-        LOG.info("[Veltis] Server artifact {} ({} bytes); {} librar{} present, {} fetched",
+        LOG.debug("Server artifact {} ({} bytes); {} librar{} present, {} fetched",
             server.outcome() == MinecraftDownloader.Outcome.CACHED
                 ? "already verified" : "downloaded and verified",
             server.bytes(),
@@ -660,7 +677,7 @@ public final class VeltisRuntime {
         var classes = workspace.vanillaClassesJar();
         if (!Files.isRegularFile(classes)) {
             throw new PatchEngineException(
-                "[VeltisMC] The verified Minecraft classes jar is missing: " + classes
+                "The verified Minecraft classes jar is missing: " + classes
                     + "\n  Reason: the download step reported success but produced no classes jar");
         }
         String sha1;
@@ -668,7 +685,7 @@ public final class VeltisRuntime {
             sha1 = MojangMetadata.sha1(classes);
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[VeltisMC] Failed to hash the verified Minecraft classes jar " + classes, e);
+                "Failed to hash the verified Minecraft classes jar " + classes, e);
         }
         AccessWidener.widen(classes, workspace.widenedServerJar(), sha1);
     }
@@ -700,20 +717,20 @@ public final class VeltisRuntime {
                         unsupported++;
                     }
                 } catch (IOException e) {
-                    LOG.debug("[Veltis] Could not read {} while counting placeholders", path, e);
+                    LOG.debug("Could not read {} while counting placeholders", path, e);
                 }
             }
         } catch (IOException e) {
-            LOG.debug("[Veltis] Could not scan for decompiler placeholders", e);
+            LOG.debug("Could not scan for decompiler placeholders", e);
             return;
         }
         int total = 0;
         try (var walk = Files.walk(source)) {
             total = (int) walk.filter(VeltisRuntime::isJava).count();
         } catch (IOException e) {
-            LOG.debug("[Veltis] Could not count decompiled sources", e);
+            LOG.debug("Could not count decompiled sources", e);
         }
-        LOG.info("[Veltis] {} of {} decompiled files still contain a decompiler placeholder;"
+        LOG.debug("{} of {} decompiled files still contain a decompiler placeholder;"
                 + " those cannot be patch targets yet", unsupported, total);
     }
 
@@ -751,20 +768,21 @@ public final class VeltisRuntime {
             }
             mirrored = VeltisPatcher.mirrorPristineTargets(workspace.sourceDirectory(),
                 workspace.patchedDirectory(), targets);
-            LOG.info("[Veltis] Mirrored {} patch target{} into {} in {}"
+            LOG.debug("Mirrored {} patch target{} into {} in {}"
                     + " (a server build reads only the files the patch set addresses)",
                 mirrored, mirrored == 1 ? "" : "s", workspace.patchedDirectory(),
                 VeltisConsole.formatDuration(System.nanoTime() - mirrorStarted));
         } else {
             mirrored = VeltisPatcher.mirrorPristineSource(
                 workspace.sourceDirectory(), workspace.patchedDirectory());
-            LOG.info("[Veltis] Mirrored {} pristine source file{} into {} in {}",
+            LOG.debug("Mirrored {} pristine source file{} into {} in {}",
                 mirrored, mirrored == 1 ? "" : "s", workspace.patchedDirectory(),
                 VeltisConsole.formatDuration(System.nanoTime() - mirrorStarted));
         }
 
-        // The apply phase reports one line on success, from VeltisPatcher itself:
-        // the kidnapping message. No second summary is printed here.
+        // The apply phase reports one line on success, from VeltisPatcher
+        // itself: "Applying Patches", as raw bootstrap output. No second
+        // summary is printed here.
         new VeltisPatcher(workers, version.toString()).apply(workspace, patches);
         copyResourceDelta(patches);
     }
@@ -799,14 +817,14 @@ public final class VeltisRuntime {
                     copied++;
                 } catch (IOException e) {
                     throw new PatchEngineException(
-                        "[Veltis] Failed to copy the patched resource " + target
+                        "Failed to copy the patched resource " + target
                             + "\n  From: " + from
                             + "\n  To: " + to
                             + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
                 }
             }
         }
-        LOG.info("[Veltis] Collected {} patched resource{} into {}.",
+        LOG.debug("Collected {} patched resource{} into {}.",
             copied, copied == 1 ? "" : "s", resources);
     }
 
@@ -814,7 +832,7 @@ public final class VeltisRuntime {
         var targets = patchTargets(PatchCategory.CODE, ".java");
         if (targets.isEmpty()) {
             throw new PatchEngineException(
-                "[Veltis] The patch set has no code targets, so there is nothing to compile"
+                "The patch set has no code targets, so there is nothing to compile"
                     + "\n  Reason: a VeltisMC build must change at least one Minecraft class;"
                     + " a server that is only vanilla has no reason to exist");
         }
@@ -856,7 +874,7 @@ public final class VeltisRuntime {
             var compiled = classes.resolve(classFile);
             if (!Files.isRegularFile(compiled)) {
                 throw new PatchEngineException(
-                    "[VeltisGuard] The patch set targets " + target
+                    "The patch set targets " + target
                         + " but compilation produced no " + classFile
                         + "\n  Reason: javac reported success without writing the class;"
                         + " the runtime is not usable and no patch set can be cut from it");
@@ -864,7 +882,7 @@ public final class VeltisRuntime {
             var baseline = readClassFromJar(workspace.vanillaClassesJar(), classFile);
             if (baseline != null && Arrays.equals(bytesOf(compiled), baseline)) {
                 throw new PatchEngineException(
-                    "[VeltisGuard] Patched class " + classFile + " is byte-for-byte identical to"
+                    "Patched class " + classFile + " is byte-for-byte identical to"
                         + " the vanilla class it replaces"
                         + "\n  Target: " + target
                         + "\n  Source patch revision: " + sourceRevision
@@ -873,7 +891,7 @@ public final class VeltisRuntime {
             }
             checked++;
         }
-        LOG.info("[VeltisGuard] {} patched class{} differ from vanilla.",
+        LOG.debug("{} patched class{} differ from vanilla.",
             checked, checked == 1 ? "" : "es");
     }
 
@@ -963,7 +981,7 @@ public final class VeltisRuntime {
         var baselineJar = workspace.vanillaClassesJar();
         if (!Files.isRegularFile(baselineJar)) {
             throw new PatchEngineException(
-                "[Veltis] Cannot apply the bytecode patch set: the verified Minecraft classes"
+                "Cannot apply the bytecode patch set: the verified Minecraft classes"
                     + " jar is missing: " + baselineJar
                     + "\n  Reason: there is nothing to apply it to");
         }
@@ -979,7 +997,7 @@ public final class VeltisRuntime {
                     || RuntimeIdentity.JAR_IDENTITY_ENTRY.equals(entry.name())
                     || RuntimeIdentity.JAR_GUARD_ENTRY.equals(entry.name())) {
                 throw new PatchEngineException(
-                    "[Veltis] The bytecode patch set targets " + entry.name()
+                    "The bytecode patch set targets " + entry.name()
                         + "\n  Reason: the applier generates that entry from the identity of the"
                         + " artifact it is writing, so a patch for it would be overwritten by"
                         + " the very thing that applies it");
@@ -997,13 +1015,13 @@ public final class VeltisRuntime {
             baselineBytes = Files.readAllBytes(baselineJar);
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to read the verified Minecraft classes jar " + baselineJar
+                "Failed to read the verified Minecraft classes jar " + baselineJar
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
         var actualClassesSha1 = sha1Hex(baselineBytes).toLowerCase(Locale.ROOT);
         if (!actualClassesSha1.equalsIgnoreCase(patch.metadata().classesSha1())) {
             throw new PatchEngineException(
-                "[Veltis] The Minecraft classes jar is not the baseline this patch was cut from"
+                "The Minecraft classes jar is not the baseline this patch was cut from"
                     + "\n  Expected SHA-1: " + patch.metadata().classesSha1()
                     + "\n  Actual SHA-1:   " + actualClassesSha1
                     + "\n  Reason: every original hash in the index is relative to these bytes,"
@@ -1019,7 +1037,7 @@ public final class VeltisRuntime {
             baseline = new ZipFile(baselineJar.toFile());
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Cannot open the verified Minecraft classes jar " + baselineJar
+                "Cannot open the verified Minecraft classes jar " + baselineJar
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
         vanillaLoad = System.nanoTime() - vanillaLoad;
@@ -1074,7 +1092,7 @@ public final class VeltisRuntime {
                     var originalSha = BytecodePatch.sha256Hex(original);
                     if (!originalSha.equalsIgnoreCase(indexEntry.originalSha256())) {
                         throw new PatchEngineException(
-                            "[Veltis] The Minecraft classes jar does not match this patch set at "
+                            "The Minecraft classes jar does not match this patch set at "
                                 + name
                                 + "\n  Expected SHA-256: " + indexEntry.originalSha256()
                                 + "\n  Actual SHA-256:   " + originalSha
@@ -1093,7 +1111,7 @@ public final class VeltisRuntime {
                     var payload = patch.payload(name);
                     if (payload == null) {
                         throw new PatchEngineException(
-                            "[Veltis] The bytecode patch set has no payload for " + name
+                            "The bytecode patch set has no payload for " + name
                                 + "\n  Reason: the index promises one, so the patch set is"
                                 + " incomplete and applying it would produce a jar the index"
                                 + " does not describe");
@@ -1101,7 +1119,7 @@ public final class VeltisRuntime {
                     var payloadSha = BytecodePatch.sha256Hex(payload);
                     if (!payloadSha.equalsIgnoreCase(indexEntry.payloadSha256())) {
                         throw new PatchEngineException(
-                            "[Veltis] Bytecode patch payload for " + name + " is corrupt"
+                            "Bytecode patch payload for " + name + " is corrupt"
                                 + "\n  Expected SHA-256: " + indexEntry.payloadSha256()
                                 + "\n  Actual SHA-256:   " + payloadSha
                                 + "\n  Reason: the index records what every stored payload hashes"
@@ -1128,7 +1146,7 @@ public final class VeltisRuntime {
                     }
                     if (!resultSha.equalsIgnoreCase(indexEntry.resultSha256())) {
                         throw new PatchEngineException(
-                            "[Veltis] The bytecode patch set does not produce what it promises"
+                            "The bytecode patch set does not produce what it promises"
                                 + " for " + name
                                 + "\n  Expected SHA-256: " + indexEntry.resultSha256()
                                 + "\n  Actual SHA-256:   " + resultSha
@@ -1155,7 +1173,7 @@ public final class VeltisRuntime {
                     long change = System.nanoTime();
                     if (!BytecodePatch.ABSENT.equals(indexEntry.originalSha256())) {
                         throw new PatchEngineException(
-                            "[Veltis] The bytecode patch set expects " + indexEntry.name()
+                            "The bytecode patch set expects " + indexEntry.name()
                                 + " in the Minecraft classes jar, but it has no such entry"
                                 + "\n  Expected original SHA-256: " + indexEntry.originalSha256()
                                 + "\n  Reason: the index says this entry existed when the patch"
@@ -1165,7 +1183,7 @@ public final class VeltisRuntime {
                     }
                     if (indexEntry.kind() == BytecodePatch.Kind.DELETE) {
                         throw new PatchEngineException(
-                            "[Veltis] The bytecode patch set removes " + indexEntry.name()
+                            "The bytecode patch set removes " + indexEntry.name()
                                 + " but the Minecraft classes jar never had it"
                                 + "\n  Reason: a removal with nothing to remove means the patch"
                                 + " set was cut from a different jar than this one"
@@ -1176,7 +1194,7 @@ public final class VeltisRuntime {
                         // class, and this entry has none — so the index row and
                         // the payload cannot have come from one generator.
                         throw new PatchEngineException(
-                            "[Veltis] The bytecode patch set carries a class delta for "
+                            "The bytecode patch set carries a class delta for "
                                 + indexEntry.name()
                                 + " but the Minecraft classes jar never had it"
                                 + "\n  Reason: a delta splices onto verified vanilla bytes, so"
@@ -1186,13 +1204,13 @@ public final class VeltisRuntime {
                     var payload = patch.payload(indexEntry.name());
                     if (payload == null) {
                         throw new PatchEngineException(
-                            "[Veltis] The bytecode patch set has no payload for "
+                            "The bytecode patch set has no payload for "
                                 + indexEntry.name());
                     }
                     var payloadSha = BytecodePatch.sha256Hex(payload);
                     if (!payloadSha.equalsIgnoreCase(indexEntry.payloadSha256())) {
                         throw new PatchEngineException(
-                            "[Veltis] Bytecode patch payload for " + indexEntry.name()
+                            "Bytecode patch payload for " + indexEntry.name()
                                 + " is corrupt"
                                 + "\n  Expected SHA-256: " + indexEntry.payloadSha256()
                                 + "\n  Actual SHA-256:   " + payloadSha
@@ -1202,7 +1220,7 @@ public final class VeltisRuntime {
                     }
                     if (!payloadSha.equalsIgnoreCase(indexEntry.resultSha256())) {
                         throw new PatchEngineException(
-                            "[Veltis] The bytecode patch set does not produce what it promises"
+                            "The bytecode patch set does not produce what it promises"
                                 + " for " + indexEntry.name()
                                 + "\n  Expected SHA-256: " + indexEntry.resultSha256()
                                 + "\n  Actual SHA-256:   " + payloadSha
@@ -1238,7 +1256,7 @@ public final class VeltisRuntime {
             } catch (java.nio.file.AtomicMoveNotSupportedException e) {
                 Files.move(staging, out, StandardCopyOption.REPLACE_EXISTING);
             }
-            LOG.info("[Veltis] Patch stages: baseline verification {}, patch payload loading {},"
+            LOG.debug("Patch stages: baseline verification {}, patch payload loading {},"
                     + " changed-class replacement {} (of which class delta splicing {}),"
                     + " unchanged copying {}, ZIP writing {}, final verification {}"
                     + " (total {}; {} entr{}, {} copied unchanged)",
@@ -1253,12 +1271,12 @@ public final class VeltisRuntime {
                     vanillaLoad + patch.timing().payloadNanos() + replacement + copyNanos
                         + writeNanos + verification),
                 patchedEntries, patchedEntries == 1 ? "y" : "ies", copiedEntries);
-            LOG.info("[Veltis] Verified the packaged runtime {} ({} bytes)",
+            LOG.debug("Verified the packaged runtime {} ({} bytes)",
                 out.getFileName(), Files.size(out));
             return new Applied(vanillaLoad, replacement, copyNanos, writeNanos, verification,
                 patchedEntries, copiedEntries);
         } catch (IOException e) {
-            throw new PatchEngineException("[Veltis] Failed to create " + out + "\n  Reason: "
+            throw new PatchEngineException("Failed to create " + out + "\n  Reason: "
                 + MojangMetadata.rootMessage(e), e);
         } finally {
             if (baseline != null) {
@@ -1309,7 +1327,7 @@ public final class VeltisRuntime {
         }
         if (!mismatches.isEmpty()) {
             throw new PatchEngineException(
-                "[Veltis] The class delta for " + entry.name()
+                "The class delta for " + entry.name()
                     + " disagrees with its index line"
                     + "\n" + String.join("\n", mismatches)
                     + "\n  Reason: both were written by one generator in one run, so a"
@@ -1358,7 +1376,7 @@ public final class VeltisRuntime {
             var identity = zip.getEntry(RuntimeIdentity.JAR_IDENTITY_ENTRY);
             if (identity == null) {
                 throw new PatchEngineException(
-                    "[VeltisGuard] " + jar + " does not record what produced it");
+                    jar + " does not record what produced it");
             }
             String recorded;
             try (var in = zip.getInputStream(identity)) {
@@ -1366,20 +1384,20 @@ public final class VeltisRuntime {
             }
             if (!recorded.equals(expected.renderArtifact(veltisVersion()))) {
                 throw new PatchEngineException(
-                    "[VeltisGuard] " + jar + " records a different identity than the build"
+                    jar + " records a different identity than the build"
                         + "\n  Expected: " + expected.renderArtifact(veltisVersion())
                         + "\n  Recorded: " + recorded);
             }
             if (zip.getEntry(JarFile.MANIFEST_NAME) == null) {
                 throw new PatchEngineException(
-                    "[VeltisGuard] " + jar + " has no " + JarFile.MANIFEST_NAME);
+                    jar + " has no " + JarFile.MANIFEST_NAME);
             }
             for (var entry : patch.entries()) {
                 var zipEntry = zip.getEntry(entry.name());
                 if (entry.kind() == BytecodePatch.Kind.DELETE) {
                     if (zipEntry != null) {
                         throw new PatchEngineException(
-                            "[VeltisGuard] " + jar + " still contains " + entry.name()
+                            jar + " still contains " + entry.name()
                                 + ", which the patch set removes"
                                 + "\n  Reason: a removed entry left in the result means the"
                                 + " index was not applied in full");
@@ -1388,7 +1406,7 @@ public final class VeltisRuntime {
                 }
                 if (zipEntry == null) {
                     throw new PatchEngineException(
-                        "[VeltisGuard] " + jar + " does not contain " + entry.name());
+                        jar + " does not contain " + entry.name());
                 }
                 byte[] inJar;
                 try (var in = zip.getInputStream(zipEntry)) {
@@ -1397,7 +1415,7 @@ public final class VeltisRuntime {
                 var actual = BytecodePatch.sha256Hex(inJar);
                 if (!actual.equalsIgnoreCase(entry.resultSha256())) {
                     throw new PatchEngineException(
-                        "[VeltisGuard] " + jar + " contains a different " + entry.name()
+                        jar + " contains a different " + entry.name()
                             + " than the patch set produces"
                             + "\n  Expected SHA-256: " + entry.resultSha256()
                             + "\n  Actual SHA-256:   " + actual
@@ -1408,7 +1426,7 @@ public final class VeltisRuntime {
             for (var entries = zip.entries(); entries.hasMoreElements(); ) {
                 if (JarSignatures.isSignatureEntry(entries.nextElement().getName())) {
                     throw new PatchEngineException(
-                        "[VeltisGuard] " + jar + " still contains signature material;"
+                        jar + " still contains signature material;"
                             + " a rewritten jar whose signatures are left in place fails"
                             + " verification inside the JDK at first class load");
                 }
@@ -1448,7 +1466,7 @@ public final class VeltisRuntime {
                 var unexpected = new TreeSet<>(writtenIndex.keySet());
                 unexpected.removeAll(expectedNames);
                 throw new PatchEngineException(
-                    "[VeltisGuard] " + jar + " does not hold exactly the entries the patch set"
+                    jar + " does not hold exactly the entries the patch set"
                         + " and the baseline name"
                         + "\n  Missing:    " + missing
                         + "\n  Unexpected: " + unexpected
@@ -1475,7 +1493,7 @@ public final class VeltisRuntime {
                 var copy = writtenIndex.get(entry.name());
                 if (copy == null) {
                     throw new PatchEngineException(
-                        "[VeltisGuard] " + jar + " lost the unchanged entry " + entry.name()
+                        jar + " lost the unchanged entry " + entry.name()
                             + "\n  Reason: the copy loop wrote it or the structure check above"
                             + " proved it present; neither can be true here");
                 }
@@ -1483,7 +1501,7 @@ public final class VeltisRuntime {
                         || copy.compressedSize() != entry.compressedSize()
                         || copy.uncompressedSize() != entry.uncompressedSize()) {
                     throw new PatchEngineException(
-                        "[VeltisGuard] " + jar + " carries " + entry.name()
+                        jar + " carries " + entry.name()
                             + " with different metadata than the baseline holds"
                             + "\n  Baseline: method=" + entry.method() + " crc=" + entry.crc()
                             + " compressed=" + entry.compressedSize()
@@ -1502,7 +1520,7 @@ public final class VeltisRuntime {
                             (int) entry.regionEnd(), written, (int) copy.localOffset(),
                             (int) copy.regionEnd()) >= 0) {
                     throw new PatchEngineException(
-                        "[VeltisGuard] " + jar + " does not hold the baseline's own bytes for"
+                        jar + " does not hold the baseline's own bytes for"
                             + " the unchanged entry " + entry.name()
                             + (baselineLength == copyLength
                                 ? "\n  Reason: the region differs from the baseline byte for"
@@ -1516,7 +1534,7 @@ public final class VeltisRuntime {
             }
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[VeltisGuard] Failed to re-read the packaged runtime " + jar
+                "Failed to re-read the packaged runtime " + jar
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
     }
@@ -1536,7 +1554,7 @@ public final class VeltisRuntime {
         try {
             manifest.write(bytes);
         } catch (IOException e) {
-            throw new PatchEngineException("[Veltis] Failed to render the jar manifest", e);
+            throw new PatchEngineException("Failed to render the jar manifest", e);
         }
         return bytes.toByteArray();
     }
@@ -1662,7 +1680,7 @@ public final class VeltisRuntime {
         var vanilla = workspace.vanillaClassesJar();
         if (!Files.isRegularFile(vanilla)) {
             throw new PatchEngineException(
-                "[VeltisGuard] The guard canary needs " + vanilla
+                "The guard canary needs " + vanilla
                     + "\n  Reason: without a vanilla classes jar there is no wrong classpath"
                     + " to build, and a canary that runs the right one proves nothing");
         }
@@ -1695,7 +1713,7 @@ public final class VeltisRuntime {
         for (var entry : entries) {
             if (!Files.exists(entry)) {
                 throw new PatchEngineException(
-                    "[Veltis] The runtime classpath entry is missing: " + entry
+                    "The runtime classpath entry is missing: " + entry
                         + "\n  Reason: the installation is incomplete, so the server cannot"
                         + " start"
                         + "\n  Fix: delete " + workspace.veltisServerJar()
@@ -1705,7 +1723,7 @@ public final class VeltisRuntime {
                 urls.add(entry.toUri().toURL());
             } catch (java.net.MalformedURLException e) {
                 throw new PatchEngineException(
-                    "[Veltis] The runtime classpath entry cannot be used: " + entry, e);
+                    "The runtime classpath entry cannot be used: " + entry, e);
             }
         }
         return List.copyOf(urls);
@@ -1747,7 +1765,7 @@ public final class VeltisRuntime {
         var guard = readGuard(jar);
         if (guard.isEmpty()) {
             throw new PatchEngineException(
-                "[VeltisGuard] " + jar + " records no guarded classes"
+                jar + " records no guarded classes"
                     + "\n  Reason: a runtime jar that cannot say which classes it was built"
                     + " from cannot be checked, and an unchecked runtime is not started");
         }
@@ -1767,7 +1785,7 @@ public final class VeltisRuntime {
             var loaded = loadBytecodePatch();
             if (loaded.isEmpty()) {
                 throw new PatchEngineException(
-                    "[VeltisGuard] " + jar + " cannot be re-verified: no bytecode patch set is"
+                    jar + " cannot be re-verified: no bytecode patch set is"
                         + " available"
                         + "\n  Reason: the guard re-derives every guarded class from the patch set"
                         + " that produced it, and without the patch set the guard's hashes are only"
@@ -1783,7 +1801,7 @@ public final class VeltisRuntime {
                 return checkGuardedClasses(loader, jar, guard, null, rows, null, null);
             } catch (IOException e) {
                 throw new PatchEngineException(
-                    "[VeltisGuard] Failed while checking the guarded classes"
+                    "Failed while checking the guarded classes"
                         + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
             }
         }
@@ -1792,7 +1810,7 @@ public final class VeltisRuntime {
                 vanillaClasses);
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[VeltisGuard] Failed to read " + vanillaClasses
+                "Failed to read " + vanillaClasses
                     + " while re-deriving the guarded classes"
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
@@ -1838,7 +1856,7 @@ public final class VeltisRuntime {
                 }
                 served = readAll(in);
             } catch (IOException e) {
-                throw new PatchEngineException("[VeltisGuard] Failed to read " + resource
+                throw new PatchEngineException("Failed to read " + resource
                     + " through the runtime classloader", e);
             }
 
@@ -1908,7 +1926,7 @@ public final class VeltisRuntime {
                 // Not a soft failure. Minecraft loads this class seconds later and
                 // the same error would be far harder to read from there.
                 throw new PatchEngineException(
-                    "[VeltisGuard] The runtime classloader could not load " + binaryName
+                    "The runtime classloader could not load " + binaryName
                         + "\n  Class: " + resource
                         + "\n  Jar: " + jar
                         + "\n  Reason: " + MojangMetadata.rootMessage(e)
@@ -1935,7 +1953,7 @@ public final class VeltisRuntime {
     private PatchEngineException guardFailure(String detail, String resource,
                                               Path jar, Object actual) {
         return new PatchEngineException(
-            "[VeltisGuard] Patched class " + resource + " is not what the runtime will load"
+            "Patched class " + resource + " is not what the runtime will load"
                 + "\n  Class: " + resource
                 + "\n  Artifact: " + jar
                 + "\n  Runtime classloader resolved: "
@@ -1992,7 +2010,7 @@ public final class VeltisRuntime {
             }
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to read the patch target manifest " + file
+                "Failed to read the patch target manifest " + file
                     + "\n  Reason: " + MojangMetadata.rootMessage(e)
                     + "\n  Fix: the patch step writes this file; re-run it", e);
         }
@@ -2018,7 +2036,7 @@ public final class VeltisRuntime {
         try {
             return Files.readAllBytes(path);
         } catch (IOException e) {
-            throw new PatchEngineException("[Veltis] Failed to read " + path, e);
+            throw new PatchEngineException("Failed to read " + path, e);
         }
     }
 
@@ -2045,7 +2063,7 @@ public final class VeltisRuntime {
                 return in.readAllBytes();
             }
         } catch (IOException e) {
-            LOG.debug("[Veltis] Could not read {} from {}", entryName, jar, e);
+            LOG.debug("Could not read {} from {}", entryName, jar, e);
             return null;
         }
     }

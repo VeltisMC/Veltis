@@ -107,7 +107,7 @@ On Windows:
 Make your changes in:
 
 ```text
-build/minecraft/<version>/patched/
+minecraft/workspace/<version>/patched/
 ```
 
 Rebuild the patches:
