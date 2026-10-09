@@ -62,7 +62,7 @@ public final class MinecraftVersion implements Comparable<MinecraftVersion> {
         var packaged = packaged();
         if (packaged == null) {
             throw new PatchEngineException(
-                "[Veltis] No Minecraft version was requested and this jar does not name one"
+                "No Minecraft version was requested and this jar does not name one"
                     + "\n  Resource: " + PACKAGED_RESOURCE
                     + "\n  Reason: the jar was assembled without a recorded version, so there"
                     + " is no default to build a runtime for"

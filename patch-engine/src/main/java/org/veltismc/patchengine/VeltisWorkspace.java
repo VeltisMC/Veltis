@@ -27,24 +27,39 @@ import java.util.Objects;
  * <h2>Development</h2>
  *
  * <pre>
- * &lt;project&gt;/build/minecraft/&lt;version&gt;/
- *   metadata/           cached Mojang version metadata + library coordinate list
- *   vanilla/            Mojang's verified jars (bundler, classes, widened)
- *   libraries/          Mojang's declared library jars, SHA-1 verified
- *   source/             pristine decompile — the baseline every patch applies to
- *   patched/            source/ + the Veltis patch set (the IDE source root)
- *   classes/            javac output for the patched sources
- *   resources/          the data and modules patch delta
- *   build/              deterministic scratch that survives a run (patch targets)
- *   veltis-server.jar   the packaged runtime artifact
- *   .runtime-marker     written last; proves classes/ is complete and current
+ * &lt;project&gt;/minecraft/
+ *   &lt;version&gt;/            pristine decompile — the baseline every patch applies to
+ *     net/minecraft/...   Mojang's own packages, exactly as decompiled
+ *     .decompile-marker   records what produced the tree
+ *   workspace/&lt;version&gt;/
+ *     metadata/           cached Mojang version metadata + library coordinate list
+ *     vanilla/            Mojang's verified jars (bundler, classes, widened)
+ *     libraries/          Mojang's declared library jars, SHA-1 verified
+ *     patched/            decompile + the Veltis patch set (the IDE source root)
+ *     classes/            javac output for the patched sources
+ *     resources/          the data and modules patch delta
+ *     build/              deterministic scratch that survives a run (patch targets)
+ *     veltis-server.jar   the packaged runtime artifact
+ *     .runtime-marker     written last; proves classes/ is complete and current
  * </pre>
  *
- * <p>{@code build/} is Gradle's own generated tree, which is exactly what this
- * is: generated, disposable, and reproducible with {@code ./gradlew
- * prepareMinecraft}. It is declared as the root of the {@code minecraft} source
- * set, so an IDE import picks it up with no manual "Mark Directory as Sources
- * Root" and no source download of any kind.
+ * <p>The two trees are siblings on purpose. The pristine decompile gets a
+ * directory of its own — {@code minecraft/<version>/} — because it is the one
+ * thing nothing else may write to: the decompile step owns it exclusively, every
+ * patch reads it, and keeping it free of other outputs is what lets Gradle
+ * snapshot it honestly instead of re-running a decompile because a class file
+ * changed somewhere below. It is also the path a contributor reads directly
+ * ({@code minecraft/26.3/net/minecraft/server/ServerLevel.java}) and the source
+ * root attached to the Minecraft library in the IDE.
+ *
+ * <p>The whole {@code minecraft/} tree is generated, disposable and reproducible
+ * with {@code ./gradlew prepareMinecraft}. It deliberately lives outside
+ * {@code build/}: IntelliJ's blanket exclusions and {@code ./gradlew clean} both
+ * stop at {@code build/}, and a workspace inside it would vanish from the IDE's
+ * view the moment either ran. {@code patched/} — the tree a contributor edits —
+ * is declared as the root of the {@code minecraft} source set, so an IDE import
+ * picks it up with no manual "Mark Directory as Sources Root" and no source
+ * download of any kind.
  *
  * <h2>Server installation</h2>
  *
@@ -73,10 +88,19 @@ import java.util.Objects;
  */
 public final class VeltisWorkspace {
 
-    /** Deterministic scratch inside the development workspace. */
-    public static final String BUILD_DIRECTORY = "build";
-    /** Directory under {@link #BUILD_DIRECTORY} that holds per-version state. */
+    /**
+     * The development cache root under the project: {@code minecraft/}, which is
+     * git-ignored and lives outside Gradle's {@code build/} so neither
+     * {@code ./gradlew clean} nor an IDE's blanket {@code build/} exclusion can
+     * hide the workspace from a toolchain that needs to read it.
+     */
     public static final String MINECRAFT_DIRECTORY = "minecraft";
+    /**
+     * The workspace inside it — everything except the pristine decompile, which
+     * keeps its own directory beside it at {@code minecraft/<version>}: the
+     * decompile step must write to a tree nothing else touches.
+     */
+    public static final String WORKSPACE_DIRECTORY = "workspace";
     /** The persistent vanilla artifact root of a server installation. */
     public static final String VANILLA_INSTALL_DIRECTORY = "Vanilla";
     /** The persistent Veltis artifact root of a server installation. */
@@ -120,6 +144,7 @@ public final class VeltisWorkspace {
 
     private final Path projectDirectory;
     private final Path root;
+    private final Path sourceDirectory;
     private final Path vanillaInstallDirectory;
     private final Path librariesDirectory;
     private final Path veltisServerJar;
@@ -147,15 +172,26 @@ public final class VeltisWorkspace {
                 .resolve(VELTIS_INSTALL_DIRECTORY)
                 .resolve(version.toString())
                 .resolve("veltis-server.jar");
+            this.sourceDirectory = root.resolve(SOURCE);
         } else {
             this.vanillaInstallDirectory = root.resolve(VANILLA);
             this.librariesDirectory = root.resolve(LIBRARIES);
             this.veltisServerJar = root.resolve("veltis-server.jar");
+            // Beside the workspace, not inside it: the pristine decompile is the
+            // only tree the decompile step writes, and separating it from every
+            // other output is what keeps its snapshot meaningful — a class file
+            // rebuilt under classes/ must not look like a change to the
+            // baseline every patch applies to.
+            this.sourceDirectory = projectDirectory
+                .resolve(MINECRAFT_DIRECTORY)
+                .resolve(version.toString());
         }
     }
 
     /**
-     * A contributor's checkout: {@code <project>/build/minecraft/<version>}.
+     * A contributor's checkout: {@code <project>/minecraft/workspace/<version>}
+     * for the workspace, with the pristine decompile beside it at
+     * {@code <project>/minecraft/<version>}.
      *
      * <p>This is the layout the Gradle pipeline, the IDE and the patch-rebuild
      * workflow all use, and it is the only one that keeps a source tree.
@@ -169,8 +205,8 @@ public final class VeltisWorkspace {
         Objects.requireNonNull(version, "version cannot be null");
         var project = projectDirectory.toAbsolutePath().normalize();
         return new VeltisWorkspace(project, project
-            .resolve(BUILD_DIRECTORY)
             .resolve(MINECRAFT_DIRECTORY)
+            .resolve(WORKSPACE_DIRECTORY)
             .resolve(version.toString()), version, Layout.DEVELOPMENT);
     }
 
@@ -234,13 +270,16 @@ public final class VeltisWorkspace {
     }
 
     /**
-     * The work tree root: {@code build/minecraft/<version>} in a checkout, a
+     * The work tree root: {@code minecraft/workspace/<version>} in a checkout, a
      * private temporary directory in a server installation.
      *
      * <p>Everything intermediate lives here — metadata, the extracted and
-     * widened jars, the decompile, the patched tree, the compiled output. A
-     * server installation deletes it once {@code veltis-server.jar} has been
-     * written and verified; see {@link #discardWorkTree()}.
+     * widened jars, the patched tree, the compiled output. The pristine
+     * decompile is deliberately <em>not</em> under this root in a checkout; it
+     * sits beside the workspace at {@code minecraft/<version>}, in a tree only
+     * the decompile step writes. A server installation deletes the work tree
+     * once {@code veltis-server.jar} has been written and verified; see
+     * {@link #discardWorkTree()}.
      */
     public Path root() {
         return root;
@@ -326,9 +365,18 @@ public final class VeltisWorkspace {
         return librariesDirectory;
     }
 
-    /** The pristine decompile; the baseline patches apply to and rebuild diffs against. */
+    /**
+     * The pristine decompile; the baseline patches apply to and rebuild diffs
+     * against.
+     *
+     * <p>In a checkout this is {@code minecraft/<version>} — a tree only the
+     * decompile step writes, beside the workspace rather than inside it, so no
+     * other output can dirty the baseline's snapshot. In a server installation
+     * it is the work tree's {@code source/}, which exists for the length of one
+     * build.
+     */
     public Path sourceDirectory() {
-        return root.resolve(SOURCE);
+        return sourceDirectory;
     }
 
     /** The patched workspace. This is the IDE source root and the compile input. */
@@ -506,7 +554,7 @@ public final class VeltisWorkspace {
             entries = walk.count();
         } catch (Exception e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to inspect the build work tree " + root
+                "Failed to inspect the build work tree " + root
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
         deleteTree(root);
@@ -543,7 +591,7 @@ public final class VeltisWorkspace {
             });
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[VeltisMC] Failed to clear " + root
+                "Failed to clear " + root
                     + "\n  Reason: " + MojangMetadata.rootMessage(e)
                     + "; close anything holding files open there and try again", e);
         }

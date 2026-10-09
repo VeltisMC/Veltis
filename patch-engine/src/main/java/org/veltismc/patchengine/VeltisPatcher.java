@@ -94,7 +94,8 @@ public final class VeltisPatcher {
             return total;
         }
         var patchedRoot = workspace.patchedDirectory();
-        log.info("[Veltis] Applying {} Shulker patches...", patches.size());
+        VeltisConsole.bootstrap("Applying Patches");
+        log.debug("Applying {} Shulker patches...", patches.size());
 
         // Git takes the whole set in one call, in the order discovery produced
         // it, so application is neither grouped by target nor spread across the
@@ -102,11 +103,12 @@ public final class VeltisPatcher {
         // ordering left for it to perturb.
         total.merge(new GitPatchEngine(minecraftVersion).apply(patchedRoot, patches));
 
-        // Reached only when every patch applied: a failure throws before here, so
-        // the count is the number of patches that actually landed. This is the
-        // one line the apply phase reports, worded exactly.
-        log.info("[Veltis] Vanilla code has been kidnapped successfully and replaced with"
-            + " {} Veltis Patches!!!", patches.size());
+        // The success line used to be reported here, before the compiled output
+        // had been verified — a claim the caller could not back yet. It is now
+        // printed by VeltisLauncher.main, after the classloader guard has
+        // proven the runtime serves patched classes, so a failure to verify
+        // never claims success — and only on a run that actually applied the
+        // patch set, never on a regular warm start.
         return total;
     }
 
@@ -194,7 +196,7 @@ public final class VeltisPatcher {
     public static int mirrorPristineSource(Path sourceRoot, Path patchedRoot) {
         if (!Files.isDirectory(sourceRoot)) {
             throw new PatchEngineException(
-                "[VeltisMC] No decompiled source at " + sourceRoot
+                "No decompiled source at " + sourceRoot
                     + "\n  Reason: run the decompile step before applying patches"
                     + " (./gradlew decompileMinecraft)");
         }
@@ -203,7 +205,7 @@ public final class VeltisPatcher {
             Files.createDirectories(patchedRoot);
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[VeltisMC] Failed to create the patched workspace " + patchedRoot, e);
+                "Failed to create the patched workspace " + patchedRoot, e);
         }
 
         var mirrored = new int[1];
@@ -234,7 +236,7 @@ public final class VeltisPatcher {
             });
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[VeltisMC] Failed to prepare the patched workspace at " + patchedRoot
+                "Failed to prepare the patched workspace at " + patchedRoot
                     + "\n  Source: " + sourceRoot
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
@@ -262,7 +264,7 @@ public final class VeltisPatcher {
                                             Collection<String> targets) {
         if (!Files.isDirectory(sourceRoot)) {
             throw new PatchEngineException(
-                "[VeltisMC] No decompiled source at " + sourceRoot
+                "No decompiled source at " + sourceRoot
                     + "\n  Reason: run the decompile step before applying patches"
                     + " (./gradlew decompileMinecraft)");
         }
@@ -287,7 +289,7 @@ public final class VeltisPatcher {
                 mirrored++;
             } catch (IOException e) {
                 throw new PatchEngineException(
-                    "[VeltisMC] Failed to mirror the patch target " + target
+                    "Failed to mirror the patch target " + target
                         + "\n  Source: " + from
                         + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
             }

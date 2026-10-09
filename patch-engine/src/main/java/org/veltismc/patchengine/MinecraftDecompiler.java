@@ -107,7 +107,7 @@ public final class MinecraftDecompiler {
     public Outcome decompile(VeltisWorkspace workspace, MojangMetadata.VersionMetadata metadata) {
         workspace.createDirectories();
         if (isValid(workspace, metadata)) {
-            log.info("[VeltisMinecraft] Reusing the decompiled source for {} in {}",
+            log.debug("[VeltisMinecraft] Reusing the decompiled source for {} in {}",
                 metadata.id(), workspace.sourceDirectory().relativize(workspace.root()));
             return Outcome.CACHED;
         }
@@ -137,7 +137,7 @@ public final class MinecraftDecompiler {
         // Only now is the tree real. The marker is the last thing written.
         MinecraftDownloader.writeMarker(workspace.decompileMarker(),
             markerContent(metadata, sha1Of(jar)));
-        log.info("[VeltisMinecraft] Decompiled {} in {} ({} .java files)", metadata.id(),
+        log.debug("[VeltisMinecraft] Decompiled {} in {} ({} .java files)", metadata.id(),
             VeltisConsole.formatDuration(System.nanoTime() - started),
             countJavaFiles(workspace.sourceDirectory()));
         return Outcome.DECOMPILED;

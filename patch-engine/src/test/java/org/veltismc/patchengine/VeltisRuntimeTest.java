@@ -345,7 +345,9 @@ class VeltisRuntimeTest {
                     + " cannot fail is not a guard");
 
             var message = failure.getMessage();
-            assertTrue(message.contains("[VeltisGuard]"), message);
+            assertTrue(message.contains("is not what the runtime will load"),
+                "the failure must say what the guard compared, not merely that"
+                    + " something differed: " + message);
             assertTrue(message.contains("MinecraftServer.class"),
                 "the failure must name the class: " + message);
             assertTrue(message.contains("was not started"),
@@ -660,7 +662,9 @@ class VeltisRuntimeTest {
                 new URLClassLoader(new URL[0], ClassLoader.getPlatformClassLoader())),
             "with no recorded patch targets there is nothing to verify, and claiming"
                 + " success would be the worst possible answer");
-        assertTrue(failure.getMessage().contains("[VeltisGuard]"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("records no guarded classes"),
+                "the refusal must say the guard record is empty, not guess a"
+                    + " verdict: " + failure.getMessage());
     }
 
     // ------------------------------------------------------------------

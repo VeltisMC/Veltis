@@ -293,7 +293,7 @@ public final class BytecodePatch {
             return read(in, file.toString());
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Cannot read the bytecode patch set " + file
+                "Cannot read the bytecode patch set " + file
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
     }
@@ -332,7 +332,7 @@ public final class BytecodePatch {
             payloadNanos = payload;
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] " + source + " is not a readable bytecode patch set"
+                source + " is not a readable bytecode patch set"
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
         var parsed = fromContainer(container, source);
@@ -355,7 +355,7 @@ public final class BytecodePatch {
         var stream = loader.getResourceAsStream(path);
         if (stream == null) {
             throw new PatchEngineException(
-                "[Veltis] This jar carries no bytecode patch set for Minecraft " + minecraftVersion
+                "This jar carries no bytecode patch set for Minecraft " + minecraftVersion
                     + "\n  Expected resource: " + path
                     + "\n  Reason: a jar ships one patch set per Minecraft version, and this one"
                     + " has none for the requested version"
@@ -366,7 +366,7 @@ public final class BytecodePatch {
             return read(stream, "packaged bytecode patch set for Minecraft " + minecraftVersion);
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to read the packaged bytecode patch set for Minecraft "
+                "Failed to read the packaged bytecode patch set for Minecraft "
                     + minecraftVersion, e);
         }
     }
@@ -375,7 +375,7 @@ public final class BytecodePatch {
         var metadataBytes = container.get(METADATA_ENTRY);
         if (metadataBytes == null) {
             throw new PatchEngineException(
-                "[Veltis] " + source + " carries no " + METADATA_ENTRY
+                source + " carries no " + METADATA_ENTRY
                     + "\n  Reason: a bytecode patch set states its own format, target version,"
                     + " artifact hashes and fingerprint. Without them there is nothing to"
                     + " validate before applying, so the patch is refused rather than applied"
@@ -385,7 +385,7 @@ public final class BytecodePatch {
         var format = values.get("formatVersion");
         if (!String.valueOf(FORMAT).equals(format)) {
             throw new PatchEngineException(
-                "[Veltis] Bytecode patch format " + format + " is not supported by this build"
+                "Bytecode patch format " + format + " is not supported by this build"
                     + "\n  Source: " + source
                     + "\n  Expected format version: " + FORMAT
                     + "\n  Actual format version:   " + format
@@ -396,7 +396,7 @@ public final class BytecodePatch {
         var indexBytes = container.get(INDEX_ENTRY);
         if (indexBytes == null) {
             throw new PatchEngineException(
-                "[Veltis] " + source + " carries no " + INDEX_ENTRY
+                source + " carries no " + INDEX_ENTRY
                     + "\n  Reason: the index is the list of entries the patch changes. Without"
                     + " it there is nothing to validate and nothing to apply.");
         }
@@ -404,7 +404,7 @@ public final class BytecodePatch {
         var recorded = values.get("fingerprint");
         if (recorded == null || !recorded.equalsIgnoreCase(fingerprint)) {
             throw new PatchEngineException(
-                "[Veltis] Bytecode patch set is corrupt: its index does not match its fingerprint"
+                "Bytecode patch set is corrupt: its index does not match its fingerprint"
                     + "\n  Source: " + source
                     + "\n  Expected fingerprint: " + recorded
                     + "\n  Actual fingerprint:   " + fingerprint
@@ -424,7 +424,7 @@ public final class BytecodePatch {
         if (metadata.minecraftVersion() == null || metadata.serverSha1() == null
                 || metadata.classesSha1() == null) {
             throw new PatchEngineException(
-                "[Veltis] Bytecode patch set in " + source + " is missing required metadata"
+                "Bytecode patch set in " + source + " is missing required metadata"
                     + "\n  Present keys: " + values.keySet()
                     + "\n  Required: minecraftVersion, serverSha1, classesSha1"
                     + "\n  Reason: without the artifact hashes there is no way to tell which"
@@ -438,7 +438,7 @@ public final class BytecodePatch {
             }
             if (!container.containsKey(PAYLOAD_PREFIX + entry.name())) {
                 throw new PatchEngineException(
-                    "[Veltis] Bytecode patch set in " + source + " has no payload for "
+                    "Bytecode patch set in " + source + " has no payload for "
                         + entry.name()
                         + "\n  Reason: the index promises this entry and the container does not"
                         + " carry it, so the patch is incomplete and applying it would leave a"
@@ -459,7 +459,7 @@ public final class BytecodePatch {
             var parts = line.split("\t", -1);
             if (parts.length != 5) {
                 throw new PatchEngineException(
-                    "[Veltis] Bytecode patch index in " + source + " has a malformed line"
+                    "Bytecode patch index in " + source + " has a malformed line"
                         + "\n  Line: " + line
                         + "\n  Expected: kind<TAB>name<TAB>originalSha256<TAB>resultSha256"
                         + "<TAB>payloadSha256"
@@ -472,14 +472,14 @@ public final class BytecodePatch {
                 kind = Kind.valueOf(parts[0]);
             } catch (IllegalArgumentException e) {
                 throw new PatchEngineException(
-                    "[Veltis] Bytecode patch index names an unknown entry kind '" + parts[0] + "'"
+                    "Bytecode patch index names an unknown entry kind '" + parts[0] + "'"
                         + "\n  Source: " + source
                         + "\n  Line: " + line
                         + "\n  Known kinds: " + List.of(Kind.values()), e);
             }
             if (parts[1].compareTo(previousName) < 0) {
                 throw new PatchEngineException(
-                    "[Veltis] Bytecode patch index is not sorted by entry name"
+                    "Bytecode patch index is not sorted by entry name"
                         + "\n  Source: " + source
                         + "\n  Line: " + line
                         + "\n  Previous: " + previousName
@@ -491,7 +491,7 @@ public final class BytecodePatch {
         }
         if (entries.size() != metadata.entryCount()) {
             throw new PatchEngineException(
-                "[Veltis] Bytecode patch set in " + source + " declares "
+                "Bytecode patch set in " + source + " declares "
                     + metadata.entryCount() + " entries but its index holds " + entries.size()
                     + "\n  Reason: the metadata and the index disagree, so the patch cannot be"
                     + " trusted to be complete");
@@ -554,7 +554,7 @@ public final class BytecodePatch {
             var previous = sorted.put(record.name(), record);
             if (previous != null) {
                 throw new PatchEngineException(
-                    "[Veltis] Bytecode patch generation produced " + record.name() + " twice"
+                    "Bytecode patch generation produced " + record.name() + " twice"
                         + "\n  Reason: one jar entry has one value, so a duplicate would make the"
                         + " applied result depend on iteration order");
             }
@@ -603,7 +603,7 @@ public final class BytecodePatch {
             return metadata;
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to write the bytecode patch set " + target
+                "Failed to write the bytecode patch set " + target
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
     }
@@ -621,7 +621,7 @@ public final class BytecodePatch {
         if (name.isBlank() || name.startsWith("/") || name.contains("..")
                 || name.indexOf('\\') >= 0) {
             throw new PatchEngineException(
-                "[Veltis] Refusing to write an unsafe entry name into a bytecode patch set: '"
+                "Refusing to write an unsafe entry name into a bytecode patch set: '"
                     + name + "'"
                     + "\n  Reason: entry names are relative paths inside a jar; a name that"
                     + " escapes that directory would be written outside the server directory");
@@ -644,7 +644,7 @@ public final class BytecodePatch {
     private static void validate(ProducedEntry entry, String payloadSha) {
         if (!isSha256(entry.originalSha256()) && !ABSENT.equals(entry.originalSha256())) {
             throw new PatchEngineException(
-                "[Veltis] Bytecode patch generation produced " + entry.name() + " with a"
+                "Bytecode patch generation produced " + entry.name() + " with a"
                     + " malformed baseline hash: " + entry.originalSha256()
                     + "\n  Reason: the baseline hash is what proves this entry was cut from"
                     + " this exact vanilla jar, and it must be a SHA-256 or \"-\""
@@ -654,7 +654,7 @@ public final class BytecodePatch {
             case DELETE -> {
                 if (entry.payload() != null) {
                     throw new PatchEngineException(
-                        "[Veltis] Bytecode patch generation produced the removal " + entry.name()
+                        "Bytecode patch generation produced the removal " + entry.name()
                             + " with a payload"
                             + "\n  Reason: a removal deletes the baseline entry; carrying bytes"
                             + " for it would make the result depend on which of the two the"
@@ -663,7 +663,7 @@ public final class BytecodePatch {
                 }
                 if (!ABSENT.equals(entry.resultSha256())) {
                     throw new PatchEngineException(
-                        "[Veltis] Bytecode patch generation produced the removal " + entry.name()
+                        "Bytecode patch generation produced the removal " + entry.name()
                             + " with a result hash of " + entry.resultSha256()
                             + "\n  Reason: a removed entry produces nothing, so its result hash"
                             + " must be \"-\""
@@ -673,7 +673,7 @@ public final class BytecodePatch {
             case ENTRY -> {
                 if (entry.payload() == null) {
                     throw new PatchEngineException(
-                        "[Veltis] Bytecode patch generation produced the entry " + entry.name()
+                        "Bytecode patch generation produced the entry " + entry.name()
                             + " without its bytes"
                             + "\n  Reason: an entry payload is written as-is, so it must be"
                             + " present and its result hash must be its own hash"
@@ -681,7 +681,7 @@ public final class BytecodePatch {
                 }
                 if (!payloadSha.equalsIgnoreCase(entry.resultSha256())) {
                     throw new PatchEngineException(
-                        "[Veltis] Bytecode patch generation produced " + entry.name() + " with a"
+                        "Bytecode patch generation produced " + entry.name() + " with a"
                             + " result hash that is not its payload's hash"
                             + "\n  Payload SHA-256: " + payloadSha
                             + "\n  Result SHA-256:  " + entry.resultSha256()
@@ -693,7 +693,7 @@ public final class BytecodePatch {
             case CLASS -> {
                 if (entry.payload() == null) {
                     throw new PatchEngineException(
-                        "[Veltis] Bytecode patch generation produced the class delta for "
+                        "Bytecode patch generation produced the class delta for "
                             + entry.name() + " without its payload"
                             + "\n  Reason: a class delta is applied onto the verified vanilla"
                             + " class; without the delta there is no patch"
@@ -701,7 +701,7 @@ public final class BytecodePatch {
                 }
                 if (!isSha256(entry.resultSha256())) {
                     throw new PatchEngineException(
-                        "[Veltis] Bytecode patch generation produced the class delta for "
+                        "Bytecode patch generation produced the class delta for "
                             + entry.name() + " with a malformed result hash: "
                             + entry.resultSha256()
                             + "\n  Reason: the result hash is the hash of the merged class the"
@@ -750,7 +750,7 @@ public final class BytecodePatch {
         try {
             properties.load(new ByteArrayInputStream(text.getBytes(StandardCharsets.UTF_8)));
         } catch (IOException e) {
-            throw new PatchEngineException("[Veltis] Bytecode patch metadata is unreadable"
+            throw new PatchEngineException("Bytecode patch metadata is unreadable"
                 + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
         for (var name : properties.stringPropertyNames()) {
@@ -765,7 +765,7 @@ public final class BytecodePatch {
             return Integer.parseInt(value);
         } catch (NumberFormatException | NullPointerException e) {
             throw new PatchEngineException(
-                "[Veltis] Bytecode patch metadata in " + source + " has no usable " + key
+                "Bytecode patch metadata in " + source + " has no usable " + key
                     + "\n  Value: " + value
                     + "\n  Reason: the field is required and numeric, and a patch set that does"
                     + " not state its own shape cannot be validated", e);

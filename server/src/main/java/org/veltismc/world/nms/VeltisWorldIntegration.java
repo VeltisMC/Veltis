@@ -139,7 +139,7 @@ public final class VeltisWorldIntegration {
             // loading mechanism.
         } catch (Throwable t) {
             if (syncFailureLogged.compareAndSet(false, true)) {
-                LOG.error("[VeltisMC] Chunk activity sync failed; further failures are suppressed", t);
+                LOG.error("Chunk activity sync failed; further failures are suppressed", t);
             }
         }
     }
