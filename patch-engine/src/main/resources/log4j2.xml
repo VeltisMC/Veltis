@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Console-only config for the pipeline's JVMs (each Gradle JavaExec
      step runs in its own JVM). Same pattern as the server so every phase and
-     completion message reads identically in the Gradle output. -->
+     completion message reads identically in the Gradle output.
+     Root level is DEBUG when the pipeline is run with -PveltisPipelineDebug
+     (the build sets veltis.log.level for the step JVMs), because every
+     preparation diagnostic the engine prints is DEBUG — normal server
+     startup must show only the bootstrap lines, and the diagnostics are for
+     the developer who asks for them. -->
 <Configuration status="WARN">
     <Appenders>
         <Console name="TerminalConsole" target="SYSTEM_OUT">
@@ -9,7 +14,7 @@
         </Console>
     </Appenders>
     <Loggers>
-        <Root level="INFO">
+        <Root level="${sys:veltis.log.level:-INFO}">
             <AppenderRef ref="TerminalConsole"/>
         </Root>
     </Loggers>

@@ -47,10 +47,10 @@ public final class WorldEngineService implements Service {
         if (state != State.CREATED) {
             return;
         }
-        var timer = PhaseTimer.start("[VeltisMC] Loading world engine");
+        var timer = PhaseTimer.start("Loading world engine");
         engine.start();
         state = State.STARTED;
-        timer.complete("[VeltisMC] World engine initialized");
+        timer.complete("World engine initialized");
     }
 
     /** Stops the engine: flushes saves, drains queues, joins workers. Idempotent. */

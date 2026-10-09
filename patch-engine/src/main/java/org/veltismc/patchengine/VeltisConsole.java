@@ -19,8 +19,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>VeltisMC has exactly one logging system: Log4j2, the same one Minecraft
  * uses. Every Veltis phase and lifecycle message goes through it with the
- * {@code [HH:mm:ss LEVEL]: msg} pattern; nothing else should write to the
- * console (no banners, diagnostic tables or raw {@code System.out} prints).
+ * {@code [HH:mm:ss LEVEL]: msg} pattern. The one exception is
+ * {@link #bootstrap(String)}: the few lines that make up the visible Veltis
+ * bootstrap are written raw to the console, with no timestamp, no level and
+ * no pattern, because that is how they are specified to read — those lines
+ * and then Minecraft's own logging, with nothing in between. Everything else
+ * the engine reports while preparing is DEBUG, so it never appears in normal
+ * startup at all.
  *
  * <p>All methods are idempotent so both entry points can call them; whoever
  * runs first wins, which keeps the behaviour identical whether the server is
@@ -119,6 +124,28 @@ public final class VeltisConsole {
         System.setOut(new PrintStream(new FileOutputStream(FileDescriptor.out), true, StandardCharsets.UTF_8));
         System.setErr(new PrintStream(new FileOutputStream(FileDescriptor.err), true, StandardCharsets.UTF_8));
         enableUtf8Console();
+    }
+
+    /**
+     * Writes one bootstrap line raw to the console — no timestamp, no level,
+     * no pattern.
+     *
+     * <p>Reserved for the bootstrap output the server is specified to print:
+     * the entry point, the vanilla download, the patch application, the
+     * post-verification success line and the EULA refusal. Those lines are
+     * the whole of VeltisMC's visible startup; every other preparation
+     * diagnostic is logged at DEBUG, so normal output reads as the bootstrap
+     * followed directly by Minecraft's own logging.
+     *
+     * <p>Single-threaded by construction: all callers run on the main thread
+     * before Minecraft's logging pipeline has threads of its own, and
+     * {@link PrintStream} serialises each {@code println} as one write, so
+     * these lines cannot interleave with Log4j's console output.
+     *
+     * @param message the exact line to print
+     */
+    public static void bootstrap(String message) {
+        System.out.println(message);
     }
 
     /**

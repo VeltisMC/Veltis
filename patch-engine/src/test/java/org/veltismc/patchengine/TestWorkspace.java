@@ -19,9 +19,11 @@ import java.util.TreeMap;
  * thing faked is the decompile: {@code source/} is filled in directly, because
  * nothing under test depends on how those bytes got there.
  *
- * <p>The layout is the real one — {@code <root>/build/minecraft/26.3/{source,patched,build}}
- * plus {@code <root>/server/Shulker/{code,data,modules}} — so a test that asserts "no
- * temporary directories are produced" is asserting it about the real layout.
+ * <p>The layout is the real one — {@code <root>/minecraft/26.3/} for the
+ * pristine decompile and {@code <root>/minecraft/workspace/26.3/{patched,build}}
+ * for the workspace, plus {@code <root>/server/Shulker/{code,data,modules}} — so
+ * a test that asserts "no temporary directories are produced" is asserting it
+ * about the real layout.
  */
 final class TestWorkspace {
 

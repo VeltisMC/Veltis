@@ -64,7 +64,7 @@ public final class DefaultServerRuntime implements ServerRuntime {
         try {
             state.set(RuntimeState.STARTING);
             lifecycle.transition(LifecyclePhase.INITIALIZING);
-            var timer = PhaseTimer.start("[VeltisMC] Starting runtime");
+            var timer = PhaseTimer.start("Starting runtime");
 
             services.initializeAll();
             lifecycle.transition(LifecyclePhase.STARTING);
@@ -73,7 +73,7 @@ public final class DefaultServerRuntime implements ServerRuntime {
 
             lifecycle.transition(LifecyclePhase.RUNNING);
             state.set(RuntimeState.RUNNING);
-            timer.complete("[VeltisMC] Runtime started");
+            timer.complete("Runtime started");
             future.complete(null);
         } catch (Exception e) {
             state.set(RuntimeState.FAILED);

@@ -816,7 +816,7 @@ public final class AccessRequirements {
     /**
      * Reads the compiled classes of a directory tree, keyed by internal name.
      *
-     * @param root the directory, usually {@code build/minecraft/<version>/classes}
+     * @param root the directory, usually {@code minecraft/workspace/<version>/classes}
      * @throws PatchEngineException when the directory holds no class files at all
      */
     public static Map<String, byte[]> readClassDirectory(Path root) throws IOException {

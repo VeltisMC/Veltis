@@ -575,10 +575,18 @@ class GradlePipelineTest {
     void theWholeBuildScriptTalksAboutOneWorkspaceLocation() {
         var root = read("build.gradle.kts");
         assertTrue(root.contains(
-                "val workspaceDir = layout.projectDirectory.dir(\"build/minecraft/$minecraftVersion\")"),
+                "val workspaceDir = layout.projectDirectory.dir(\"minecraft/workspace/$minecraftVersion\")"),
             "the workspace layout must be declared once, at the top, and it must be the"
-                + " development layout under build/ — a checkout's intermediate state is"
-                + " build output and belongs where a build's output belongs");
+                + " development layout under minecraft/ — outside build/, where neither"
+                + " `./gradlew clean` nor an IDE's blanket build/ exclusion can hide the"
+                + " tree from the toolchain that reads it");
+        assertTrue(root.contains(
+                "val sourceDir = layout.projectDirectory.dir(\"minecraft/$minecraftVersion\")"),
+            "the pristine decompile must be declared beside the workspace at"
+                + " minecraft/<version>/ (so it reads as minecraft/<version>/net/minecraft/"
+                + " ...), in a directory of its own: it is the tree only the decompile"
+                + " step writes, and other outputs sharing it would make every rebuild"
+                + " dirty its snapshot and re-run a decompile that had not changed");
         // The retired layout must not appear anywhere.
         for (var retired : List.of("\"ver\"", "File.separator + \"ver\"",
                 "patched-source-baseline", "<home>/vanilla")) {
@@ -797,28 +805,33 @@ class GradlePipelineTest {
     }
 
     /**
-     * The source root an IDE has to resolve lives under {@code build/}, so the
-     * blanket exclusion Gradle's Idea plugin applies to a root project has to be
-     * opened up exactly there and nowhere else.
+     * The source roots an IDE has to resolve live under {@code minecraft/}, and
+     * the blanket exclusion of {@code build/} and {@code .gradle/} has to leave
+     * them exactly where they are.
      *
      * <p>The failure this guards is invisible in every terminal: the build goes
      * green, Ctrl+Click on {@code MinecraftServer} does nothing, and the remedy
      * anyone reaches for is the manual "Mark Directory as Sources Root" that the
-     * source set exists to make unnecessary.
+     * source set exists to make unnecessary. The workspace used to be buried
+     * under {@code build/}, which required un-excluding one child of an excluded
+     * tree — a dance that silently stopped working the moment anything moved;
+     * now the whole cache is outside build/ and the exclusion needs no
+     * exceptions at all.
      */
     @Test
     void theIdeExclusionLeavesTheWorkspaceVisible() {
         var code = withoutComments(read("build.gradle.kts"));
-        assertTrue(code.contains("val workspace = layout.projectDirectory.dir(\"build/minecraft\").asFile"),
-            "the workspace must be named where the exclusion is decided, so it can be"
-                + " held back from it");
-        assertTrue(code.contains(".filter { it != workspace }"),
-            "every other child of build/ is still excluded, but the workspace is not:"
-                + " excluding a directory that contains a source root makes the IDE"
-                + " lose the source root, and the build still reports success");
-        assertTrue(code.contains("val rootBuild = layout.projectDirectory.dir(\"build\").asFile"),
-            "and build/ has to be un-excluded as a whole before it can be re-excluded"
-                + " one child at a time, or the child exclusions are shadowed");
+        assertFalse(code.contains("layout.projectDirectory.dir(\"build/minecraft"),
+            "neither the workspace nor the decompile may live under build/: the blanket"
+                + " exclusion hides it, the build still reports success, and the remedy"
+                + " anyone reaches for is a manual Mark Directory as Sources Root");
+        assertTrue(code.contains(
+                "excludeDirs = excludeDirs + setOf(file(\"build\"), file(\".gradle\"))"),
+            "caches and outputs are still excluded, and only those: the workspace and"
+                + " the pristine decompile under minecraft/ must never be on that list");
+        assertFalse(code.contains(".filter { it != workspace }"),
+            "the un-exclude dance belonged to a workspace buried under build/; with the"
+                + " cache beside build/ there is nothing left to un-exclude");
         assertTrue(code.contains("sourceDirs = sourceDirs + minecraft.allSource.sourceDirectories.files"),
             "`gradlew idea` writes .iml files itself and Gradle's Idea plugin fills them"
                 + " from the main and test source sets only, so without this the root"
@@ -826,6 +839,14 @@ class GradlePipelineTest {
                 + " be blind to MinecraftServer while the Gradle model was correct."
                 + " Derived from the source set rather than spelled out, so there is"
                 + " still one declaration of where the patched tree lives");
+        assertTrue(code.contains("withXml"),
+            "a file dependency has no sources: without the source attachment the"
+                + " legacy import resolves Minecraft's classes but Ctrl+Click opens a"
+                + " decompiled view rather than minecraft/<version>/net/minecraft/...");
+        assertTrue(code.contains("rootsElement(document, \"SOURCES\""),
+            "the library entries that carry Minecraft's classes are the ones that get"
+                + " the source roots — patched/ first for the classes the patch set"
+                + " addresses, the pristine decompile behind it for everything else");
     }
 
     private static List<String> javaFiles(String relativePath) {

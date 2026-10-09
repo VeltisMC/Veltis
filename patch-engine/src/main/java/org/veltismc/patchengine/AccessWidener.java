@@ -77,14 +77,14 @@ public final class AccessWidener {
      */
     public static boolean widen(Path input, Path output, String inputSha1) {
         if (Files.isRegularFile(output) && markerMatches(output, inputSha1)) {
-            LOG.debug("[VeltisMC] Reusing the access-widened jar at {}", output);
+            LOG.debug("Reusing the access-widened jar at {}", output);
             return false;
         }
         try {
             widenAlways(input, output);
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[VeltisMC] Failed to widen Minecraft server access"
+                "Failed to widen Minecraft server access"
                     + "\n  Input: " + input
                     + "\n  Output: " + output
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
@@ -139,7 +139,7 @@ public final class AccessWidener {
                         // class is copied through with its original access, which
                         // is what the build already did before the engine owned
                         // this step.
-                        LOG.warn("[VeltisMC] Could not widen {}: {}", source.getName(),
+                        LOG.warn("Could not widen {}: {}", source.getName(),
                             MojangMetadata.rootMessage(e));
                     }
                 }
@@ -173,11 +173,11 @@ public final class AccessWidener {
         } finally {
             Files.deleteIfExists(staging);
         }
-        LOG.info("[VeltisMC] Widened access in {} classes", widened);
+        LOG.debug("Widened access in {} classes", widened);
         if (unsigned > 0) {
             // Worth saying out loud: the output is deliberately not the jar Mojang
             // published, and that is why the signature cannot survive it.
-            LOG.info("[VeltisMC] Removed {} entries of Mojang's signature; the widened jar is"
+            LOG.debug("Removed {} entries of Mojang's signature; the widened jar is"
                 + " unsigned because its contents no longer match it", unsigned);
         }
     }
@@ -239,7 +239,7 @@ public final class AccessWidener {
             mainSection.write(buffer);
             return buffer.toByteArray();
         } catch (java.io.IOException e) {
-            LOG.warn("[VeltisMC] Could not read the jar manifest, writing none:"
+            LOG.warn("Could not read the jar manifest, writing none:"
                 + " {}", MojangMetadata.rootMessage(e));
             return null;
         }

@@ -7,14 +7,15 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Simple reusable timing for startup phases: {@link #start} logs the phase
- * beginning immediately, then {@link #complete} logs the same phase with a
+ * Simple reusable timing for startup phases: {@link #start} records the phase
+ * beginning, then {@link #complete} records the same phase with a
  * human-readable elapsed time — {@code 42ms} for short phases,
  * {@code 1.243s} (three decimals, like vanilla's Done line) for longer ones.
  *
- * <p>Every message goes through Log4j2, the one logging system Minecraft and
- * VeltisMC share, so phases read like {@code [15:52:26 INFO]: [VeltisMC]
- * World engine initialized (42ms)}.
+ * <p>Both lines are logged at <em>debug</em> level: the timing is what matters,
+ * and it belongs in a log file rather than on an operator's console. Normal
+ * startup output stays vanilla's — {@code [15:52:26 INFO]: ...} — with no
+ * startup-phase chatter interleaved into it.
  */
 public final class PhaseTimer {
 
@@ -24,15 +25,15 @@ public final class PhaseTimer {
 
     private PhaseTimer() {}
 
-    /** Starts a phase and logs its beginning immediately. */
+    /** Starts a phase and records its beginning at debug level. */
     public static PhaseTimer start(String message) {
-        LOG.info(message);
+        LOG.debug(message);
         return new PhaseTimer();
     }
 
-    /** Logs {@code <message> (<elapsed>)} — the phase's real completion. */
+    /** Records {@code <message> (<elapsed>)} at debug level — the phase's real completion. */
     public void complete(String message) {
-        LOG.info("{} ({})", message, elapsed());
+        LOG.debug("{} ({})", message, elapsed());
     }
 
     /** Human-readable elapsed time so far ({@code 42ms} / {@code 1.243s}). */

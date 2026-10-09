@@ -42,8 +42,9 @@ import java.util.Locale;
  *       from here and not from the jar behind them.</li>
  *
  *   <li><b>A failure is a build failure.</b> Compiler diagnostics are rendered
- *       in the same {@code [Veltis]} shape as everything else and the exception
- *       propagates, so a runtime that failed to compile is never presented as
+ *       in the same {@code Reason:}/{@code Fix:} shape as every other failure
+ *       this engine reports, and the exception propagates, so a runtime that
+ *       failed to compile is never presented as
  *       ready. There is no partial success: either every target compiled or the
  *       runtime is rebuilt next time.</li>
  * </ul>
@@ -82,7 +83,7 @@ public final class PatchedSourceCompiler {
             // started the server, so it says so rather than reporting a
             // NoClassDefFoundError from somewhere inside the compiler API.
             throw new PatchEngineException(
-                "[Veltis] Cannot compile the patched Minecraft sources"
+                "Cannot compile the patched Minecraft sources"
                     + "\n  Reason: this Java installation has no compiler"
                     + " (ToolProvider.getSystemJavaCompiler() returned null)"
                     + "\n  Java home: " + System.getProperty("java.home")
@@ -95,7 +96,7 @@ public final class PatchedSourceCompiler {
         for (var source : sources) {
             if (!Files.isRegularFile(source)) {
                 throw new PatchEngineException(
-                    "[Veltis] The patch set targets a file that does not exist: " + source
+                    "The patch set targets a file that does not exist: " + source
                         + "\n  Reason: the patched workspace is incomplete;"
                         + " re-run the patch step to rebuild it");
             }
@@ -115,7 +116,7 @@ public final class PatchedSourceCompiler {
             Files.createDirectories(outputDirectory);
         } catch (Exception e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to reset the class output directory " + outputDirectory
+                "Failed to reset the class output directory " + outputDirectory
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
 
@@ -154,13 +155,13 @@ public final class PatchedSourceCompiler {
             }
         } catch (IOException e) {
             throw new PatchEngineException(
-                "[Veltis] Failed to compile the patched Minecraft sources"
+                "Failed to compile the patched Minecraft sources"
                     + "\n  Output: " + outputDirectory
                     + "\n  Reason: " + MojangMetadata.rootMessage(e), e);
         }
 
         int written = countClasses(outputDirectory);
-        log.info("[Veltis] Compiled {} patched source{} into {} class file{} in {}",
+        log.debug("Compiled {} patched source{} into {} class file{} in {}",
             sources.size(), sources.size() == 1 ? "" : "s",
             written, written == 1 ? "" : "s",
             VeltisConsole.formatDuration(System.nanoTime() - started));
@@ -211,7 +212,7 @@ public final class PatchedSourceCompiler {
         }
 
         var report = new StringBuilder()
-            .append("[Veltis] Failed to compile the patched Minecraft sources")
+            .append("Failed to compile the patched Minecraft sources")
             .append("\n  Sources: ").append(sources.size())
             .append("\n  Output: ").append(workspace.classesDirectory())
             .append("\n  Reason: ").append(errors.isEmpty()
