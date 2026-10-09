@@ -59,7 +59,7 @@ The current development target is:
 
 ```text
 Minecraft 26.3
-Java 26
+Java 25+
 ```
 
 Veltis is under active development, so version support and APIs may change.

@@ -107,6 +107,50 @@ val generatedPatchFile = layout.buildDirectory
     .file("generated-resources/META-INF/veltis/patches/$minecraftVersion.zip")
 val packagedVersionFile = layout.buildDirectory
     .file("generated-resources/META-INF/veltis/minecraft-version.txt")
+val packagedJavaVersionFile = layout.buildDirectory
+    .file("generated-resources/META-INF/veltis/java-version.txt")
+
+// ---------------------------------------------------------------------------
+// Java compatibility
+//
+// Two separate numbers, and keeping them apart is the whole change:
+//
+//   * the *toolchain* is the JDK the build compiles with, kept at 26 so a
+//     contributor's existing setup keeps working;
+//   * the *class-file release* is the bytecode every module and every patched
+//     Minecraft class is written as, and it is the minimum JVM the packaged
+//     server will load on.
+//
+// Minecraft 26.3's own classes are class-file version 69 (Java 25) and its
+// version document declares `javaVersion.majorVersion = 25`, so 25 is the floor
+// the rest of the system must match. `javac --release 25` on a JDK 26 produces
+// exactly that, which is what lets one build serve both Java 25 and Java 26.
+//
+// The value is read from the resolved metadata when it is available and falls
+// back to 25 for a fresh checkout; `-PveltisJavaRelease=` overrides it for
+// experiments and `-PveltisToolchainVersion=` moves the build JDK.
+// ---------------------------------------------------------------------------
+fun minecraftMetadataJavaRelease(): Int {
+    val file = metadataDir.file("version.json").asFile
+    if (!file.isFile) return 25
+    return try {
+        val match = Regex("\"javaVersion\"\\s*:\\s*\\{[^}]*\"majorVersion\"\\s*:\\s*(\\d+)")
+            .find(file.readText(Charsets.UTF_8))
+        match?.groupValues?.get(1)?.toIntOrNull() ?: 25
+    } catch (e: Exception) {
+        25
+    }
+}
+
+val veltisJavaRelease: Int = providers.gradleProperty("veltisJavaRelease")
+    .map { it.toInt() }
+    .orElse(minecraftMetadataJavaRelease())
+    .get()
+
+val veltisToolchain: Int = providers.gradleProperty("veltisToolchainVersion")
+    .map { it.toInt() }
+    .orElse(26)
+    .get()
 
 /**
  * How many files of one category the patch set addresses, read from the manifest
@@ -133,11 +177,11 @@ subprojects {
     apply(plugin = "java-library")
     apply(plugin = "idea")
 
-    java.toolchain.languageVersion.set(JavaLanguageVersion.of(26))
+    java.toolchain.languageVersion.set(JavaLanguageVersion.of(veltisToolchain))
 
     tasks.withType<JavaCompile> {
         options.encoding = "UTF-8"
-        options.release.set(26)
+        options.release.set(veltisJavaRelease)
     }
 
     idea {
@@ -203,12 +247,15 @@ tasks.jar {
     }
 }
 
-// Pipeline entrypoints execute engine code compiled for the toolchain
-// release (26), so they must run on a matching JVM rather than Gradle's own.
-val java26Launcher = javaToolchains.launcherFor {
-    languageVersion = JavaLanguageVersion.of(26)
+// Pipeline entrypoints execute engine code compiled for the toolchain release,
+// so they must run on a matching JVM rather than Gradle's own. The toolchain and
+// the bytecode release are independent: this JVM compiles `--release
+// $veltisJavaRelease` output for the server while itself running on JDK
+// $veltisToolchain.
+val pipelineLauncher = javaToolchains.launcherFor {
+    languageVersion = JavaLanguageVersion.of(veltisToolchain)
 }
-java.toolchain.languageVersion.set(JavaLanguageVersion.of(26))
+java.toolchain.languageVersion.set(JavaLanguageVersion.of(veltisToolchain))
 
 // ---------------------------------------------------------------------------
 // The `minecraft` source set
@@ -487,6 +534,21 @@ project(":server") {
         // unwidened runtime so access errors stay build errors.
         classpath = files(classesDir, widenedServerJar, this.classpath)
     }
+    tasks.withType<Test>().configureEach {
+        // `-PveltisBench` runs the low-resource engine benchmark in the shape of
+        // the deployment it exists for: one visible core (the JVM sizes its
+        // container-aware pools and worker ceiling from this) and a two-gigabyte
+        // heap (the pool ceilings are a fraction of it). Off by default so a
+        // normal build never pays the heap or the time.
+        if (providers.gradleProperty("veltisBench").isPresent) {
+            maxHeapSize = "2g"
+            jvmArgs("-XX:ActiveProcessorCount=1", "-Dveltis.bench=true")
+            systemProperty(
+                "veltis.bench.config",
+                providers.gradleProperty("veltisBenchConfig").getOrElse("resource"),
+            )
+        }
+    }
 }
 
 /**
@@ -514,7 +576,7 @@ tasks.named<JavaCompile>("compileMinecraftJava") {
     group = "minecraft"
     setSource(patchTargets("code"))
     classpath = minecraftSourceSetClasspath
-    options.release.set(26)
+    options.release.set(veltisJavaRelease)
     options.encoding = "UTF-8"
     dependsOn(":applyVeltisPatches", ":widenServerJarAccess", ":downloadLibraries")
 }
@@ -582,6 +644,36 @@ val writePackagedVersion by tasks.registering {
     }
 }
 
+/**
+ * Records the minimum Java release the packaged server runs on.
+ *
+ * <p>Written from the same {@code veltisJavaRelease} the compiler targets, so
+ * the runtime version guard the launcher executes and the class files it is
+ * about to load are guaranteed to agree. The guard is compiled to Java 8 so it
+ * can run on a JVM too old to load anything else in the jar, and it reads this
+ * file rather than carrying a constant that could drift.
+ */
+val writePackagedJavaVersion by tasks.registering {
+    group = "minecraft"
+    description = "Records the minimum Java release the packaged server is compiled for"
+    val target = packagedJavaVersionFile
+    inputs.property("veltisJavaRelease", veltisJavaRelease)
+    outputs.file(target).withPropertyName("packagedJavaVersion")
+    doLast {
+        val file = target.get().asFile
+        file.parentFile.mkdirs()
+        file.writeText(
+            """
+            # Generated by the VeltisMC build. The minimum Java feature release
+            # java -jar veltismc.jar runs on; the class files in this jar are
+            # compiled for exactly this release. Read by JavaVersionGuard before
+            # any other class is loaded.
+            $veltisJavaRelease
+            """.trimIndent() + "\n"
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline steps
 //
@@ -598,9 +690,11 @@ fun pipelineStep(
     this.description = description
     classpath = pipelineClasspath
     mainClass = "org.veltismc.patchengine.PipelineRunner"
-    javaLauncher.set(java26Launcher)
-    // patchWorkers is passed only to the step that uses it; the others ignore it.
-    args(step, minecraftVersion, rootDir.absolutePath, patchWorkers.toString())
+    javaLauncher.set(pipelineLauncher)
+    // patchWorkers is used by the patching step and the release by the compile
+    // step; each step ignores the argument it does not use.
+    args(step, minecraftVersion, rootDir.absolutePath, patchWorkers.toString(),
+        veltisJavaRelease.toString())
     dependsOn(":patch-engine:classes")
     // Any change to the pipeline code itself must invalidate the pipeline's
     // own outputs, otherwise a fix to the patcher would not take effect until
@@ -807,7 +901,7 @@ val prepareVeltisRuntime = pipelineStep(
         inputs.dir(patchesDir).withPropertyName("patchSet")
         inputs.property("minecraftVersion", minecraftVersion)
         inputs.property("patchWorkers", patchWorkers)
-        inputs.property("classFileRelease", 26)
+        inputs.property("classFileRelease", veltisJavaRelease)
         // The whole workspace is this task's output, because this task can build
         // all of it: it resolves, downloads, verifies, widens, decompiles, patches
         // and compiles for itself, each stage behind its own cache. Declaring only

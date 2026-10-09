@@ -50,6 +50,11 @@ public record WorldConfig(
         if (simTickIntervalMillis <= 0) {
             throw new IllegalArgumentException("simTickIntervalMillis must be > 0, got " + simTickIntervalMillis);
         }
+        if (maxPooledChunks < 0 || maxPooledSections < 0 || maxPooledSaveBuffers < 0) {
+            throw new IllegalArgumentException(
+                "pool ceilings must be >= 0, got chunks=" + maxPooledChunks
+                    + ", sections=" + maxPooledSections + ", saveBuffers=" + maxPooledSaveBuffers);
+        }
         Objects.requireNonNull(worldSeed, "worldSeed");
     }
 
@@ -65,7 +70,10 @@ public record WorldConfig(
     public static final class Builder {
         private int regionSizeChunks = DEFAULT_REGION_SIZE_CHUNKS;
         private int minWorkers = 2;
-        private int maxWorkers = Math.max(4, Runtime.getRuntime().availableProcessors());
+        // Sized from the machine, not from a constant: on a one-core container
+        // this is 2 (the floor), on a workstation it is the core count up to 8.
+        // See ResourceProfile for why the JVM's own probe is container-aware.
+        private int maxWorkers = ResourceProfile.defaultMaxWorkers();
         private boolean adaptiveWorkers = true;
         private long simTickIntervalMillis = DEFAULT_SIM_TICK_INTERVAL_MILLIS;
         private int randomTicksPerChunkPerTick = DEFAULT_RANDOM_TICKS_PER_CHUNK;
@@ -78,9 +86,13 @@ public record WorldConfig(
         private long saveFlushIntervalMillis = 1000L;
         private long workerParkTimeoutNanos = 200_000L;
         private int maxQueuedBlockUpdatesPerTick = 4096;
-        private int maxPooledChunks = 1024;
-        private int maxPooledSections = 4096;
-        private int maxPooledSaveBuffers = 512;
+        // Pool ceilings scale with the JVM's maximum heap. On a two-gigabyte
+        // container the section pool drops from the old flat 4096 (~100 MB if
+        // fully populated) to a few hundred; on a workstation it stays roomy.
+        // A pool is lazy, so this only bounds the worst case.
+        private int maxPooledChunks = ResourceProfile.defaultMaxPooledChunks();
+        private int maxPooledSections = ResourceProfile.defaultMaxPooledSections();
+        private int maxPooledSaveBuffers = ResourceProfile.defaultMaxPooledSaveBuffers();
 
         public Builder regionSizeChunks(int v) { this.regionSizeChunks = v; return this; }
         public Builder minWorkers(int v) { this.minWorkers = v; return this; }

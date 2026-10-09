@@ -20,29 +20,25 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Temurin JDK 26
+      - name: Set up Temurin JDK 26 (build toolchain)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '26'
           cache: gradle
 
-      - name: Make Gradle Wrapper Executable
-        run: chmod +x gradlew
-
-      - name: Build and Test
+      - name: Build and Test (JDK 26)
         run: ./gradlew build --stacktrace --no-daemon
 
-      - name: Package VeltisMC
+      - name: Build VeltisMC (JDK 26)
         run: ./gradlew buildVeltisMC --stacktrace --no-daemon
 
-      - name: Upload Build Artifacts
+      - name: Package distributable
+        run: cp build/distributions/veltismc.jar veltismc.jar
+
+      - name: Upload distributable
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: VeltisMC
-          # Only this one jar. It carries no Minecraft code: the runtime it builds
-          # on a server embeds the widened vanilla classes, so publishing that
-          # would distribute Minecraft code. It is never produced by CI, only on
-          # the machine that runs it.
-          path: build/distributions/veltismc.jar
+          name: veltismc-jdk26
+          path: veltismc.jar

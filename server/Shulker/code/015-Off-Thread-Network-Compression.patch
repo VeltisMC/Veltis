@@ -1,0 +1,46 @@
+diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
+--- a/net/minecraft/network/Connection.java
++++ b/net/minecraft/network/Connection.java
+@@ -552,17 +552,37 @@
+                 this.channel.pipeline().addAfter("splitter", "decompress", new CompressionDecoder(threshold, validateDecompressed));
+             }
+ 
+-            if (this.channel.pipeline().get("compress") instanceof CompressionEncoder compressionEncoder) {
+-                compressionEncoder.setThreshold(threshold);
+-            } else {
+-                this.channel.pipeline().addAfter("prepender", "compress", new CompressionEncoder(threshold));
++            // VeltisMC: opt-in off-thread compression. When the feature is
++            // enabled, VeltisMC installs its handler under this same pipeline
++            // name and returns true, so the vanilla branch is skipped. The call
++            // is reflective because patched Minecraft does not compile against
++            // the VeltisMC runtime; an absent or disabled runtime is a no-op.
++            boolean veltisOffThreadCompression = false;
++            try {
++                veltisOffThreadCompression = Boolean.TRUE.equals(
++                    Class.forName("org.veltismc.net.OffThreadCompression")
++                        .getMethod("installIfEnabled", ChannelPipeline.class, int.class)
++                        .invoke(null, this.channel.pipeline(), threshold)
++                );
++            } catch (Throwable ignored) {
++                // No VeltisMC runtime: use the vanilla encoder.
++            }
++
++            if (!veltisOffThreadCompression) {
++                if (this.channel.pipeline().get("compress") instanceof CompressionEncoder compressionEncoder) {
++                    compressionEncoder.setThreshold(threshold);
++                } else {
++                    this.channel.pipeline().addAfter("prepender", "compress", new CompressionEncoder(threshold));
++                }
+             }
+         } else {
+             if (this.channel.pipeline().get("decompress") instanceof CompressionDecoder) {
+                 this.channel.pipeline().remove("decompress");
+             }
+ 
+-            if (this.channel.pipeline().get("compress") instanceof CompressionEncoder) {
++            if (this.channel.pipeline().get("compress") != null) {
++                // Vanilla's encoder, or VeltisMC's replaced it above: either
++                // way the name is now unoccupied.
+                 this.channel.pipeline().remove("compress");
+             }
+         }
