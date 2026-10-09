@@ -59,16 +59,16 @@ The current development target is:
 
 ```text
 Minecraft 26.3
-Java 25+
+Java 25+ and LTS
 ```
 
-The build produces bytecode targeting Java 25 and the launcher includes a version guard that rejects Java versions older than 25. The development toolchain remains Java 26. CI builds and tests against both Java 25 and Java 26. Veltis is under active development, so version support and APIs may change.
+Veltis is under active development, so version support and APIs may change.
 
 ## Building
 
 Requirements:
 
-- JDK 25 or 26 (builds with JDK 26; runtime requires Java 25+; guard rejects < 25)
+- JDK 25+
 - Git
 - Internet connection for the first Minecraft download
 
@@ -101,15 +101,6 @@ java -jar veltismc.jar --nogui
 Veltis obtains the required Minecraft server files from Mojang, verifies them, prepares the Veltis runtime, and starts the server.
 
 Minecraft itself is not redistributed with Veltis.
-
-## Hosting and container notes
-
-Veltis is built to behave well under a hosting panel or inside a container:
-
-- **EULA first, always.** On a start with no `eula.txt`, one is written with `eula=false` and the server refuses with a non-zero exit and the message `You need to agree to the EULA in order to run the server. Go to eula.txt for more info.` This happens *before* Mojang's files are downloaded and before the patch set is applied, so a panel that has not accepted the EULA does not pay for a runtime it will not use. Veltis never writes `eula=true`.
-- **Container-aware sizing.** The scheduler's worker ceiling follows `Runtime.availableProcessors()` (cgroup-aware on modern JVMs) and is clamped to 2–8. World-engine pool ceilings scale with the JVM's maximum heap, so a small container gets small pools and a large host keeps roomy ones. The same jar is frugal on one core and two gigabytes, and unchanged on a workstation.
-- **Console and shutdown.** Startup preserves stdin/stdout for panels, and `stop`/signal handling shuts the server down cleanly.
-- **Data stays in the server directory.** Worlds, configuration, and logs are written next to the jar; no developer tooling is needed at runtime.
 
 ### Off-thread compression (opt-in)
 
