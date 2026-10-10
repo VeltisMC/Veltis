@@ -35,9 +35,11 @@ This keeps Minecraft changes reviewable, reproducible, and separate from the res
 
 ## Architecture
 
-Veltis is split into three main parts:
+Veltis is split into four main parts:
 
 ```text
+veltis-api
+   │
 launcher
    │
    ├── patch-engine
@@ -47,6 +49,7 @@ launcher
           └── world engine
 ```
 
+- **veltis-api** — the stable surface other modules and external integrations compile against. It is a boundary even while it holds no classes.
 - **launcher** — starts Veltis and handles the server entry point.
 - **patch-engine** — handles Minecraft acquisition, patching, compilation, and runtime preparation.
 - **server** — contains the Veltis runtime and world simulation engine.

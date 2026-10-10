@@ -68,6 +68,12 @@ jobs:
       - name: Build and test
         run: ./gradlew build --stacktrace --no-daemon
 
+      - name: Build the API module
+        # `veltis-api` ships nothing yet, so it is named here rather than left to
+        # the aggregate `build`: the module is a CI gate in its own right, and a
+        # future change that narrows what CI builds must not drop it silently.
+        run: ./gradlew :veltis-api:build --stacktrace --no-daemon
+
       - name: Build VeltisMC
         env:
           # Empty for a push or a pull request, so the repository's own default
@@ -292,16 +298,22 @@ jobs:
           SIZE=$(stat -c%s "release/$(jq -r .assetName metadata/build-metadata.json)")
           PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-          # The payload is the build metadata plus the durable location. The
-          # website validates all of it before touching its own files.
+          # `client_payload` allows at most 10 top-level properties, and the
+          # build metadata alone plus the durable location already exceeds that.
+          # The two groups are nested instead of flattened: the website validates
+          # both and stores the flat shape it reads. Nesting also leaves room for
+          # a future metadata field without tripping the same limit again.
           payload=$(jq -c \
             --arg url "$ASSET_URL" \
             --arg releaseUrl "$RELEASE_URL" \
             --arg publishedAt "$PUBLISHED_AT" \
             --argjson size "$SIZE" \
             '{event_type: "veltis-release",
-              client_payload: (. + {downloadUrl: $url, releaseUrl: $releaseUrl,
-                                    publishedAt: $publishedAt, size: $size})}' \
+              client_payload: {
+                metadata: .,
+                release: {downloadUrl: $url, releaseUrl: $releaseUrl,
+                          publishedAt: $publishedAt, size: $size}
+              }}' \
             metadata/build-metadata.json)
 
           status=$(curl -sS -o /tmp/dispatch.out -w '%{http_code}' \
