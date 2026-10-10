@@ -886,7 +886,12 @@ class GradlePipelineTest {
     // ------------------------------------------------------------------
 
     /**
-     * Three modules, and the list is the decision.
+     * Four modules, and the list is the decision.
+     *
+     * <p>{@code :veltis-api} is the newest and deliberately holds no classes yet:
+     * it exists so the public surface is its own boundary, and so CI compiles
+     * it, rather than arriving as a package inside a module that ships something
+     * else.
      *
      * <p>Pinned because it is the easiest thing in a build to grow back. Each
      * name here answers to something real — an operator runs {@code :launcher},
@@ -895,14 +900,14 @@ class GradlePipelineTest {
      * to say which of those it is not.
      */
     @Test
-    void thereAreExactlyThreeModulesAndEachIsARealBoundary() {
+    void settingsListsEveryModuleAndEachIsARealBoundary() {
         var settings = read("settings.gradle.kts");
         var included = new ArrayList<String>();
         var matcher = Pattern.compile("\":([A-Za-z0-9_-]+)\"").matcher(settings);
         while (matcher.find()) {
             included.add(":" + matcher.group(1));
         }
-        assertEquals(List.of(":launcher", ":patch-engine", ":server"), included,
+        assertEquals(List.of(":veltis-api", ":launcher", ":patch-engine", ":server"), included,
             "settings.gradle.kts is the module list; everything else follows from it");
         assertFalse(settings.contains(":build-tools"),
             "build-tools held one class whose only callers already depended on the"
@@ -931,8 +936,8 @@ class GradlePipelineTest {
     void nothingThatBuildsOrRunsTheServerMentionsTheRetiredStateDirectory() {
         var roots = List.of(
             "build.gradle.kts", "settings.gradle.kts", "gradle.properties",
-            "launcher/build.gradle.kts", "server/build.gradle.kts",
-            "patch-engine/build.gradle.kts");
+            "veltis-api/build.gradle.kts", "launcher/build.gradle.kts",
+            "server/build.gradle.kts", "patch-engine/build.gradle.kts");
         for (var script : roots) {
             assertFalse(read(script).contains(".vlt"),
                 script + " still knows about the retired state directory");
