@@ -3,15 +3,21 @@ package org.veltismc.patchengine;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 
 /**
- * The Minecraft EULA gate: generate {@code eula.txt} if it is absent, and refuse
+ * The Minecraft EULA gate: generate {@code eula.txt} if it is absent, and
+ * refuse
  * to run unless it says {@code eula=true}.
  *
- * <p>It lives beside {@link VeltisConsole} because the EULA refusal is one of
- * the raw bootstrap lines that class is about, and because it has to be callable
- * from the two places a server starts: {@code VeltisLauncher}, before it fetches
+ * <p>
+ * It lives beside {@link VeltisConsole} because the EULA refusal is one of
+ * the raw bootstrap lines that class is about, and because it has to be
+ * callable
+ * from the two places a server starts: {@code VeltisLauncher}, before it
+ * fetches
  * Mojang's artifacts and applies the patch set, and {@code server.Main}, before
  * it loads the runtime. Both compile against this module, so the decision and
  * its wording exist once.
@@ -26,7 +32,8 @@ import java.util.Locale;
  * <h2>Never auto-accept</h2>
  * A missing, empty, unreadable, or {@code eula=false} file is a refusal. This
  * code never writes {@code eula=true} and never rewrites an existing file; the
- * only file it creates is the default {@code eula=false} that gives the operator
+ * only file it creates is the default {@code eula=false} that gives the
+ * operator
  * something to edit.
  */
 public final class MinecraftEula {
@@ -36,7 +43,7 @@ public final class MinecraftEula {
      * requirement is that it reads exactly as vanilla's does.
      */
     public static final String REFUSAL = "You need to agree to the EULA in order to"
-        + " run the server. Go to eula.txt for more info.";
+            + " run the server. Go to eula.txt for more info.";
 
     private MinecraftEula() {
     }
@@ -45,7 +52,8 @@ public final class MinecraftEula {
      * Runs the whole gate: ensure there is an {@code eula.txt}, then refuse with
      * a non-zero exit when it does not agree.
      *
-     * <p>Call this before any download or Minecraft initialisation. It never
+     * <p>
+     * Call this before any download or Minecraft initialisation. It never
      * returns on refusal, so a caller cannot accidentally continue into the
      * expensive path.
      */
@@ -71,11 +79,16 @@ public final class MinecraftEula {
             return;
         }
         try {
+            String date = ZonedDateTime.now().format(DateTimeFormatter.ofPattern("E MMM d HH:mm:ss z yyyy", Locale.ENGLISH));
             Files.createDirectories(homeDir);
-            Files.writeString(eulaFile, """
-                #By changing the setting below to TRUE you are indicating your agreement to our EULA (https://aka.ms/MinecraftEULA).
-                eula=false
-                """, StandardCharsets.UTF_8);
+            Files.writeString(eulaFile,
+                    """
+                            #By changing the setting below to TRUE you are indicating your agreement to our EULA (https://aka.ms/MinecraftEULA).
+                            #%s
+                            eula=false
+                            """
+                            .formatted(date),
+                    StandardCharsets.UTF_8);
         } catch (Exception ignored) {
             // An unwritable home directory means the refusal below, not a crash:
             // there is nothing useful to do with the error here.
@@ -85,7 +98,8 @@ public final class MinecraftEula {
     /**
      * Whether {@code eula.txt} explicitly agrees.
      *
-     * <p>Case-insensitive, {@code #} comments and blank lines ignored. A missing
+     * <p>
+     * Case-insensitive, {@code #} comments and blank lines ignored. A missing
      * or unreadable file is a refusal rather than an acceptance: the only thing
      * that lets the server start is an explicit {@code eula=true}.
      */
@@ -96,9 +110,9 @@ public final class MinecraftEula {
         }
         try {
             return Files.readAllLines(eulaFile, StandardCharsets.UTF_8).stream()
-                .map(String::trim)
-                .filter(line -> !line.isEmpty() && !line.startsWith("#"))
-                .anyMatch(line -> line.toLowerCase(Locale.ROOT).startsWith("eula=true"));
+                    .map(String::trim)
+                    .filter(line -> !line.isEmpty() && !line.startsWith("#"))
+                    .anyMatch(line -> line.toLowerCase(Locale.ROOT).startsWith("eula=true"));
         } catch (Exception e) {
             return false;
         }
