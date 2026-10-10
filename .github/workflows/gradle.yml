@@ -232,7 +232,12 @@ jobs:
           # An upload is not proof of an asset. Ask the release what it holds
           # and compare exactly, so a normalization surprise or a failed upload
           # stops the run here instead of being reported as a publication.
-          ACTUAL=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          #
+          # Read the release from the REST API, not `gh release view --json`:
+          # that export renames the asset's REST `browser_download_url` to
+          # `url`, so the real field name only exists on the API response.
+          RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")
+          ACTUAL=$(printf '%s' "$RELEASE" | jq -r '.assets[].name')
           if ! printf '%s\n' "$ACTUAL" | grep -Fxq "$ASSET"; then
             echo "::error::release $TAG has no asset named '$ASSET' (the GitHub-stored form of '$ARTIFACT')."
             echo "::error::assets the release actually holds:"
@@ -242,11 +247,13 @@ jobs:
             exit 1
           fi
 
-          ASSET_URL=$(gh release view "$TAG" --json assets \
-            --jq ".assets[] | select(.name == \"$ASSET\") | .browser_download_url")
+          # The URL is read from the release, never constructed. The name is
+          # passed as a jq argument rather than interpolated into the program.
+          ASSET_URL=$(printf '%s' "$RELEASE" | jq -r --arg n "$ASSET" \
+            '.assets[] | select(.name == $n) | .browser_download_url' | head -n 1)
           test -n "$ASSET_URL" || {
-            echo "::error::release $TAG lists '$ASSET' but returned no browser_download_url"
-            gh release view "$TAG" --json assets
+            echo "::error::release $TAG lists '$ASSET' but the API returned no browser_download_url"
+            printf '%s\n' "$RELEASE"
             exit 1
           }
 
