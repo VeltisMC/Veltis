@@ -90,7 +90,7 @@ output derives from it:
 | Value | Source | Default |
 |---|---|---|
 | Minecraft version | `-PminecraftVersion` / `gradle.properties` | `26.3` |
-| Release channel | `-Pchannel` / `gradle.properties` | `stable` |
+| Release channel | `-Pchannel` / `gradle.properties` | `nightly` |
 | Commit | `GITHUB_SHA`, then `git rev-parse HEAD` | the checked-out revision |
 
 `buildVeltisMC` writes exactly one runnable artifact, always at the same path:
@@ -111,34 +111,48 @@ Veltis <MinecraftVersion> <Channel> <7-char-commit>.jar
 For example, on the CI release page:
 
 ```text
-Veltis 26.3 stable 0123456.jar
+Veltis 26.3 nightly 0123456.jar
 ```
 
-Those spaces are part of the release name. The channel is explicit and is never
-inferred from the commit or the branch; build a different channel with
-`-Pchannel`:
+That spaced string is the release **title**; a release asset cannot keep it.
+GitHub normalizes every uploaded asset's file name — spaces and everything
+outside `[A-Za-z0-9_+@-]` become dots -- so the file the release actually stores
+is:
+
+```text
+Veltis.26.3.nightly.0123456.jar
+```
+
+The channel is explicit and is never inferred from the commit or the branch;
+build a different channel with `-Pchannel`:
 
 ```bash
-./gradlew buildVeltisMC -Pchannel=nightly
+./gradlew buildVeltisMC -Pchannel=stable
 ```
 
 The same build writes `build/metadata/build-metadata.json`, the
-machine-readable description a download page needs. `artifact` is the published
-(GitHub) filename, character for character; `distributionArtifact` is the file
-the build actually wrote:
+machine-readable description a download page needs. `artifact` is the human
+release title, `assetName` is the same file as a GitHub release stores it, and
+`distributionArtifact` is the file the build actually wrote:
 
 ```json
 {
-  "channel": "stable",
+  "channel": "nightly",
   "version": "1.0.0-SNAPSHOT",
   "minecraftVersion": "26.3",
   "commit": "0123456789abcdef0123456789abcdef01234567",
   "shortCommit": "0123456",
-  "artifact": "Veltis 26.3 stable 0123456.jar",
+  "artifact": "Veltis 26.3 nightly 0123456.jar",
+  "assetName": "Veltis.26.3.nightly.0123456.jar",
   "distributionArtifact": "veltis.jar",
   "minimumJavaVersion": 25
 }
 ```
+
+The workflow uploads and verifies `assetName`, because that is the string the
+release's own asset list holds; the release is titled with `artifact`. A
+verification that compared the spaced title to the release's assets is what
+reported a successful GitHub Release as a missing one.
 
 The launcher's own jar (`launcher/build/libs/veltismc-1.0.jar`) is the
 intermediate the packaging step reads; it is not a distributable anyone takes

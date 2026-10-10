@@ -440,6 +440,7 @@ class GradlePipelineTest {
         var fullSha = json.get("commit").getAsString();
         var shortSha = json.get("shortCommit").getAsString();
         var artifact = json.get("artifact").getAsString();
+        var assetName = json.get("assetName").getAsString();
         var distribution = json.get("distributionArtifact").getAsString();
 
         assertTrue(fullSha.matches("[0-9a-f]{40}"),
@@ -452,6 +453,17 @@ class GradlePipelineTest {
         assertEquals("Veltis " + minecraft + " " + channel + " " + shortSha + ".jar", artifact,
             "the release name is exactly Veltis <MinecraftVersion> <Channel> <7-char-SHA>.jar,"
                 + " and the spaces are part of it");
+        // The release title and the release asset are not the same string. A
+        // GitHub release normalizes every uploaded asset's file name (anything
+        // outside [A-Za-z0-9_+@-] becomes a dot), so the spaced name can never be
+        // the asset's name and a workflow that verified it would fail with the
+        // asset present. Comparing the two here is what keeps the upload and the
+        // verification pointed at one file.
+        assertEquals(artifact.replace(' ', '.'), assetName,
+            "assetName must be the artifact as GitHub stores it (spaces folded to"
+                + " dots), not a second independent name");
+        assertFalse(assetName.contains(" "),
+            "no GitHub release asset can be named with a space: " + assetName);
         assertEquals(DISTRIBUTION_ARTIFACT, distribution,
             "the local distribution is the constant veltis.jar, whatever the channel");
 
