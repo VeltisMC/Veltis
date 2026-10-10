@@ -140,6 +140,29 @@ val distributionArtifactName = "veltis.jar"
 
 fun releaseArtifactName(): String = "Veltis $minecraftVersion $channel $shortSha.jar"
 
+/**
+ * The name a GitHub release actually stores the uploaded jar under.
+ *
+ * <p>A release never keeps the exact name it is handed: the platform normalizes
+ * every uploaded asset's file name by replacing each run of characters outside
+ * `[A-Za-z0-9_+@-]` with a dot and trimming the result, so
+ * `Veltis 26.3 nightly aaa8824.jar` is stored and served as
+ * `Veltis.26.3.nightly.aaa8824.jar`. `gh release upload` does not change this:
+ * it mirrors the same rule only so `--clobber` can recognize an asset it has
+ * already uploaded.
+ *
+ * <p>That is why the metadata carries this in addition to
+ * the spaced name. The spaced name is the release title and the human-facing
+ * form; this is the file the release holds and the one the durable download URL
+ * points at. A workflow that verified the spaced name would fail with the asset
+ * uploaded, because no release can hold it.
+ */
+fun githubAssetName(releaseName: String): String = releaseName
+    .replace(Regex("[^A-Za-z0-9_+@-]+"), ".")
+    .replace(Regex("\\.{2,}"), ".")
+    .trim('.')
+    .ifEmpty { "veltis.jar" }
+
 /** The local distributable: one constant path, whatever the channel or commit. */
 val distributionArtifactFile: Provider<RegularFile> =
     layout.buildDirectory.file("distributions/$distributionArtifactName")
@@ -149,6 +172,11 @@ val distributionArtifactFile: Provider<RegularFile> =
  * which is why nothing at configuration time calls it.
  */
 val releaseArtifactFileName: Provider<String> = providers.provider { releaseArtifactName() }
+
+/** The name GitHub stores the release asset under; derived from the name above. */
+val releaseAssetFileName: Provider<String> = providers.provider {
+    githubAssetName(releaseArtifactName())
+}
 
 /** The build's machine-readable description; the website's input. */
 val buildMetadataFile = layout.buildDirectory.file("metadata/build-metadata.json")
@@ -1241,16 +1269,18 @@ val generateBuildMetadata by tasks.registering {
     inputs.property("gitCommit", commit)
     inputs.property("gitShortCommit", shortCommit)
     inputs.property("artifact", releaseArtifactFileName)
+    inputs.property("assetName", releaseAssetFileName)
     inputs.property("distributionArtifact", distributionArtifactName)
     inputs.property("javaRelease", veltisJavaRelease)
     outputs.file(buildMetadataFile).withPropertyName("buildMetadata")
 
     doLast {
-        // `artifact` is the GitHub Actions upload name (the release page name);
-        // `distributionArtifact` is the file the build actually wrote and that
-        // the workflow renames. Keeping both, explicitly, is what stops a
-        // consumer from assuming the local jar already carries the channel and
-        // commit in its filename.
+        // `artifact` is the human release title (the spaced `Veltis 26.3 ...`
+        // name); `assetName` is the same file as GitHub stores it, with the
+        // platform's substitution of dots for spaces; `distributionArtifact` is
+        // the file the build actually wrote and that the workflow renames.
+        // Keeping all three, explicitly, is what stops a consumer from
+        // assuming a name GitHub would never keep.
         val metadata = buildString {
             append("{\n")
             append("  \"channel\": ").append(jsonString(channel)).append(",\n")
@@ -1259,6 +1289,7 @@ val generateBuildMetadata by tasks.registering {
             append("  \"commit\": ").append(jsonString(commit.get())).append(",\n")
             append("  \"shortCommit\": ").append(jsonString(shortCommit.get())).append(",\n")
             append("  \"artifact\": ").append(jsonString(releaseArtifactFileName.get())).append(",\n")
+            append("  \"assetName\": ").append(jsonString(releaseAssetFileName.get())).append(",\n")
             append("  \"distributionArtifact\": ").append(jsonString(distributionArtifactName)).append(",\n")
             append("  \"minimumJavaVersion\": ").append(veltisJavaRelease).append("\n")
             append("}\n")
@@ -1316,6 +1347,7 @@ val buildVeltisMC = tasks.register("buildVeltisMC") {
         logger.lifecycle("VeltisMC build completed:")
         logger.lifecycle("  distributable: {}", distributionArtifactFile.get().asFile)
         logger.lifecycle("  release name:  {}", releaseArtifactFileName.get())
+        logger.lifecycle("  release asset: {}", releaseAssetFileName.get())
         logger.lifecycle("  metadata:      {}", buildMetadataFile.get().asFile)
         logger.lifecycle("  runtime:  {} ({} patched classes)", classesDir.asFile, patchTargetCount("code"))
     }
