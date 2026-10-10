@@ -35,7 +35,7 @@ dependencies {
 // ---------------------------------------------------------------------------
 // The jar's library table
 //
-// veltismc.jar contains no third-party code. What it does contain is a table
+// The launcher jar contains no third-party code. What it does contain is a table
 // naming the few libraries it cannot start without, with a URL and a SHA-1 for
 // each, and a manifest Class-Path pointing at the same files. Stage 0 of the
 // launcher reads that table before any Log4j class is named, fetches what is
@@ -59,7 +59,7 @@ val mojangLibraryBase = "https://libraries.minecraft.net/"
 val centralLibraryBase = "https://repo1.maven.org/maven2/"
 
 /**
- * Everything `veltismc.jar` puts on the JVM's system classpath, and why.
+ * Everything the launcher jar puts on the JVM's system classpath, and why.
  *
  * Seven entries, and the count is the point. Each one is reachable from the
  * server's own start-up path — Log4j because `VeltisConsole` configures it
@@ -124,7 +124,7 @@ val bootstrapTableFile = rootProject.layout.buildDirectory
 
 val writeBootstrapLibraries by tasks.registering {
     group = "build"
-    description = "Writes veltismc.jar's library table: path, URL and SHA-1 for every bootstrap library"
+    description = "Writes the launcher jar's library table: path, URL and SHA-1 for every bootstrap library"
 
     val target = bootstrapTableFile
     val serverRuntime = project(":server").configurations.named("runtimeClasspath")
@@ -531,7 +531,7 @@ tasks.register("uberJar", Jar::class) {
  */
 val verifyDistributableContent by tasks.registering {
     group = "verification"
-    description = "Reports what veltismc.jar contains and fails on anything that must not ship"
+    description = "Reports what the launcher jar contains and fails on anything that must not ship"
     dependsOn(tasks.named("uberJar"))
     val distributable = tasks.named("uberJar", Jar::class).flatMap { it.archiveFile }
     inputs.file(distributable).withPropertyName("distributable")

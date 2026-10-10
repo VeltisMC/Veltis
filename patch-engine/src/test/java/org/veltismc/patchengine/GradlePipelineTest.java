@@ -37,6 +37,13 @@ class GradlePipelineTest {
 
     private static final Path REPO = repositoryRoot();
 
+    /**
+     * The one local distributable: a constant name that does not change with the
+     * channel or the commit. The versioned GitHub release name is applied at
+     * publication time, never by the build.
+     */
+    private static final String DISTRIBUTION_ARTIFACT = "veltis.jar";
+
     private static Path repositoryRoot() {
         // Tests run with the module directory as the working directory.
         var candidate = Path.of("").toAbsolutePath().normalize();
@@ -58,23 +65,38 @@ class GradlePipelineTest {
     }
 
     /**
-     * The entry names inside the packaged distributable, or a failure explaining
-     * that it was not built.
+     * The final distributable, the one file the build puts in
+     * {@code build/distributions}: {@code veltis.jar}.
      *
      * <p>Reading the real jar is the only way to check packaging. The scripts say
      * what was asked for; the jar says what happened, and the two have differed
      * more than once — a {@code from(task)} that contributed nothing, and a
      * {@code from(directory)} that put the patch files one directory above where
      * the index said they were. Both builds were green.
+     *
+     * <p>The name is fixed rather than read back: the local distribution is the
+     * constant {@code veltis.jar}, so a consumer never has to learn the channel
+     * or the commit to find it.
      */
-    private static List<String> distributableEntries() {
-        var jar = REPO.resolve("build/distributions/veltismc.jar");
-        if (!Files.isRegularFile(jar)) {
+    private static Path distributableJar() {
+        var dir = REPO.resolve("build/distributions");
+        if (!Files.isDirectory(dir)) {
             throw new IllegalStateException(
                 "the distributable has not been built; run ./gradlew packageVeltisMC"
                     + " (GradlePipelineTest is wired to depend on it, so this only happens"
                     + " if the jar was deleted mid-build)");
         }
+        var jar = dir.resolve(DISTRIBUTION_ARTIFACT);
+        if (!Files.isRegularFile(jar)) {
+            throw new IllegalStateException(
+                "expected the single distributable " + DISTRIBUTION_ARTIFACT + " in " + dir
+                    + " but it is missing");
+        }
+        return jar;
+    }
+
+    private static List<String> distributableEntries() {
+        var jar = distributableJar();
         try (var zip = new java.util.zip.ZipFile(jar.toFile())) {
             return zip.stream().map(java.util.zip.ZipEntry::getName).sorted().toList();
         } catch (IOException e) {
@@ -83,7 +105,7 @@ class GradlePipelineTest {
     }
 
     private static String distributableText(String entry) {
-        var jar = REPO.resolve("build/distributions/veltismc.jar");
+        var jar = distributableJar();
         try (var zip = new java.util.zip.ZipFile(jar.toFile())) {
             var found = zip.getEntry(entry);
             if (found == null) {
@@ -384,8 +406,76 @@ class GradlePipelineTest {
                 + " compiled to the target release and cannot load on an older JVM");
     }
 
+    /**
+     * The build's one distributable and the metadata that describes it are the
+     * same artifact.
+     *
+     * <p>A release is two names for one build: the constant local
+     * {@code build/distributions/veltis.jar} and the versioned GitHub Actions
+     * upload name {@code Veltis <MinecraftVersion> <Channel> <7-char-SHA>.jar}.
+     * Both come from the same root declarations — {@code channel},
+     * {@code minecraftVersion} and the resolved commit — and must describe the
+     * same bytes. The metadata carries both, explicitly, because a consumer that
+     * assumed the local jar already had the channel and commit in its name would
+     * build a link to a file that was never produced.
+     */
+    @Test
+    void theDistributableAndItsMetadataDescribeOneBuild() {
+        var metadata = REPO.resolve("build/metadata/build-metadata.json");
+        assertTrue(Files.isRegularFile(metadata),
+            "the build must write build/metadata/build-metadata.json: it is what the"
+                + " website publishes, and a jar with no metadata is a download with no"
+                + " description");
+
+        com.google.gson.JsonObject json;
+        try {
+            json = com.google.gson.JsonParser.parseString(
+                Files.readString(metadata, StandardCharsets.UTF_8)).getAsJsonObject();
+        } catch (IOException e) {
+            throw new IllegalStateException("cannot read " + metadata, e);
+        }
+
+        var channel = json.get("channel").getAsString();
+        var minecraft = json.get("minecraftVersion").getAsString();
+        var fullSha = json.get("commit").getAsString();
+        var shortSha = json.get("shortCommit").getAsString();
+        var artifact = json.get("artifact").getAsString();
+        var distribution = json.get("distributionArtifact").getAsString();
+
+        assertTrue(fullSha.matches("[0-9a-f]{40}"),
+            "the metadata must carry the full 40-character SHA, not a branch or an"
+                + " abbreviation: " + fullSha);
+        assertEquals(fullSha.substring(0, 7), shortSha,
+            "the seven-character id must be the first seven of the full SHA");
+        assertTrue(java.util.Set.of("stable", "beta", "nightly").contains(channel),
+            "the channel must be one of the supported names, never inferred: " + channel);
+        assertEquals("Veltis " + minecraft + " " + channel + " " + shortSha + ".jar", artifact,
+            "the release name is exactly Veltis <MinecraftVersion> <Channel> <7-char-SHA>.jar,"
+                + " and the spaces are part of it");
+        assertEquals(DISTRIBUTION_ARTIFACT, distribution,
+            "the local distribution is the constant veltis.jar, whatever the channel");
+
+        var dir = REPO.resolve("build/distributions");
+        assertTrue(Files.isRegularFile(dir.resolve(distribution)),
+            "the metadata names the local distribution " + distribution + " but no such file"
+                + " exists in " + dir);
+        assertEquals(distributableJar().getFileName().toString(), distribution,
+            "the only jar the build produced locally must be the one the metadata names");
+
+        // The versioned GitHub release name is applied at publication time, so a
+        // local build must not also write it: two files naming one build is the
+        // second-downloadable-artifact failure this whole change removes.
+        assertFalse(Files.exists(dir.resolve(artifact)),
+            "the release name " + artifact + " must only exist as the GitHub upload;"
+                + " the build produces " + distribution + " and CI renames it");
+        assertFalse(Files.exists(dir.resolve("veltismc.jar")),
+            "the old launcher name must not linger as a second distributable");
+        assertFalse(Files.exists(dir.resolve("veltis-server.jar")),
+            "the old server name must not linger as a second distributable");
+    }
+
     private static byte[] distributableEntry(String entry) {
-        var jar = REPO.resolve("build/distributions/veltismc.jar");
+        var jar = distributableJar();
         try (var zip = new java.util.zip.ZipFile(jar.toFile())) {
             var found = zip.getEntry(entry);
             if (found == null) {
