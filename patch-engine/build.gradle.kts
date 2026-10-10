@@ -50,7 +50,10 @@ dependencies {
 // directory above where the index said they were). The dependency makes the
 // artifact exist before the assertions that read it.
 tasks.test {
-    dependsOn(rootProject.tasks.named("packageVeltisMC"))
+    dependsOn(
+        rootProject.tasks.named("packageVeltisMC"),
+        rootProject.tasks.named("generateBuildMetadata"),
+    )
 }
 
 // Repeatable patch-pipeline benchmark (discovery / parsing / application / I/O).

@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.jvm.toolchain.JavaLanguageVersion
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -46,6 +47,135 @@ version = "1.0.0-SNAPSHOT"
 // ---------------------------------------------------------------------------
 val minecraftVersion = providers.gradleProperty("minecraftVersion")
     .orElse("26.3").get()
+
+// ---------------------------------------------------------------------------
+// Release channel
+//
+// The authoritative value lives in gradle.properties (channel=stable). Use
+// -Pchannel=nightly on the command line to override it for one run. Validated
+// against the known channel names so a typo fails the configuration phase
+// rather than silently publishing under an invented name.
+// ---------------------------------------------------------------------------
+val channel = providers.gradleProperty("channel")
+    .orElse("stable")
+    .get()
+    .also { ch ->
+        val validChannels = setOf("stable", "beta", "nightly")
+        require(ch in validChannels) {
+            "Invalid release channel '$ch'. Supported values: ${validChannels.joinToString()}"
+        }
+    }
+
+// ---------------------------------------------------------------------------
+// Git commit identifier
+//
+// Resolution order:
+//   1. GITHUB_SHA environment variable — set by GitHub Actions for every
+//      workflow run and identifies the exact checked-out revision.
+//   2. `git rev-parse HEAD` — reliable for local builds and for CI systems
+//      that do not set GITHUB_SHA.
+//
+// Both paths validate the result as a full 40-character lowercase hex string
+// before deriving the 7-character short form. If neither path produces a valid
+// SHA the task configuration fails with a clear message rather than silently
+// fabricating a commit identifier.
+// ---------------------------------------------------------------------------
+val gitSha: String by lazy {
+    val envSha = System.getenv("GITHUB_SHA")?.trim()
+    val candidate = if (!envSha.isNullOrEmpty()) {
+        envSha
+    } else {
+        try {
+            val proc = ProcessBuilder("git", "rev-parse", "HEAD")
+                .directory(rootDir)
+                .redirectErrorStream(true)
+                .start()
+            val output = proc.inputStream.bufferedReader().readText().trim()
+            proc.waitFor()
+            output
+        } catch (e: Exception) {
+            throw GradleException(
+                "Cannot resolve the Git commit SHA.\n" +
+                "  Tried: git rev-parse HEAD (failed: ${e.message})\n" +
+                "  Fix: run this build inside a Git repository, or set GITHUB_SHA.",
+                e
+            )
+        }
+    }
+    val fullShaPattern = Regex("^[0-9a-fA-F]{40}$")
+    if (!fullShaPattern.matches(candidate)) {
+        throw GradleException(
+            "Resolved commit identifier '$candidate' is not a valid full Git SHA.\n" +
+            "  A full SHA must be exactly 40 hexadecimal characters.\n" +
+            "  If GITHUB_SHA is set, verify it contains the full commit hash,\n" +
+            "  not a branch name or abbreviated ref."
+        )
+    }
+    candidate.lowercase()
+}
+val shortSha: String by lazy { gitSha.take(7) }
+
+// ---------------------------------------------------------------------------
+// Final artifact names
+//
+// Two names, deliberately different, for two different consumers:
+//
+//   * the local distribution is always `build/distributions/veltis.jar`. It is
+//     a constant: a script that starts a server, the website README and an
+//     operator's notes must not have to know the channel or the commit, and the
+//     same path has to serve a stable, a beta and a nightly build.
+//
+//   * the GitHub Actions upload is `Veltis <MinecraftVersion> <Channel>
+//     <7-char-SHA>.jar`. Spaces are intentional and required; do not
+//     substitute underscores/hyphens. This is the name a person sees on the
+//     release page and in the website's download button.
+//
+// Both name the same bytes: CI renames `veltis.jar` to the release name when it
+// publishes, so neither the build nor the website has to guess the other's
+// convention. The release name is a provider (and so is the commit) so a task
+// that does not need the SHA never resolves Git: `./gradlew help` still works on
+// a source tree with no history.
+// ---------------------------------------------------------------------------
+val distributionArtifactName = "veltis.jar"
+
+fun releaseArtifactName(): String = "Veltis $minecraftVersion $channel $shortSha.jar"
+
+/** The local distributable: one constant path, whatever the channel or commit. */
+val distributionArtifactFile: Provider<RegularFile> =
+    layout.buildDirectory.file("distributions/$distributionArtifactName")
+
+/**
+ * The name CI uploads under, as a provider. Resolving it resolves the commit,
+ * which is why nothing at configuration time calls it.
+ */
+val releaseArtifactFileName: Provider<String> = providers.provider { releaseArtifactName() }
+
+/** The build's machine-readable description; the website's input. */
+val buildMetadataFile = layout.buildDirectory.file("metadata/build-metadata.json")
+
+/**
+ * Serializes a value as a JSON string literal.
+ *
+ * <p>The metadata file is parsed by release tooling, so it is assembled with
+ * this rather than `"...\"$value\"..."`: a quote or backslash in a value would
+ * otherwise produce a file no parser accepts.
+ */
+fun jsonString(value: String): String = buildString {
+    append('"')
+    for (c in value) {
+        when (c) {
+            '"' -> append("\\\"")
+            '\\' -> append("\\\\")
+            '\n' -> append("\\n")
+            '\r' -> append("\\r")
+            '\t' -> append("\\t")
+            '\b' -> append("\\b")
+            '\u000C' -> append("\\f")
+            else -> if (c < ' ') append("\\u%04x".format(c.code)) else append(c)
+        }
+    }
+    append('"')
+}
 
 /**
  * How many targets the patcher applies in parallel. One target is one task, so
@@ -1032,30 +1162,161 @@ val prepareMinecraft by tasks.registering {
 /**
  * The distributable: the launcher, with no Minecraft code inside it.
  *
- * <p>One jar, and it is not a build prerequisite for running it. `java -jar
- * veltismc.jar` builds the runtime on first launch and reuses it afterwards, so
- * the same artifact serves a developer, a CI job that wants the work done up
- * front, and an operator who has never seen a Gradle build. `buildVeltisMC` still
- * exists to do that work ahead of time — it is a prebuilder and a release step,
- * not a gate on starting a server.
+ * <p>Exactly one file, always `build/distributions/veltis.jar`. The name is a
+ * constant on purpose: a stable, a beta and a nightly build all land on the same
+ * path, an operator's start script never has to know the channel, and no
+ * consumer of the distribution can mistake a versioned filename for a second
+ * artifact. The channel- and commit-qualified name exists only for the GitHub
+ * Actions upload, and CI produces it by renaming this file at publication time
+ * (see the release workflow).
+ *
+ * <p>It is not a build prerequisite for running it: `java -jar veltis.jar`
+ * builds the runtime on first launch and reuses it afterwards, so the same
+ * artifact serves a developer, a CI job that wants the work done up front, and
+ * an operator who has never seen a Gradle build. `buildVeltisMC` still exists to
+ * do that work ahead of time; it is a prebuilder and a release step, not a gate
+ * on starting a server.
  */
-val packageVeltisMC by tasks.registering(Copy::class) {
+val packageVeltisMC by tasks.registering {
     group = "minecraft"
-    description = "Packages the EULA-compliant launcher jar (no Minecraft code)"
-    from(project(":launcher").tasks.named("uberJar"))
-    into(layout.buildDirectory.dir("distributions"))
-    rename { "veltismc.jar" }
-    dependsOn(":launcher:uberJar")
+    description = "Packages the single distributable, build/distributions/veltis.jar"
+
+    // Resolved lazily, as the block is: the launcher project is configured
+    // after this one, so the reference cannot be made at script level.
+    val launcherUberJar = project(":launcher").tasks.named("uberJar")
+    dependsOn(launcherUberJar)
+    // The launcher's own jar is the input. It is an intermediate with the name
+    // the rest of the build already knows, and it is not the distributable.
+    inputs.files(launcherUberJar)
+        .withPropertyName("launcherUberJar")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.property("distributionArtifact", distributionArtifactName)
+    outputs.file(distributionArtifactFile).withPropertyName("distribution")
+
+    doFirst {
+        // Exactly one runnable jar in build/distributions. Every other *.jar at
+        // the top level is either the retired historical name (veltismc.jar,
+        // veltis-server.jar) or a copy named for a different commit by the old
+        // naming scheme, and either way it is a second downloadable artifact the
+        // build must not leave behind. Directories a launch created (libraries/,
+        // logs/) and the metadata directory are not runnable artifacts, so they
+        // are left alone.
+        val target = distributionArtifactName
+        layout.buildDirectory.dir("distributions").get().asFile.listFiles()?.forEach { file ->
+            if (file.isFile && file.extension == "jar" && file.name != target) {
+                if (file.delete()) {
+                    logger.info("Removed stale distributable {}", file.name)
+                }
+            }
+        }
+    }
+    doLast {
+        val target = distributionArtifactFile.get().asFile
+        target.parentFile.mkdirs()
+        val source = launcherUberJar.get().outputs.files.singleFile
+        Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        logger.lifecycle("Packaged single distributable: {}", target)
+    }
+}
+
+/**
+ * The build's machine-readable description, written for the website and for
+ * anyone who needs to know what a build produced without unpacking it.
+ *
+ * <p>Every value comes from the same root declarations the filename comes from,
+ * so `-Pchannel=nightly` changes both and they cannot disagree about the commit,
+ * the Minecraft version or the artifact. It is pure JSON rather than a
+ * properties file because that is what the site reads.
+ */
+val generateBuildMetadata by tasks.registering {
+    group = "minecraft"
+    description = "Writes build/metadata/build-metadata.json for the final distributable"
+
+    val commit = providers.provider { gitSha }
+    val shortCommit = providers.provider { shortSha }
+
+    inputs.property("veltisVersion", version.toString())
+    inputs.property("minecraftVersion", minecraftVersion)
+    inputs.property("channel", channel)
+    inputs.property("gitCommit", commit)
+    inputs.property("gitShortCommit", shortCommit)
+    inputs.property("artifact", releaseArtifactFileName)
+    inputs.property("distributionArtifact", distributionArtifactName)
+    inputs.property("javaRelease", veltisJavaRelease)
+    outputs.file(buildMetadataFile).withPropertyName("buildMetadata")
+
+    doLast {
+        // `artifact` is the GitHub Actions upload name (the release page name);
+        // `distributionArtifact` is the file the build actually wrote and that
+        // the workflow renames. Keeping both, explicitly, is what stops a
+        // consumer from assuming the local jar already carries the channel and
+        // commit in its filename.
+        val metadata = buildString {
+            append("{\n")
+            append("  \"channel\": ").append(jsonString(channel)).append(",\n")
+            append("  \"version\": ").append(jsonString(version.toString())).append(",\n")
+            append("  \"minecraftVersion\": ").append(jsonString(minecraftVersion)).append(",\n")
+            append("  \"commit\": ").append(jsonString(commit.get())).append(",\n")
+            append("  \"shortCommit\": ").append(jsonString(shortCommit.get())).append(",\n")
+            append("  \"artifact\": ").append(jsonString(releaseArtifactFileName.get())).append(",\n")
+            append("  \"distributionArtifact\": ").append(jsonString(distributionArtifactName)).append(",\n")
+            append("  \"minimumJavaVersion\": ").append(veltisJavaRelease).append("\n")
+            append("}\n")
+        }
+        val file = buildMetadataFile.get().asFile
+        file.parentFile.mkdirs()
+        file.writeText(metadata)
+        logger.lifecycle("Wrote build metadata: {}", file)
+    }
+}
+
+/**
+ * Fails unless build/distributions contains exactly the final distributable.
+ *
+ * <p>The only honest way to check "the build produces one artifact" is to count
+ * the artifacts after the build. The single constant name is what this enforces:
+ * `veltis.jar`, and nothing else.
+ */
+val verifySingleDistributable by tasks.registering {
+    group = "minecraft"
+    description = "Fails unless build/distributions contains exactly build/distributions/veltis.jar"
+    dependsOn(packageVeltisMC)
+
+    val expected = distributionArtifactName
+    inputs.property("expectedArtifact", expected)
+    outputs.upToDateWhen { false }
+
+    doLast {
+        val dir = project.layout.buildDirectory.dir("distributions").get().asFile
+        val present = dir.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".jar") }
+            ?.map { it.name }
+            ?.sorted()
+            .orEmpty()
+        if (present != listOf(expected)) {
+            throw GradleException(
+                "build/distributions must hold exactly '$expected' but holds $present.\n" +
+                    "  A versioned or stale jar is the cause: the local distribution is" +
+                    " always veltis.jar, and the GitHub release name is applied at" +
+                    " publication time, never here.\n" +
+                    "  Run ./gradlew clean, or delete the stale jar and rebuild."
+            )
+        }
+        logger.lifecycle("Verified single distributable: {}", expected)
+    }
 }
 
 val buildVeltisMC = tasks.register("buildVeltisMC") {
     group = "minecraft"
-    description = "Builds the runtime and the launcher jar (optional; the jar self-bootstraps)"
+    description = "Builds the runtime and the single distributable (optional; the jar self-bootstraps)"
     dependsOn(prepareVeltisRuntime, verifyVeltisRuntime, packageVeltisMC,
+        generateBuildMetadata, verifySingleDistributable,
         ":launcher:verifyDistributableContent")
     doLast {
         logger.lifecycle("VeltisMC build completed:")
-        logger.lifecycle("  launcher: {}", layout.buildDirectory.file("distributions/veltismc.jar").get().asFile)
+        logger.lifecycle("  distributable: {}", distributionArtifactFile.get().asFile)
+        logger.lifecycle("  release name:  {}", releaseArtifactFileName.get())
+        logger.lifecycle("  metadata:      {}", buildMetadataFile.get().asFile)
         logger.lifecycle("  runtime:  {} ({} patched classes)", classesDir.asFile, patchTargetCount("code"))
     }
 }
@@ -1074,5 +1335,6 @@ val buildVeltisMC = tasks.register("buildVeltisMC") {
  * point rather than a side effect.
  */
 tasks.named("build") {
-    dependsOn(verifyVeltisRuntime, packageVeltisMC, ":launcher:verifyDistributableContent")
+    dependsOn(verifyVeltisRuntime, packageVeltisMC, generateBuildMetadata,
+        verifySingleDistributable, ":launcher:verifyDistributableContent")
 }
