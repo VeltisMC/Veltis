@@ -1,5 +1,18 @@
 name: VeltisMC CI
 
+# The build is the release. `buildVeltisMC` writes one file,
+# `build/distributions/veltis.jar`, plus the JSON that describes it. This
+# workflow:
+#
+#   1. builds and tests the exact checked-out commit;
+#   2. validates the metadata against the file the build actually wrote;
+#   3. uploads the distribution under its GitHub release name,
+#      `Veltis <MinecraftVersion> <Channel> <7-char-SHA>.jar`;
+#   4. publishes a durable GitHub Release asset for it; and
+#   5. notifies the website so its download page shows the same build.
+#
+# The channel is never inferred from the commit or the branch. It comes from the
+# repository default (gradle.properties) or from the dispatch input below.
 on:
   pull_request:
     branches:
@@ -7,17 +20,35 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel (stable, beta, nightly); empty uses the repository default"
+        required: false
+        default: ""
+        type: string
+
+# One release pipeline per ref at a time. A second push waits rather than racing
+# the first to create or overwrite the release metadata.
+concurrency:
+  group: veltis-release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build VeltisMC
+    name: Build & verify
     runs-on: ubuntu-latest
-
+    outputs:
+      channel: ${{ steps.metadata.outputs.channel }}
+      minecraftVersion: ${{ steps.metadata.outputs.minecraftVersion }}
+      commit: ${{ steps.metadata.outputs.commit }}
+      shortCommit: ${{ steps.metadata.outputs.shortCommit }}
+      artifact: ${{ steps.metadata.outputs.artifact }}
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Temurin JDK 26 (build toolchain)
@@ -27,18 +58,209 @@ jobs:
           java-version: '26'
           cache: gradle
 
-      - name: Build and Test (JDK 26)
+      - name: Build and test
         run: ./gradlew build --stacktrace --no-daemon
 
-      - name: Build VeltisMC (JDK 26)
-        run: ./gradlew buildVeltisMC --stacktrace --no-daemon
+      - name: Build VeltisMC
+        env:
+          # Empty for a push or a pull request, so the repository's own default
+          # applies; set by hand for a workflow_dispatch release.
+          CHANNEL: ${{ github.event.inputs.channel }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CHANNEL" ]; then
+            ./gradlew buildVeltisMC --stacktrace --no-daemon -Pchannel="$CHANNEL"
+          else
+            ./gradlew buildVeltisMC --stacktrace --no-daemon
+          fi
 
-      - name: Package distributable
-        run: cp build/distributions/veltismc.jar veltismc.jar
+      - name: Validate build metadata against the distribution
+        id: metadata
+        run: |
+          set -euo pipefail
+          META=build/metadata/build-metadata.json
+          JAR=build/distributions/veltis.jar
 
-      - name: Upload distributable
-        if: success()
+          test -f "$META" || { echo "::error::missing $META"; exit 1; }
+          jq empty "$META" || { echo "::error::$META is not valid JSON"; exit 1; }
+
+          # Every invariant the release name and the website depend on, checked
+          # here so a malformed metadata file can never reach the release step.
+          jq -e '
+            (.channel | IN("stable", "beta", "nightly"))
+            and (.commit | test("^[0-9a-f]{40}$"))
+            and (.shortCommit | test("^[0-9a-f]{7}$"))
+            and (.shortCommit == (.commit[0:7]))
+            and (.minecraftVersion | length > 0)
+            and (.version | length > 0)
+            and (.distributionArtifact == "veltis.jar")
+            and (.artifact == ("Veltis " + .minecraftVersion + " " + .channel + " " + .shortCommit + ".jar"))
+          ' "$META" > /dev/null || {
+            echo "::error::$META does not describe a valid Veltis release"
+            cat "$META"
+            exit 1
+          }
+
+          test -f "$JAR" || { echo "::error::the build did not produce $JAR"; exit 1; }
+
+          ARTIFACT=$(jq -r .artifact "$META")
+          {
+            echo "channel=$(jq -r .channel "$META")"
+            echo "minecraftVersion=$(jq -r .minecraftVersion "$META")"
+            echo "commit=$(jq -r .commit "$META")"
+            echo "shortCommit=$(jq -r .shortCommit "$META")"
+            echo "artifact=$ARTIFACT"
+          } >> "$GITHUB_OUTPUT"
+
+          # Stage the file under the release name so the downloaded artifact and
+          # the GitHub Release asset both carry `Veltis <...>.jar`, while the
+          # build itself keeps the constant `veltis.jar`.
+          mkdir -p build/release
+          cp "$JAR" "build/release/$ARTIFACT"
+          ls -l build/release
+          echo "Publishing $ARTIFACT ($(jq -r .channel "$META"), $(jq -r .commit "$META"))"
+
+      - name: Upload distribution
         uses: actions/upload-artifact@v4
         with:
-          name: veltismc-jdk26
-          path: veltismc.jar
+          # The artifact is named the same as the file it carries, so the
+          # GitHub Actions download and the GitHub Release asset are the same
+          # name: `Veltis <MinecraftVersion> <Channel> <7-char-SHA>.jar`.
+          name: ${{ steps.metadata.outputs.artifact }}
+          path: build/release/${{ steps.metadata.outputs.artifact }}
+          if-no-files-found: error
+
+      - name: Upload build metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: veltis-metadata-${{ steps.metadata.outputs.channel }}-${{ steps.metadata.outputs.shortCommit }}
+          path: build/metadata/build-metadata.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish durable release & notify website
+    needs: build
+    # A pull request builds and verifies but never publishes: a failed build must
+    # never leave behind metadata claiming the commit was released.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      # Least privilege: the only write this job needs is creating the release
+      # and its asset. The website notification uses the secret below.
+      contents: write
+    steps:
+      - name: Download the distribution under its release name
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: release
+
+      - name: Download the build metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: veltis-metadata-${{ needs.build.outputs.channel }}-${{ needs.build.outputs.shortCommit }}
+          path: metadata
+
+      - name: Publish GitHub Release asset
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The publish job does not check out the repository, so `gh` is told
+          # explicitly which repository to act on rather than inferring it from
+          # a git remote that is not there.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          META=metadata/build-metadata.json
+          ARTIFACT=$(jq -r .artifact "$META")
+          CHANNEL=$(jq -r .channel "$META")
+          MC=$(jq -r .minecraftVersion "$META")
+          SHORT=$(jq -r .shortCommit "$META")
+          TAG="veltis-$CHANNEL-$MC-$SHORT"
+          FILE="release/$ARTIFACT"
+
+          test -f "$FILE" || { echo "::error::expected $FILE, found:"; ls -R release; exit 1; }
+
+          # One release per build, so the channel keeps a real history and the
+          # asset URL is durable (Actions artifacts expire; releases do not).
+          # Non-stable channels are marked prerelease so the website can tell
+          # them apart even if it only reads the releases API.
+          PRERELEASE_FLAG=""
+          if [ "$CHANNEL" != "stable" ]; then PRERELEASE_FLAG="--prerelease"; fi
+
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "$ARTIFACT" \
+              $PRERELEASE_FLAG
+          else
+            gh release create "$TAG" \
+              --title "$ARTIFACT" \
+              --notes "Automated VeltisMC ${CHANNEL} build for Minecraft ${MC} at ${SHORT}." \
+              $PRERELEASE_FLAG
+          fi
+          gh release upload "$TAG" "$FILE" --clobber
+
+          ASSET_URL=$(gh release view "$TAG" --json assets \
+            --jq ".assets[] | select(.name == \"$ARTIFACT\") | .browser_download_url")
+          test -n "$ASSET_URL" || { echo "::error::release $TAG has no asset named $ARTIFACT"; exit 1; }
+
+          {
+            echo "tag=$TAG"
+            echo "assetUrl=$ASSET_URL"
+            echo "releaseUrl=https://github.com/${GITHUB_REPOSITORY}/releases/tag/$TAG"
+          } >> "$GITHUB_OUTPUT"
+          echo "Published $ASSET_URL"
+
+      - name: Check website dispatch configuration
+        id: dispatch-config
+        env:
+          TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+          REPOSITORY: ${{ vars.WEBSITE_REPOSITORY }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::WEBSITE_DISPATCH_TOKEN is not configured; skipping website dispatch."
+          elif [ -z "$REPOSITORY" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::WEBSITE_REPOSITORY is not configured; skipping website dispatch."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify the website
+        if: steps.dispatch-config.outputs.enabled == 'true'
+        env:
+          TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+          REPOSITORY: ${{ vars.WEBSITE_REPOSITORY }}
+          ASSET_URL: ${{ steps.release.outputs.assetUrl }}
+          RELEASE_URL: ${{ steps.release.outputs.releaseUrl }}
+        run: |
+          set -euo pipefail
+          SIZE=$(stat -c%s "release/$(jq -r .artifact metadata/build-metadata.json)")
+          PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # The payload is the build metadata plus the durable location. The
+          # website validates all of it before touching its own files.
+          payload=$(jq -c \
+            --arg url "$ASSET_URL" \
+            --arg releaseUrl "$RELEASE_URL" \
+            --arg publishedAt "$PUBLISHED_AT" \
+            --argjson size "$SIZE" \
+            '{event_type: "veltis-release",
+              client_payload: (. + {downloadUrl: $url, releaseUrl: $releaseUrl,
+                                    publishedAt: $publishedAt, size: $size})}' \
+            metadata/build-metadata.json)
+
+          status=$(curl -sS -o /tmp/dispatch.out -w '%{http_code}' \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$REPOSITORY/dispatches" \
+            -d "$payload")
+          if [ "$status" != "204" ]; then
+            echo "::error::repository dispatch to $REPOSITORY failed with HTTP $status"
+            cat /tmp/dispatch.out
+            exit 1
+          fi
+          echo "Notified $REPOSITORY about $ASSET_URL"

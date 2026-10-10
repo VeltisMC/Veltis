@@ -78,29 +78,115 @@ Build the project:
 ./gradlew build
 ```
 
-Build the Veltis server distribution:
+Build the release:
 
 ```bash
 ./gradlew buildVeltisMC
 ```
 
-The resulting distribution can be found under:
+The root `build.gradle.kts` is the one place that defines a release, and every
+output derives from it:
+
+| Value | Source | Default |
+|---|---|---|
+| Minecraft version | `-PminecraftVersion` / `gradle.properties` | `26.3` |
+| Release channel | `-Pchannel` / `gradle.properties` | `stable` |
+| Commit | `GITHUB_SHA`, then `git rev-parse HEAD` | the checked-out revision |
+
+`buildVeltisMC` writes exactly one runnable artifact, always at the same path:
 
 ```text
-build/distributions/
+build/distributions/veltis.jar
 ```
+
+The local name is deliberately constant: a start script never has to know the
+channel or the commit, and stable, beta and nightly builds all land on the same
+file. The channel- and commit-qualified name is applied only when the artifact is
+published, so it never becomes a second jar in `build/distributions/`:
+
+```text
+Veltis <MinecraftVersion> <Channel> <7-char-commit>.jar
+```
+
+For example, on the CI release page:
+
+```text
+Veltis 26.3 stable 0123456.jar
+```
+
+Those spaces are part of the release name. The channel is explicit and is never
+inferred from the commit or the branch; build a different channel with
+`-Pchannel`:
+
+```bash
+./gradlew buildVeltisMC -Pchannel=nightly
+```
+
+The same build writes `build/metadata/build-metadata.json`, the
+machine-readable description a download page needs. `artifact` is the published
+(GitHub) filename, character for character; `distributionArtifact` is the file
+the build actually wrote:
+
+```json
+{
+  "channel": "stable",
+  "version": "1.0.0-SNAPSHOT",
+  "minecraftVersion": "26.3",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "shortCommit": "0123456",
+  "artifact": "Veltis 26.3 stable 0123456.jar",
+  "distributionArtifact": "veltis.jar",
+  "minimumJavaVersion": 25
+}
+```
+
+The launcher's own jar (`launcher/build/libs/veltismc-1.0.jar`) is the
+intermediate the packaging step reads; it is not a distributable anyone takes
+away. The commit is resolved from `GITHUB_SHA` first so a CI build and the file
+it produces name the same revision, and a build whose commit cannot be resolved
+fails instead of inventing one.
 
 ## Running
 
-Once you have the Veltis distribution:
+Once you have the distribution:
 
 ```bash
-java -jar server.jar --nogui
+java -jar veltis.jar --nogui
 ```
 
 Veltis obtains the required Minecraft server files from Mojang, verifies them, prepares the Veltis runtime, and starts the server.
 
 Minecraft itself is not redistributed with Veltis.
+
+## Releases
+
+`.github/workflows/gradle.yml` builds and tests every pull request and every
+push to `main`, then publishes the build as a durable GitHub Release asset — a
+workflow artifact expires, a release does not. A `workflow_dispatch` run accepts
+a channel, which is passed to Gradle as `-Pchannel`, so the release name, the
+metadata and the published asset are one value.
+
+Every build gets its own release, tagged `veltis-<channel>-<minecraft>-<sha>`, so
+each channel keeps a real history and the download URL is permanent. Non-stable
+channels are marked as prereleases, so the website can tell them apart even when
+it reads the releases API.
+
+After the release asset exists, the workflow dispatches the metadata plus the
+durable download URL to the website repository with a `veltis-release` repository
+event. Two repository settings turn that on; without them the workflow prints a
+warning and skips, rather than reporting a publication that did not happen:
+
+- **Secret** `WEBSITE_DISPATCH_TOKEN` — a fine-grained PAT with `contents:
+  write` on the website repository only.
+- **Variable** `WEBSITE_REPOSITORY` — the website repository, for example
+  `VeltisMC/website`.
+
+The website repository is a separate checkout, so its half of the integration —
+a workflow that reacts to `veltis-release`, validates the payload, updates the
+channel-specific metadata and deploys through Vercel — lives there, not here. Its
+`veltis-release` receiver and download-page changes are described in that
+repository. This repository's side is complete: the artifact, its metadata, the
+durable release asset, and the exact dispatch the other side receives.
 
 ## Contributing
 
