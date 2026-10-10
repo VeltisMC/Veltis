@@ -6,13 +6,19 @@ name: VeltisMC CI
 #
 #   1. builds and tests the exact checked-out commit;
 #   2. validates the metadata against the file the build actually wrote;
-#   3. uploads the distribution under its GitHub release name,
-#      `Veltis <MinecraftVersion> <Channel> <7-char-SHA>.jar`;
-#   4. publishes a durable GitHub Release asset for it; and
+#   3. stages the distribution under the name a GitHub release stores it as;
+#   4. publishes that as the build's durable GitHub Release asset; and
 #   5. notifies the website so its download page shows the same build.
 #
+# A release asset cannot keep its spaces: GitHub normalizes the file name it is
+# given (`Veltis 26.3 nightly aaa8824.jar` becomes
+# `Veltis.26.3.nightly.aaa8824.jar`). The metadata carries both the human name
+# and the stored one, and the upload is verified against the release's own
+# asset list rather than against a name a release can never hold.
+#
 # The channel is never inferred from the commit or the branch. It comes from the
-# repository default (gradle.properties) or from the dispatch input below.
+# repository default (gradle.properties, currently nightly) or from the
+# dispatch input below.
 on:
   pull_request:
     branches:
@@ -47,6 +53,7 @@ jobs:
       commit: ${{ steps.metadata.outputs.commit }}
       shortCommit: ${{ steps.metadata.outputs.shortCommit }}
       artifact: ${{ steps.metadata.outputs.artifact }}
+      assetName: ${{ steps.metadata.outputs.assetName }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -95,39 +102,47 @@ jobs:
             and (.version | length > 0)
             and (.distributionArtifact == "veltis.jar")
             and (.artifact == ("Veltis " + .minecraftVersion + " " + .channel + " " + .shortCommit + ".jar"))
+            and (.assetName | length > 0)
+            and (.assetName | test("^[A-Za-z0-9_+@.-]+$"))
+            and (.assetName == (.artifact | gsub(" "; ".")))
           ' "$META" > /dev/null || {
             echo "::error::$META does not describe a valid Veltis release"
             cat "$META"
             exit 1
           }
 
-          test -f "$JAR" || { echo "::error::the build did not produce $JAR"; exit 1; }
+          test -s "$JAR" || { echo "::error::the build did not produce a non-empty $JAR"; exit 1; }
 
           ARTIFACT=$(jq -r .artifact "$META")
+          # The name GitHub stores the asset under: dots where the human name
+          # has spaces. The upload verifies against this, never against the
+          # spaced title, because a release cannot hold the spaced form.
+          ASSET=$(jq -r .assetName "$META")
           {
             echo "channel=$(jq -r .channel "$META")"
             echo "minecraftVersion=$(jq -r .minecraftVersion "$META")"
             echo "commit=$(jq -r .commit "$META")"
             echo "shortCommit=$(jq -r .shortCommit "$META")"
             echo "artifact=$ARTIFACT"
+            echo "assetName=$ASSET"
           } >> "$GITHUB_OUTPUT"
 
-          # Stage the file under the release name so the downloaded artifact and
-          # the GitHub Release asset both carry `Veltis <...>.jar`, while the
-          # build itself keeps the constant `veltis.jar`.
+          # Stage the file under the name the release asset will carry, not the
+          # spaced title: the same string the metadata names and the upload
+          # checks for.
           mkdir -p build/release
-          cp "$JAR" "build/release/$ARTIFACT"
+          cp "$JAR" "build/release/$ASSET"
           ls -l build/release
-          echo "Publishing $ARTIFACT ($(jq -r .channel "$META"), $(jq -r .commit "$META"))"
+          echo "Publishing $ARTIFACT as $ASSET ($(jq -r .channel "$META"), $(jq -r .commit "$META"))"
 
       - name: Upload distribution
         uses: actions/upload-artifact@v4
         with:
-          # The artifact is named the same as the file it carries, so the
-          # GitHub Actions download and the GitHub Release asset are the same
-          # name: `Veltis <MinecraftVersion> <Channel> <7-char-SHA>.jar`.
+          # The artifact is named after the human release name; it carries the
+          # one file the build packaged, staged under the name GitHub stores the
+          # release asset as (${{ steps.metadata.outputs.assetName }}).
           name: ${{ steps.metadata.outputs.artifact }}
-          path: build/release/${{ steps.metadata.outputs.artifact }}
+          path: build/release/${{ steps.metadata.outputs.assetName }}
           if-no-files-found: error
 
       - name: Upload build metadata
@@ -172,14 +187,24 @@ jobs:
         run: |
           set -euo pipefail
           META=metadata/build-metadata.json
+          # `ARTIFACT` is the human release title; `ASSET` is the name the
+          # release actually stores. They differ only in the spaces GitHub
+          # turns into dots, and only `ASSET` can be verified against a release.
           ARTIFACT=$(jq -r .artifact "$META")
+          ASSET=$(jq -r .assetName "$META")
           CHANNEL=$(jq -r .channel "$META")
           MC=$(jq -r .minecraftVersion "$META")
           SHORT=$(jq -r .shortCommit "$META")
           TAG="veltis-$CHANNEL-$MC-$SHORT"
-          FILE="release/$ARTIFACT"
+          FILE="release/$ASSET"
 
-          test -f "$FILE" || { echo "::error::expected $FILE, found:"; ls -R release; exit 1; }
+          test -s "$FILE" || {
+            echo "::error::the staged release asset is missing or empty"
+            echo "  expected: $FILE"
+            echo "  found under release/:"
+            ls -R release || true
+            exit 1
+          }
 
           # One release per build, so the channel keeps a real history and the
           # asset URL is durable (Actions artifacts expire; releases do not).
@@ -198,11 +223,39 @@ jobs:
               --notes "Automated VeltisMC ${CHANNEL} build for Minecraft ${MC} at ${SHORT}." \
               $PRERELEASE_FLAG
           fi
+
+          # --clobber deletes an asset of the staged name before uploading, so a
+          # re-run replaces the asset instead of failing on a duplicate. The
+          # staged name is the one GitHub stores, so the delete matches.
           gh release upload "$TAG" "$FILE" --clobber
 
-          ASSET_URL=$(gh release view "$TAG" --json assets \
-            --jq ".assets[] | select(.name == \"$ARTIFACT\") | .browser_download_url")
-          test -n "$ASSET_URL" || { echo "::error::release $TAG has no asset named $ARTIFACT"; exit 1; }
+          # An upload is not proof of an asset. Ask the release what it holds
+          # and compare exactly, so a normalization surprise or a failed upload
+          # stops the run here instead of being reported as a publication.
+          #
+          # Read the release from the REST API, not `gh release view --json`:
+          # that export renames the asset's REST `browser_download_url` to
+          # `url`, so the real field name only exists on the API response.
+          RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")
+          ACTUAL=$(printf '%s' "$RELEASE" | jq -r '.assets[].name')
+          if ! printf '%s\n' "$ACTUAL" | grep -Fxq "$ASSET"; then
+            echo "::error::release $TAG has no asset named '$ASSET' (the GitHub-stored form of '$ARTIFACT')."
+            echo "::error::assets the release actually holds:"
+            if [ -n "$ACTUAL" ]; then printf '%s\n' "$ACTUAL" | sed 's/^/    /'; else echo "    (none)"; fi
+            echo "::error::staged release directory:"
+            ls -lR release || true
+            exit 1
+          fi
+
+          # The URL is read from the release, never constructed. The name is
+          # passed as a jq argument rather than interpolated into the program.
+          ASSET_URL=$(printf '%s' "$RELEASE" | jq -r --arg n "$ASSET" \
+            '.assets[] | select(.name == $n) | .browser_download_url' | head -n 1)
+          test -n "$ASSET_URL" || {
+            echo "::error::release $TAG lists '$ASSET' but the API returned no browser_download_url"
+            printf '%s\n' "$RELEASE"
+            exit 1
+          }
 
           {
             echo "tag=$TAG"
@@ -236,7 +289,7 @@ jobs:
           RELEASE_URL: ${{ steps.release.outputs.releaseUrl }}
         run: |
           set -euo pipefail
-          SIZE=$(stat -c%s "release/$(jq -r .artifact metadata/build-metadata.json)")
+          SIZE=$(stat -c%s "release/$(jq -r .assetName metadata/build-metadata.json)")
           PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           # The payload is the build metadata plus the durable location. The
