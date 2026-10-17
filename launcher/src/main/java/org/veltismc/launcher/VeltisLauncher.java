@@ -1,3 +1,64 @@
+/*
+ * தமிழ்த்தாய் வாழ்த்து
+ *
+ * நீராரும் கடலுடுத்த நிலமடந்தைக் கெழிலொழுகும்
+ * சீராரும் வதனமெனத் திகழ்பரதக் கண்டமிதில்
+ * தெக்கணமும் அதிற்சிறந்த திராவிடநல் திருநாடும்
+ * தக்கசிறு பிறைநுதலும் தரித்தநறும் திலகமுமே!
+ * அத்திலக வாசனைபோல் அனைத்துலகும் இன்பமுற
+ * எத்திசையும் புகழ்மணக்க இருந்தபெருந் தமிழணங்கே!
+ *
+ * பல்லுயிரும் பலவுலகும் படைத்தளித்துத் துடைக்கினுமோர்
+ * எல்லையறு பரம்பொருள்முன் இருந்தபடி இருப்பதுபோல்
+ * கன்னடமுங் களிதெலுங்கும் கவின்மலையாளமும் துளுவும்
+ * உன்னுதரத் தேயுதித்தே ஒன்றுபல வாகிடினும்
+ * ஆரியம்போல் உலகவழக்கழிந் ஓழிந்து சிதையாவுன்
+ * சீரிளமைத் திறம்வியந்து செயல்மறந்து
+ * வாழ்த்துதுமே!
+ * வாழ்த்துதுமே!
+ *
+ * Tamiḻttāy Vāḻttu
+ *
+ * nīrāruṅ kaṭaluṭutta nilamaṭantaik keḻiloḻukum
+ * cīrārum vataṉameṉat tikaḻ bharatha kaṇṭamitil
+ * tekkaṇamum atiṟciṟanta tamiḻarnal tirunāṭum
+ * takkaciṟu piṟainutalum tarittanaṟun tilakamumē
+ * attilaka vācaṉaipōl aṉaittulakum iṉpamuṟa
+ * etticaiyum pukaḻmaṇakka iruntaperun tamiḻaṇaṅkē!
+ * tamiḻaṇaṅkē!
+ * palluyirum palavulagam padaithalitu tudaikinamor
+ * ellayaru paramporulmun irunthapadi irupadhupol
+ * kannadamum kalithelungum kavinmalayalamum tuluvum
+ * unnutarat teyutite onrupala vākitinum
+ * ariyampol ulagavaḻakhaḻint toḻindhusidhaiyāun
+ * sērilamai tiram veyantu seyal marantu
+ * vāḻttutumē!
+ * vāḻttutumē!
+ *
+ * Invocation to Tamil Mother
+ *
+ * Brimming Sea drapes exuberant maiden of land!
+ * With exalted Indian subcontinent as her beautified face!
+ * South! In particular divine Tamilian country!
+ * Like an aesthetic tilaka on its beauteous curved forehead!
+ * Like the fragrance of that tilaka, for the entire world to be delirious!
+ * Let your fervour spread in all directions!
+ * Many a life! Many a world! Creations of Thine! Decimations too!
+ * Ever pervading Creator! Remain as ever! Ever as Thou hast been!
+ * Kannada, Joyous Telugu, Dainty Malayalam with Tulu!
+ * Born of thy lips, the one that became many
+ * Unlike Aryan you don't go out of use,
+ * Ever remain afresh Thee! Purity intact too!
+ * Praise thou beauteous Tamil, youthful forever! Awestruck!
+ * Praise unto thee!
+ * Praise unto thee!
+ *
+ * A tribute to Tamil language, heritage, and culture.
+ * Dedicated with respect by VeltisMC.
+ *
+ * DONT REMOVE OR EDIT THIS!!!
+ */
+
 package org.veltismc.launcher;
 
 import org.apache.logging.log4j.LogManager;
