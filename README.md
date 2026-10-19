@@ -123,7 +123,7 @@ See the repository's `LICENSE` file for the applicable license and redistributio
 VeltisMC acknowledges the developers and contributors
 whose work has helped the project.
 
-See [CREDIT.md](CREDIT.md) for acknowledgements and
+See [Credits](CREDITS.md) for acknowledgements and
 third-party project credits.
 
 ---
