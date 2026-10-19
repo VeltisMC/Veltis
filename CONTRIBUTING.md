@@ -1,8 +1,8 @@
 # Contributing to Veltis
 
-Thanks for your interest in contributing to Veltis.
+Thank you for your interest in contributing to Veltis.
 
-Contributions to bug fixes, performance, world simulation, Shulker, and documentation are welcome.
+Contributions to bug fixes, performance, world simulation, source patches, and documentation are welcome.
 
 ## Requirements
 
@@ -11,155 +11,92 @@ Contributions to bug fixes, performance, world simulation, Shulker, and document
 - Internet access for initial setup
 - A Java IDE (IntelliJ IDEA recommended)
 
-Gradle is included through the repository wrapper.
+Gradle is provided through the repository wrapper.
 
 ## Setup
+
+Clone the repository:
 
 ```bash
 git clone https://github.com/VeltisMC/Veltis.git
 cd Veltis
 ```
 
-Build the project:
-
-**Windows**
-
-```powershell
-.\gradlew.bat buildVeltisMC
-```
-
-**Linux / macOS**
+Build Veltis:
 
 ```bash
 ./gradlew buildVeltisMC
 ```
 
-## Project Structure
+## Making Changes
 
-```text
-Veltis/
-├── veltis-api/
-├── launcher/
-├── patch-engine/
-├── server/
-│   └── Shulker/
-│       ├── code/
-│       ├── data/
-│       └── modules/
-├── gradle/
-├── build.gradle.kts
-└── settings.gradle.kts
-```
+Before making changes, inspect the relevant module and follow the existing code conventions.
 
-Keep the existing module structure unless a new module has a clear technical purpose.
+For ordinary Java or Kotlin changes, edit the appropriate source files.
 
-## Working with Shulker
+For changes to Minecraft source code, use the repository's patch workflow rather than editing the original source directly.
 
-Minecraft source modifications belong in `server/Shulker`.
+### Working with Source Patches
 
-Apply patches:
+1. Apply the existing patches to prepare the development workspace:
 
-```bash
-./gradlew applyPatches
-```
+   ```bash
+   ./gradlew applyPatches
+   ```
 
-On Windows:
+2. Locate the generated Minecraft source workspace using the paths configured by the repository.
+3. Make the required changes in that workspace.
+4. Rebuild the patches:
 
-```powershell
-.\gradlew.bat applyPatches
-```
+    ```bash
+   ./gradlew rebuildPatches
+   ```
 
-Make changes in the patched Minecraft workspace, following the repository's generated workspace path. Rebuild the patches:
+5. Review the resulting changes and ensure only the intended modifications are included.
 
-```bash
-./gradlew rebuildPatches
-```
+Keep each patch focused on a specific change. Preserve existing behavior unless the contribution explicitly intends to change it. Do not manually renumber existing patches.
 
-Review your changes:
+## Development Guidelines
 
-```bash
-git diff -- server/Shulker
-```
-
-Do not edit the pristine Minecraft source tree directly. Keep patches focused, descriptive, and logically separated. Do not manually renumber existing patches.
-
-## Performance Guidelines
-
-Veltis prioritizes performance without sacrificing correctness.
-
-Before submitting an optimization, consider:
-
-- Does it reduce measurable work?
-- Does it reduce allocations or improve memory access?
-- Can it safely run concurrently?
-- Does it preserve Minecraft behavior?
-- Can the improvement be demonstrated through profiling or benchmarks?
-
-Avoid unnecessary threads, dependencies, abstractions, and repeated work.
-
-World state and gameplay logic must remain correct under concurrent execution.
+- Follow the surrounding code style and architecture.
+- Prefer simple, maintainable implementations.
+- Avoid unnecessary dependencies, abstractions, and allocations.
+- Preserve Minecraft gameplay behavior unless a change is intentional.
+- Ensure world state remains consistent under concurrent execution.
+- Avoid unrelated refactoring in focused bug fixes.
+- Document non-obvious design decisions where necessary.
 
 ## Testing
 
-Before submitting a pull request, run:
+Before submitting a contribution, build the project:
 
 ```bash
 ./gradlew clean buildVeltisMC
 ```
 
-On Windows:
-
-```powershell
-.\gradlew.bat clean buildVeltisMC
-```
-
 Also run relevant tests and verify the affected functionality.
 
-For Shulker changes, ensure patches apply cleanly and rebuilding them does not introduce unrelated modifications.
+For Minecraft source changes, confirm that the patch workflow completes successfully and that rebuilding the project does not introduce unrelated changes.
 
-For performance changes, include benchmark or profiling results when available.
-
-## Code Style
-
-Follow the surrounding code and existing project conventions.
-
-Prefer:
-
-- Clear names
-- Small, focused changes
-- Simple implementations
-- Minimal dependencies
-- Explicit error handling
-
-Avoid:
-
-- Unnecessary abstractions
-- Large utility classes without a clear purpose
-- Redundant manager/service layers
-- Dead code
-- Unnecessary dependency shading
+For performance improvements, include profiling or benchmark results when available. Do not claim performance gains without supporting measurements.
 
 ## Pull Requests
 
-Keep pull requests focused. Explain:
+Keep pull requests focused and provide:
 
-1. What changed.
-2. Why the change is needed.
-3. How it was tested.
-4. Any performance impact.
-5. Any compatibility or behavior changes.
+- **Summary:** What changed?
+- **Motivation:** Why is the change needed?
+- **Testing:** How was it verified?
+- **Performance:** What impact does it have, if applicable?
+- **Compatibility:** Does it affect existing behavior or integrations?
 
-Discuss substantial changes to the architecture, threading model, patch system, or public API before implementing them.
-
-## Documentation
-
-Document non-obvious behavior, design decisions, assumptions, and limitations. Comments should explain why an implementation exists when the code alone is insufficient.
+Discuss substantial changes to the public API, architecture, threading model, or patch workflow before implementing them.
 
 ## Reporting Bugs
 
-Include:
+When reporting a bug, include:
 
-- Veltis version or commit
+- Veltis commit or build version
 - Minecraft version
 - Java version
 - Operating system
@@ -171,6 +108,8 @@ For performance issues, include profiling or benchmark results when available.
 
 ## License
 
-Veltis is licensed under the GNU General Public License v3.0. Contributions are expected to be submitted under the same license.
+Veltis is licensed under the GNU General Public License v3.0, as specified in the project's licensing terms. Contributions must comply with the applicable license.
 
-Thanks for helping build Veltis.
+---
+
+Thank you for helping improve Veltis.

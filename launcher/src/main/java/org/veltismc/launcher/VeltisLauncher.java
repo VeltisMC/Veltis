@@ -21,11 +21,12 @@
  *
  * nīrāruṅ kaṭaluṭutta nilamaṭantaik keḻiloḻukum
  * cīrārum vataṉameṉat tikaḻ bharatha kaṇṭamitil
- * tekkaṇamum atiṟciṟanta tamiḻarnal tirunāṭum
+ * tekkaṇamum atiṟciṟanta thiraavidanal tirunāṭum
  * takkaciṟu piṟainutalum tarittanaṟun tilakamumē
  * attilaka vācaṉaipōl aṉaittulakum iṉpamuṟa
  * etticaiyum pukaḻmaṇakka iruntaperun tamiḻaṇaṅkē!
  * tamiḻaṇaṅkē!
+ *
  * palluyirum palavulagam padaithalitu tudaikinamor
  * ellayaru paramporulmun irunthapadi irupadhupol
  * kannadamum kalithelungum kavinmalayalamum tuluvum
@@ -43,6 +44,7 @@
  * Like an aesthetic tilaka on its beauteous curved forehead!
  * Like the fragrance of that tilaka, for the entire world to be delirious!
  * Let your fervour spread in all directions!
+ *
  * Many a life! Many a world! Creations of Thine! Decimations too!
  * Ever pervading Creator! Remain as ever! Ever as Thou hast been!
  * Kannada, Joyous Telugu, Dainty Malayalam with Tulu!

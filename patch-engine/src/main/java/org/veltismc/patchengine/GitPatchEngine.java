@@ -438,12 +438,20 @@ final class GitPatchEngine {
      *
      * <p>What is normalised afterwards is shape, not content. Git's scratch
      * prefixes are rewritten back to {@code a/} and {@code b/}, the {@code index}
-     * and mode lines are dropped because a Veltis patch records no blob hashes,
-     * and the symbol Git appends to a hunk header is cut short so a header reads
-     * {@code @@ -1,5 +1,6 @@} exactly as it does in every patch already in the
-     * set. Leave those alone and the first rebuild after this change would
-     * reword every patch in version control without a single line of code having
-     * moved.
+     * and the mode lines of a <em>modified</em> file are dropped because a Veltis
+     * patch records no blob hashes, and the symbol Git appends to a hunk header
+     * is cut short so a header reads {@code @@ -1,5 +1,6 @@} exactly as it does
+     * in every patch already in the set. Leave those alone and the first rebuild
+     * after this change would reword every patch in version control without a
+     * single line of code having moved.
+     *
+     * <p>{@code new file mode} is deliberately kept rather than dropped with its
+     * siblings. It looks like the other mode lines, but {@code git apply} uses it
+     * to tell a creation from an edit of a path that happens to be absent from
+     * the scratch tree it is applied to; without it the very same hunk is
+     * rejected with {@code error: dev/null: No such file or directory}. The patch
+     * reader ignores the line, so keeping it costs nothing and is what makes a
+     * patch that adds a file apply at all.
      *
      * @param target workspace-relative path of the file being diffed
      * @param before pristine content, {@code null} or empty when the file is new
@@ -532,10 +540,11 @@ final class GitPatchEngine {
                 continue;   // the single blank after a file's content, if any
             }
             var line = raw;
+            // "new file mode" is not in this list on purpose: see diff()'s
+            // javadoc - git apply needs it to recognise a creation.
             if (line.startsWith("index ")
                 || line.startsWith("old mode ")
                 || line.startsWith("new mode ")
-                || line.startsWith("new file mode ")
                 || line.startsWith("deleted file mode ")
                 || line.startsWith("similarity index ")) {
                 continue;

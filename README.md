@@ -1,266 +1,123 @@
-# Veltis
+# VeltisMC
 
-Veltis is a high-performance Minecraft server built around a simple idea: keep vanilla Minecraft at the center, and improve how it runs.
+**A performance-focused Minecraft server project.**
 
-It is not based on Bukkit, Spigot, or Paper. Veltis works directly with Minecraft's server code and adds its own runtime, world engine, and patching system.
+VeltisMC is an independently developed Minecraft server project focused on performance, extensibility, and a maintainable server architecture. The project aims to provide a foundation for server owners and developers who want to build reliable Minecraft server experiences.
 
-## What we're building
+- **Project:** [VeltisMC](https://www.veltismc.org)
+- **Source code:** [GitHub](https://github.com/VeltisMC/Veltis)
+- **Website:** [veltismc.org](https://www.veltismc.org)
 
-Veltis is focused on:
+> **Development status:** VeltisMC is under active development. Features, compatibility, and stability may vary between builds.
 
-- Multithreaded world simulation
-- Better use of modern CPUs
-- Lower server overhead
-- A clean development workflow
-- Fast and reliable server startup
-- A simple foundation for future plugin development
+## Goals
 
-The goal isn't to change how Minecraft works. The goal is to make the server underneath it better.
+- **Performance:** Identify and optimize server-side bottlenecks using profiling and reproducible benchmarks.
+- **Extensibility:** Develop a clean, maintainable extension API for server developers.
+- **Architecture:** Keep the codebase modular and make core systems easier to maintain.
+- **Compatibility:** Evaluate compatibility with existing Minecraft server ecosystems where practical.
+- **Reliability:** Prioritize correctness, predictable behavior, and testing alongside performance improvements.
 
-## Shulker
+## Getting Started
 
-Minecraft changes in Veltis are maintained through **Shulker**, the project's source patch system.
+### Prerequisites
 
-```text
-server/
-└── Shulker/
-    ├── code/
-    ├── data/
-    └── modules/
-```
+Check the repository's Gradle configuration for the exact required Java version and other build requirements.
 
-Shulker patches are kept in Git and applied during the build. The resulting runtime patch is generated from the final patched Minecraft classes.
+You will need:
 
-This keeps Minecraft changes reviewable, reproducible, and separate from the rest of the Veltis codebase.
-
-## Architecture
-
-Veltis is split into four main parts:
-
-```text
-veltis-api
-   │
-launcher
-   │
-   ├── patch-engine
-   │
-   └── server
-          │
-          └── world engine
-```
-
-- **veltis-api** — the stable surface other modules and external integrations compile against. It is a boundary even while it holds no classes.
-- **launcher** — starts Veltis and handles the server entry point.
-- **patch-engine** — handles Minecraft acquisition, patching, compilation, and runtime preparation.
-- **server** — contains the Veltis runtime and world simulation engine.
-
-The world engine is designed around region ownership and single-writer state. Independent work can run across workers while conflicting world mutations remain ordered.
-
-## Minecraft versions
-
-The current development target is:
-
-```text
-Minecraft 26.3
-Java 25+
-```
-
-Veltis is under active development, so version support and APIs may change.
-
-## Building
-
-Requirements:
-
-- JDK 26
 - Git
-- Internet connection for the first Minecraft download
+- A compatible JDK
+- The Gradle wrapper included in the repository
 
-Build the project:
+### Clone the Repository
 
 ```bash
-./gradlew build
+git clone https://github.com/VeltisMC/Veltis.git
+cd Veltis
 ```
 
-Build the release:
+### Build
 
 ```bash
 ./gradlew buildVeltisMC
 ```
 
-The root `build.gradle.kts` is the one place that defines a release, and every
-output derives from it:
+If the build succeeds, check the repository's configured distribution and artifact directories for the generated server JAR.
 
-| Value | Source | Default |
-|---|---|---|
-| Minecraft version | `-PminecraftVersion` / `gradle.properties` | `26.3` |
-| Release channel | `-Pchannel` / `gradle.properties` | `nightly` |
-| Commit | `GITHUB_SHA`, then `git rev-parse HEAD` | the checked-out revision |
+### Run
 
-`buildVeltisMC` writes exactly one runnable artifact, always at the same path:
+Use the launch command documented by the current repository version. The exact command and runtime requirements may change during development.
 
-```text
-build/distributions/veltis.jar
-```
+**Note:** Build success does not necessarily mean every feature is production-ready.
 
-The local name is deliberately constant: a start script never has to know the
-channel or the commit, and stable, beta and nightly builds all land on the same
-file. The channel- and commit-qualified name is applied only when the artifact is
-published, so it never becomes a second jar in `build/distributions/`:
+## Project Architecture
 
-```text
-Veltis <MinecraftVersion> <Channel> <7-char-commit>.jar
-```
+VeltisMC uses a modular Gradle-based codebase. Its modules and responsibilities should be understood from the current source tree and build configuration.
 
-For example, on the CI release page:
+The project also uses the Shulker patch workflow for maintaining and applying source changes. When contributing, follow the existing workflow rather than editing generated or patched sources in a way that bypasses it.
 
-```text
-Veltis 26.3 nightly 0123456.jar
-```
+## Performance and Benchmarking
 
-That spaced string is the release **title**; a release asset cannot keep it.
-GitHub normalizes every uploaded asset's file name — spaces and everything
-outside `[A-Za-z0-9_+@-]` become dots -- so the file the release actually stores
-is:
+Performance work should be guided by measurements rather than assumptions.
 
-```text
-Veltis.26.3.nightly.0123456.jar
-```
+When evaluating an optimization, consider:
 
-The channel is explicit and is never inferred from the commit or the branch;
-build a different channel with `-Pchannel`:
+- Server tick duration and tail latency
+- CPU and memory usage
+- Allocation and garbage-collection overhead
+- Behavior under different player and entity loads
+- Correctness under concurrent execution, where applicable
 
-```bash
-./gradlew buildVeltisMC -Pchannel=stable
-```
+Benchmark results should include the test environment, workload, methodology, and comparison baseline. No performance advantage should be assumed without reproducible evidence.
 
-The same build writes `build/metadata/build-metadata.json`, the
-machine-readable description a download page needs. `artifact` is the human
-release title, `assetName` is the same file as a GitHub release stores it, and
-`distributionArtifact` is the file the build actually wrote:
+## Compatibility
 
-```json
-{
-  "channel": "nightly",
-  "version": "1.0.0-SNAPSHOT",
-  "minecraftVersion": "26.3",
-  "commit": "0123456789abcdef0123456789abcdef01234567",
-  "shortCommit": "0123456",
-  "artifact": "Veltis 26.3 nightly 0123456.jar",
-  "assetName": "Veltis.26.3.nightly.0123456.jar",
-  "distributionArtifact": "veltis.jar",
-  "minimumJavaVersion": 25
-}
-```
+Minecraft version support and compatibility with third-party server extensions are dependent on the specific VeltisMC build.
 
-The workflow uploads and verifies `assetName`, because that is the string the
-release's own asset list holds; the release is titled with `artifact`. A
-verification that compared the spaced title to the release's assets is what
-reported a successful GitHub Release as a missing one.
+Consult the repository's current build configuration, release information, and documentation before deploying a build or migrating an existing server.
 
-The launcher's own jar (`launcher/build/libs/veltismc-1.0.jar`) is the
-intermediate the packaging step reads; it is not a distributable anyone takes
-away. The commit is resolved from `GITHUB_SHA` first so a CI build and the file
-it produces name the same revision, and a build whose commit cannot be resolved
-fails instead of inventing one.
-
-## Running
-
-Once you have the distribution:
-
-```bash
-java -jar veltis.jar --nogui
-```
-
-Veltis obtains the required Minecraft server files from Mojang, verifies them, prepares the Veltis runtime, and starts the server.
-
-Minecraft itself is not redistributed with Veltis.
-
-## Configuration
-
-Veltis does not reproduce Paper's configuration layout. There are two sources of
-configuration, and each setting has exactly one owner:
-
-- **`server.properties`** — Minecraft's own server settings, created by the
-  server on first start exactly as vanilla creates it. Veltis does not mirror it.
-- **`WorldConfig`** (`org.veltismc.world.api.WorldConfig`) — every Veltis world
-  engine setting: region size, worker pool, simulation tick interval, random
-  ticks, section bounds, world seed, and the save and object-pool limits. It is a
-  validated record with explicit defaults (`WorldConfig.defaults()`), and its
-  constructor rejects an out-of-range value instead of storing it. One
-  engine-wide default serves every world, and
-  `WorldEngine.createWorld(name, config)` overrides it for a single world.
-
-`WorldEngineService` builds the engine from `WorldConfig.defaults()`, and the
-Minecraft-facing integration binds one Veltis world per `ServerLevel`. No other
-layer decides what those values are.
-
-Earlier builds wrote two Paper-style files,
-`config/veltis-global.yml` and `config/veltis-world-defaults.yml`, plus a
-per-world `veltis-world.yml`. No runtime code ever read a value from them — the
-engine has always taken its settings from `WorldConfig` — so the parser and the
-files it generated were removed. A start that finds an installed copy reports
-each file once as obsolete and carries on: the files are left untouched and can
-be deleted, nothing must exist for the server to start, and no setting was
-migrated because none of them reached the runtime.
-
-## Releases
-
-`.github/workflows/gradle.yml` builds and tests every pull request and every
-push to `main`, then publishes the build as a durable GitHub Release asset — a
-workflow artifact expires, a release does not. A `workflow_dispatch` run accepts
-a channel, which is passed to Gradle as `-Pchannel`, so the release name, the
-metadata and the published asset are one value.
-
-Every build gets its own release, tagged `veltis-<channel>-<minecraft>-<sha>`, so
-each channel keeps a real history and the download URL is permanent. Non-stable
-channels are marked as prereleases, so the website can tell them apart even when
-it reads the releases API.
-
-After the release asset exists, the workflow dispatches the metadata plus the
-durable download URL to the website repository with a `veltis-release` repository
-event. Two repository settings turn that on; without them the workflow prints a
-warning and skips, rather than reporting a publication that did not happen:
-
-- **Secret** `WEBSITE_DISPATCH_TOKEN` — a fine-grained PAT with `contents:
-  write` on the website repository only.
-- **Variable** `WEBSITE_REPOSITORY` — the website repository, for example
-  `VeltisMC/website`.
-
-The website repository is a separate checkout, so its half of the integration —
-a workflow that reacts to `veltis-release`, validates the payload, updates the
-channel-specific metadata and deploys through Vercel — lives there, not here. Its
-`veltis-release` receiver and download-page changes are described in that
-repository. This repository's side is complete: the artifact, its metadata, the
-durable release asset, and the exact dispatch the other side receives.
+Do not assume that an extension written for another server implementation will work without an explicitly supported compatibility layer.
 
 ## Contributing
 
-Veltis is open source and contributions are welcome.
+Contributions, bug reports, testing, and technical feedback are welcome.
 
-If you're interested in working on the project, start with:
+Before submitting a change:
 
-[CONTRIBUTING.md](CONTRIBUTING.md)
+1. Review the existing architecture and coding conventions.
+2. Keep changes focused and avoid unrelated modifications.
+3. Preserve existing gameplay behavior unless a change is explicitly intended.
+4. Add or update tests where appropriate.
+5. Run the relevant build and tests.
+6. Document meaningful architectural changes and performance claims.
+7. Submit a pull request describing the problem, implementation, and validation.
 
-Some of the areas we're actively working on include:
+For performance-sensitive changes, include benchmark evidence whenever possible.
 
-- World simulation
-- Multithreading
-- Server performance
-- Minecraft patches
-- Shulker
-- Runtime architecture
-- Plugin infrastructure
+## Bug Reports
 
-## Project status
+When reporting a bug, include:
 
-Veltis is currently in active development.
+- VeltisMC build or commit
+- Minecraft version
+- Java version
+- Operating system
+- Steps to reproduce the issue
+- Relevant logs, stack traces, or profiling results
+- Expected behavior and actual behavior
 
-The core framework and build pipeline are in place, while the world engine and Minecraft-side optimizations are still being integrated and tested.
-
-Expect things to change.
+Avoid sharing server credentials, access tokens, or other sensitive information in public reports.
 
 ## License
 
-Veltis is licensed under the GNU General Public License v3.0.
+See the repository's `LICENSE` file for the applicable license and redistribution terms.
 
-Developed by VeltisMC.
+## Links
+
+- **Website:** https://www.veltismc.org
+- **GitHub repository:** https://github.com/VeltisMC/Veltis
+
+---
+
+*VeltisMC is an independent development project. Verify the current repository documentation before using development builds in production.*
