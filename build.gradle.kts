@@ -710,6 +710,14 @@ project(":server") {
             )
         }
     }
+    tasks.withType<Test>().configureEach {
+        // `-PveltisParallelRedstone=false|true` forwards the redstone parallelism
+        // toggle to tests that fork a server child (the redstone benchmark passes
+        // it on to the child verbatim).
+        providers.gradleProperty("veltisParallelRedstone").orNull?.let { value ->
+            systemProperty("veltis.parallelRedstone", value)
+        }
+    }
 }
 
 /**
