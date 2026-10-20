@@ -1,0 +1,1031 @@
+diff --git a/alternate/current/interfaces/mixin/IServerLevel.java b/alternate/current/interfaces/mixin/IServerLevel.java
+--- a/alternate/current/interfaces/mixin/IServerLevel.java
++++ b/alternate/current/interfaces/mixin/IServerLevel.java
+@@ -6,4 +6,13 @@ public interface IServerLevel {
+ 
+ 	WireHandler alternate_current$getWireHandler();
+ 
++	/**
++	 * Veltis parallel redstone: wire handling during the parallel block tick phase must use
++	 * a handler bound to the calling thread, since a WireHandler's update state is not safe
++	 * to share. The server thread keeps the primary instance; workers get their own.
++	 */
++	default WireHandler alternate_current$getWireHandlerForThread() {
++		return this.alternate_current$getWireHandler();
++	}
++
+ }
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -142,6 +142,20 @@ public class ServerChunkCache extends ChunkSource {
+     @Override
+     public @Nullable ChunkAccess getChunk(final int x, final int z, final ChunkStatus targetStatus, final boolean loadOrGenerate) {
+         if (Thread.currentThread() != this.mainThread) {
++            // Veltis parallel redstone: non-blocking fast path for worker threads. The
++            // holder map is a volatile copy-on-write snapshot, so reading it concurrently
++            // with main thread promotion is safe, and returning an already-present chunk is
++            // exactly what the main thread roundtrip below would have returned - just
++            // without queueing (a queue hop would stall against the region barrier).
++            long fastPos = ChunkPos.pack(x, z);
++            ChunkHolder fastHolder = this.getVisibleChunkIfPresent(fastPos);
++            if (fastHolder != null) {
++                ChunkAccess fastChunk = fastHolder.getChunkIfPresent(targetStatus);
++                if (fastChunk != null) {
++                    return fastChunk;
++                }
++            }
++
+             return CompletableFuture.<ChunkAccess>supplyAsync(() -> this.getChunk(x, z, targetStatus, loadOrGenerate), this.mainThreadProcessor).join();
+         }
+ 
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -188,6 +188,8 @@ import org.slf4j.Logger;
+ 
+ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGetter, IServerLevel {
+     private WireHandler alternate_current$wireHandler;
++    private final ThreadLocal<WireHandler> alternate_current$wireHandlerForThread = new ThreadLocal<>();
++    private LevelStorageSource.LevelStorageAccess alternate_current$storage;
+     public static BlockPos END_SPAWN_POINT = new BlockPos(100, 50, 0);
+     public static IntProvider RAIN_DELAY = UniformInt.of(12000, 180000);
+     public static IntProvider RAIN_DURATION = UniformInt.of(12000, 24000);
+@@ -318,6 +320,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         // level and it exists before the level ticks a single block. A derived
+         // dimension reads the overworld's handler for its configuration, so the
+         // overworld must be constructed first - MinecraftServer does so.
++        this.alternate_current$storage = levelStorage;
+         this.alternate_current$wireHandler = new WireHandler(this, levelStorage);
+     }
+ 
+@@ -326,6 +329,20 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         return this.alternate_current$wireHandler;
+     }
+ 
++    @Override
++    public WireHandler alternate_current$getWireHandlerForThread() {
++        if (Thread.currentThread() == this.thread) {
++            return this.alternate_current$wireHandler;
++        }
++
++        WireHandler handler = this.alternate_current$wireHandlerForThread.get();
++        if (handler == null) {
++            handler = new WireHandler(this, this.alternate_current$storage);
++            this.alternate_current$wireHandlerForThread.set(handler);
++        }
++        return handler;
++    }
++
+     @Override
+     public int getNextEntityId() {
+         int id = 0;
+@@ -409,7 +426,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         if (!this.isDebug() && runs) {
+             long tick = this.getGameTime();
+             profiler.push("blockTicks");
+-            this.blockTicks.tick(tick, 65536, this::tickBlock);
++            net.veltis.redstone.ParallelRedstone.tickBlockTicks(this, tick, 65536);
+             profiler.popPush("fluidTicks");
+             this.fluidTicks.tick(tick, 65536, this::tickFluid);
+             profiler.pop();
+@@ -1030,6 +1047,10 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         if (entity.isRemoved()) {
+             LOGGER.warn("Tried to add entity {} but it was marked as removed already", entity.typeHolder().getRegisteredName());
+             return false;
++        } else if (net.veltis.redstone.ParallelRedstone.deferEntityAdd(this, entity)) {
++            // Deferred to the post-barrier drain of the parallel redstone phase; the entity
++            // is guaranteed to be registered before the entity tick phase of this tick.
++            return true;
+         } else {
+             return this.entityManager.addNewEntity(entity);
+         }
+@@ -1166,6 +1187,12 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+ 
+     @Override
+     public void sendBlockUpdated(final BlockPos pos, final BlockState old, final BlockState current, final @Block.UpdateFlags int updateFlags) {
++        if (net.veltis.redstone.ParallelRedstone.deferBlockUpdate(this, pos, old, current, updateFlags)) {
++            // Deferred to the post-barrier drain of the parallel redstone phase, before the
++            // fluid, entity and block entity phases of this tick.
++            return;
++        }
++
+         if (this.isUpdatingNavigations) {
+             String message = "recursive call to sendBlockUpdated";
+             Util.logAndPauseIfInIde("recursive call to sendBlockUpdated", new IllegalStateException("recursive call to sendBlockUpdated"));
+@@ -1204,26 +1231,26 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+ 
+     @Override
+     public void updateNeighborsAt(final BlockPos pos, final Block sourceBlock, final @Nullable Orientation orientation) {
+-        this.neighborUpdater.updateNeighborsAtExceptFromFacing(pos, sourceBlock, null, orientation);
++        this.veltis$neighborUpdater().updateNeighborsAtExceptFromFacing(pos, sourceBlock, null, orientation);
+     }
+ 
+     @Override
+     public void updateNeighborsAtExceptFromFacing(
+         final BlockPos pos, final Block blockObject, final Direction skipDirection, final @Nullable Orientation orientation
+     ) {
+-        this.neighborUpdater.updateNeighborsAtExceptFromFacing(pos, blockObject, skipDirection, orientation);
++        this.veltis$neighborUpdater().updateNeighborsAtExceptFromFacing(pos, blockObject, skipDirection, orientation);
+     }
+ 
+     @Override
+     public void neighborChanged(final BlockPos pos, final Block changedBlock, final @Nullable Orientation orientation) {
+-        this.neighborUpdater.neighborChanged(pos, changedBlock, orientation);
++        this.veltis$neighborUpdater().neighborChanged(pos, changedBlock, orientation);
+     }
+ 
+     @Override
+     public void neighborChanged(
+         final BlockState state, final BlockPos pos, final Block changedBlock, final @Nullable Orientation orientation, final boolean movedByPiston
+     ) {
+-        this.neighborUpdater.neighborChanged(state, pos, changedBlock, orientation, movedByPiston);
++        this.veltis$neighborUpdater().neighborChanged(state, pos, changedBlock, orientation, movedByPiston);
+     }
+ 
+     @Override
+@@ -1288,7 +1315,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     }
+ 
+     @Override
+-    public void blockEvent(final BlockPos pos, final Block block, final int b0, final int b1) {
++    public synchronized void blockEvent(final BlockPos pos, final Block block, final int b0, final int b1) {
+         this.blockEvents.add(new BlockEventData(pos, block, b0, b1));
+     }
+ 
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -107,6 +107,10 @@ public abstract class Level implements LevelAccessor, AutoCloseable {
+         .build();
+     public List<TickingBlockEntity> blockEntityTickers = Lists.<TickingBlockEntity>newArrayList();
+     public CollectingNeighborUpdater neighborUpdater;
++    public int veltis$maxChainedNeighborUpdates;
++    private final ThreadLocal<CollectingNeighborUpdater> veltis$neighborUpdaters = ThreadLocal.withInitial(
++        () -> new CollectingNeighborUpdater(this, this.veltis$maxChainedNeighborUpdates)
++    );
+     public List<TickingBlockEntity> pendingBlockEntityTickers = Lists.<TickingBlockEntity>newArrayList();
+     public boolean tickingBlockEntities;
+     public Thread thread;
+@@ -129,7 +133,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable {
+     public RegistryAccess registryAccess;
+     public DamageSources damageSources;
+     public PalettedContainerFactory palettedContainerFactory;
+-    public long subTickCount;
++    public java.util.concurrent.atomic.AtomicLong subTickCount = new java.util.concurrent.atomic.AtomicLong();
+ 
+     public Level(
+         final WritableLevelData levelData,
+@@ -148,6 +152,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable {
+         this.thread = Thread.currentThread();
+         this.biomeManager = new BiomeManager(this, biomeZoomSeed);
+         this.isDebug = isDebug;
++        this.veltis$maxChainedNeighborUpdates = maxChainedNeighborUpdates;
+         this.neighborUpdater = new CollectingNeighborUpdater(this, maxChainedNeighborUpdates);
+         this.registryAccess = registryAccess;
+         this.palettedContainerFactory = PalettedContainerFactory.create(registryAccess);
+@@ -303,6 +308,18 @@ public abstract class Level implements LevelAccessor, AutoCloseable {
+     public void updateNeighborsAt(final BlockPos pos, final Block sourceBlock, final @Nullable Orientation orientation) {
+     }
+ 
++    /**
++     * Neighbor updater bound to the calling thread: the server thread keeps the shared
++     * instance, parallel redstone workers each get their own so chained neighbor updates
++     * never cross threads.
++     */
++    public CollectingNeighborUpdater veltis$neighborUpdater() {
++        if (Thread.currentThread() == this.thread) {
++            return this.neighborUpdater;
++        }
++        return this.veltis$neighborUpdaters.get();
++    }
++
+     public void updateNeighborsAtExceptFromFacing(
+         final BlockPos pos, final Block blockObject, final Direction skipDirection, final @Nullable Orientation orientation
+     ) {
+@@ -325,7 +342,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable {
+         final @Block.UpdateFlags int updateFlags,
+         final int updateLimit
+     ) {
+-        this.neighborUpdater.shapeUpdate(direction, neighborState, pos, neighborPos, updateFlags, updateLimit);
++        this.veltis$neighborUpdater().shapeUpdate(direction, neighborState, pos, neighborPos, updateFlags, updateLimit);
+     }
+ 
+     @Override
+@@ -525,7 +542,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable {
+     ) {
+     }
+ 
+-    public void addBlockEntityTicker(final TickingBlockEntity ticker) {
++    public synchronized void addBlockEntityTicker(final TickingBlockEntity ticker) {
+         (this.tickingBlockEntities ? this.pendingBlockEntityTickers : this.blockEntityTickers).add(ticker);
+     }
+ 
+@@ -1095,7 +1112,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable {
+ 
+     @Override
+     public long nextSubTickCount() {
+-        return this.subTickCount++;
++        return this.subTickCount.getAndIncrement();
+     }
+ 
+     @Override
+diff --git a/net/minecraft/world/level/block/RedstoneTorchBlock.java b/net/minecraft/world/level/block/RedstoneTorchBlock.java
+--- a/net/minecraft/world/level/block/RedstoneTorchBlock.java
++++ b/net/minecraft/world/level/block/RedstoneTorchBlock.java
+@@ -60,10 +60,14 @@ public class RedstoneTorchBlock extends BaseTorchBlock {
+     @Override
+     public void tick(final BlockState state, final ServerLevel level, final BlockPos pos, final RandomSource random) {
+         boolean neighborSignal = this.hasNeighborSignal(level, pos, state);
+-        List<RedstoneTorchBlock.Toggle> toggles = RECENT_TOGGLES.get(level);
++        // Veltis: the burnout map is shared by all threads ticking torches; the lock is the
++        // map itself, which is never held while calling into other locked structures.
++        synchronized (RECENT_TOGGLES) {
++            List<RedstoneTorchBlock.Toggle> toggles = RECENT_TOGGLES.get(level);
+ 
+-        while (toggles != null && !toggles.isEmpty() && level.getGameTime() - toggles.get(0).when > 60L) {
+-            toggles.remove(0);
++            while (toggles != null && !toggles.isEmpty() && level.getGameTime() - toggles.get(0).when > 60L) {
++                toggles.remove(0);
++            }
+         }
+ 
+         if (state.<Boolean>getValue(LIT)) {
+@@ -124,22 +128,24 @@ public class RedstoneTorchBlock extends BaseTorchBlock {
+     }
+ 
+     public static boolean isToggledTooFrequently(final Level level, final BlockPos pos, final boolean add) {
+-        List<RedstoneTorchBlock.Toggle> toggles = RECENT_TOGGLES.computeIfAbsent(level, k -> Lists.<RedstoneTorchBlock.Toggle>newArrayList());
+-        if (add) {
+-            toggles.add(new RedstoneTorchBlock.Toggle(pos.immutable(), level.getGameTime()));
+-        }
++        synchronized (RECENT_TOGGLES) {
++            List<RedstoneTorchBlock.Toggle> toggles = RECENT_TOGGLES.computeIfAbsent(level, k -> Lists.<RedstoneTorchBlock.Toggle>newArrayList());
++            if (add) {
++                toggles.add(new RedstoneTorchBlock.Toggle(pos.immutable(), level.getGameTime()));
++            }
+ 
+-        int count = 0;
++            int count = 0;
+ 
+-        for (RedstoneTorchBlock.Toggle toggle : toggles) {
+-            if (toggle.pos.equals(pos)) {
+-                if (++count >= 8) {
+-                    return true;
++            for (RedstoneTorchBlock.Toggle toggle : toggles) {
++                if (toggle.pos.equals(pos)) {
++                    if (++count >= 8) {
++                        return true;
++                    }
+                 }
+             }
+-        }
+ 
+-        return false;
++            return false;
++        }
+     }
+ 
+     public @Nullable Orientation randomOrientation(final Level level, final BlockState state) {
+diff --git a/net/minecraft/world/level/block/RedstoneWireBlock.java b/net/minecraft/world/level/block/RedstoneWireBlock.java
+--- a/net/minecraft/world/level/block/RedstoneWireBlock.java
++++ b/net/minecraft/world/level/block/RedstoneWireBlock.java
+@@ -300,7 +300,7 @@ public class RedstoneWireBlock extends Block {
+     @Override
+     public void onPlace(final BlockState state, final Level level, final BlockPos pos, final BlockState oldState, final boolean movedByPiston) {
+         if (!oldState.is(state.getBlock()) && !level.isClientSide()) {
+-            ((IServerLevel) level).alternate_current$getWireHandler().onWireAdded(pos, state);
++            ((IServerLevel) level).alternate_current$getWireHandlerForThread().onWireAdded(pos, state);
+             this.updatePowerStrength(level, pos, state, null, true);
+ 
+             for (Direction direction : Direction.Plane.VERTICAL) {
+@@ -318,7 +318,7 @@ public class RedstoneWireBlock extends Block {
+                 level.updateNeighborsAt(pos.relative(direction), this);
+             }
+ 
+-            ((IServerLevel) level).alternate_current$getWireHandler().onWireRemoved(pos, state);
++            ((IServerLevel) level).alternate_current$getWireHandlerForThread().onWireRemoved(pos, state);
+             this.updatePowerStrength(level, pos, state, null, false);
+             this.updateNeighborsOfNeighboringWires(level, pos);
+         }
+@@ -344,7 +344,7 @@ public class RedstoneWireBlock extends Block {
+         final BlockState state, final Level level, final BlockPos pos, final Block block, final @Nullable Orientation orientation, final boolean movedByPiston
+     ) {
+         if (!level.isClientSide()
+-            && ((IServerLevel) level).alternate_current$getWireHandler().onWireUpdated(pos, state, orientation)) {
++            && ((IServerLevel) level).alternate_current$getWireHandlerForThread().onWireUpdated(pos, state, orientation)) {
+             // The wire handler has already updated the network itself; letting
+             // vanilla's update run as well is what causes duplication bugs.
+             return;
+diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
+--- a/net/minecraft/world/level/chunk/LevelChunk.java
++++ b/net/minecraft/world/level/chunk/LevelChunk.java
+@@ -92,6 +92,11 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource {
+     public Int2ObjectMap<GameEventListenerRegistry> gameEventListenerRegistrySections;
+     public LevelChunkTicks<Block> blockTicks;
+     public LevelChunkTicks<Fluid> fluidTicks;
++    /**
++     * Veltis parallel redstone: sticky activity marker for region clustering.
++     * 0 = not scanned yet, 1 = scanned, no signal-participating block, 2 = hot.
++     */
++    public volatile byte veltisRedstoneActivity;
+     public LevelChunk.UnsavedListener unsavedListener = chunkPos -> {};
+ 
+     public LevelChunk(final Level level, final ChunkPos pos) {
+@@ -280,6 +285,14 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource {
+             return null;
+         }
+ 
++        // Veltis parallel redstone: any block change that introduces a signal-participating
++        // block marks this chunk hot so region clustering can see it. Sticky and
++        // conservative - over-marking only merges regions, which is always safe.
++        if (this.veltisRedstoneActivity != net.veltis.redstone.ParallelRedstone.ACTIVITY_HOT
++            && net.veltis.redstone.ParallelRedstone.isSignalParticipating(state)) {
++            this.veltisRedstoneActivity = net.veltis.redstone.ParallelRedstone.ACTIVITY_HOT;
++        }
++
+         Block newBlock = state.getBlock();
+         this.heightmaps.get(Heightmap.Types.MOTION_BLOCKING).update(localX, y, localZ, state);
+         this.heightmaps.get(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES).update(localX, y, localZ, state);
+diff --git a/net/minecraft/world/level/gameevent/GameEventDispatcher.java b/net/minecraft/world/level/gameevent/GameEventDispatcher.java
+--- a/net/minecraft/world/level/gameevent/GameEventDispatcher.java
++++ b/net/minecraft/world/level/gameevent/GameEventDispatcher.java
+@@ -19,7 +19,7 @@ public class GameEventDispatcher {
+         this.level = level;
+     }
+ 
+-    public void post(final Holder<GameEvent> gameEvent, final Vec3 position, final GameEvent.Context context) {
++    public synchronized void post(final Holder<GameEvent> gameEvent, final Vec3 position, final GameEvent.Context context) {
+         int radius = gameEvent.value().notificationRadius();
+         BlockPos center = BlockPos.containing(position);
+         int sectionMinX = SectionPos.blockToSectionCoord(center.getX() - radius);
+diff --git a/net/minecraft/world/ticks/LevelTicks.java b/net/minecraft/world/ticks/LevelTicks.java
+--- a/net/minecraft/world/ticks/LevelTicks.java
++++ b/net/minecraft/world/ticks/LevelTicks.java
+@@ -48,33 +48,39 @@ public class LevelTicks<T> implements LevelTickAccess<T> {
+     }
+ 
+     public void addContainer(final ChunkPos pos, final LevelChunkTicks<T> container) {
+-        long posKey = pos.pack();
+-        this.allContainers.put(posKey, container);
+-        ScheduledTick<T> nextTick = container.peek();
+-        if (nextTick != null) {
+-            this.nextTickForContainer.put(posKey, nextTick.triggerTick());
+-        }
++        synchronized (this) {
++            long posKey = pos.pack();
++            this.allContainers.put(posKey, container);
++            ScheduledTick<T> nextTick = container.peek();
++            if (nextTick != null) {
++                this.nextTickForContainer.put(posKey, nextTick.triggerTick());
++            }
+ 
+-        container.setOnTickAdded(this.chunkScheduleUpdater);
++            container.setOnTickAdded(this.chunkScheduleUpdater);
++        }
+     }
+ 
+     public void removeContainer(final ChunkPos pos) {
+-        long chunkKey = pos.pack();
+-        LevelChunkTicks<T> removedContainer = this.allContainers.remove(chunkKey);
+-        this.nextTickForContainer.remove(chunkKey);
+-        if (removedContainer != null) {
+-            removedContainer.setOnTickAdded(null);
++        synchronized (this) {
++            long chunkKey = pos.pack();
++            LevelChunkTicks<T> removedContainer = this.allContainers.remove(chunkKey);
++            this.nextTickForContainer.remove(chunkKey);
++            if (removedContainer != null) {
++                removedContainer.setOnTickAdded(null);
++            }
+         }
+     }
+ 
+     @Override
+     public void schedule(final ScheduledTick<T> tick) {
+-        long chunkKey = ChunkPos.pack(tick.pos());
+-        LevelChunkTicks<T> tickContainer = this.allContainers.get(chunkKey);
+-        if (tickContainer == null) {
+-            Util.logAndPauseIfInIde("Trying to schedule tick in not loaded position " + tick.pos());
+-        } else {
+-            tickContainer.schedule(tick);
++        synchronized (this) {
++            long chunkKey = ChunkPos.pack(tick.pos());
++            LevelChunkTicks<T> tickContainer = this.allContainers.get(chunkKey);
++            if (tickContainer == null) {
++                Util.logAndPauseIfInIde("Trying to schedule tick in not loaded position " + tick.pos());
++            } else {
++                tickContainer.schedule(tick);
++            }
+         }
+     }
+ 
+@@ -147,7 +153,9 @@ public class LevelTicks<T> implements LevelTickAccess<T> {
+     }
+ 
+     public void updateContainerScheduling(final ScheduledTick<T> nextTick) {
+-        this.nextTickForContainer.put(ChunkPos.pack(nextTick.pos()), nextTick.triggerTick());
++        synchronized (this) {
++            this.nextTickForContainer.put(ChunkPos.pack(nextTick.pos()), nextTick.triggerTick());
++        }
+     }
+ 
+     public void drainFromCurrentContainer(
+@@ -200,12 +208,21 @@ public class LevelTicks<T> implements LevelTickAccess<T> {
+ 
+     @Override
+     public boolean hasScheduledTick(final BlockPos pos, final T block) {
+-        LevelChunkTicks<T> tickContainer = this.allContainers.get(ChunkPos.pack(pos));
+-        return tickContainer != null && tickContainer.hasScheduledTick(pos, block);
++        synchronized (this) {
++            LevelChunkTicks<T> tickContainer = this.allContainers.get(ChunkPos.pack(pos));
++            return tickContainer != null && tickContainer.hasScheduledTick(pos, block);
++        }
+     }
+ 
+     @Override
+     public boolean willTickThisTick(final BlockPos pos, final T type) {
++        // During the parallel redstone phase each worker only ever sees its own region's
++        // pending set, which reproduces vanilla's poll-before-run semantics per region.
++        java.util.Set<ScheduledTick<?>> region = net.veltis.redstone.ParallelRedstone.currentRegionTicks();
++        if (region != null) {
++            return region.contains(ScheduledTick.probe(type, pos));
++        }
++
+         this.calculateTickSetIfNeeded();
+         return this.toRunThisTickSet.contains(ScheduledTick.probe(type, pos));
+     }
+diff --git a/net/veltis/redstone/ParallelRedstone.java b/net/veltis/redstone/ParallelRedstone.java
+new file mode 100644
+--- /dev/null
++++ b/net/veltis/redstone/ParallelRedstone.java
+@@ -0,0 +1,569 @@
++package net.veltis.redstone;
++
++import it.unimi.dsi.fastutil.longs.Long2IntMap;
++import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
++import it.unimi.dsi.fastutil.longs.LongArrayList;
++import it.unimi.dsi.fastutil.longs.LongList;
++import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
++import it.unimi.dsi.fastutil.longs.LongSet;
++import it.unimi.dsi.fastutil.objects.ObjectOpenCustomHashSet;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Queue;
++import java.util.Set;
++import java.util.concurrent.ConcurrentLinkedQueue;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.ThreadFactory;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.concurrent.atomic.AtomicReference;
++import net.minecraft.core.BlockPos;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.util.profiling.Profiler;
++import net.minecraft.util.profiling.ProfilerFiller;
++import net.minecraft.world.entity.Entity;
++import net.minecraft.world.level.ChunkPos;
++import net.minecraft.world.level.block.BaseRailBlock;
++import net.minecraft.world.level.block.Block;
++import net.minecraft.world.level.block.CopperBulbBlock;
++import net.minecraft.world.level.block.DiodeBlock;
++import net.minecraft.world.level.block.FenceBlock;
++import net.minecraft.world.level.block.IronBarsBlock;
++import net.minecraft.world.level.block.NoteBlock;
++import net.minecraft.world.level.block.ObserverBlock;
++import net.minecraft.world.level.block.PotentSulfurBlock;
++import net.minecraft.world.level.block.RedstoneLampBlock;
++import net.minecraft.world.level.block.RedstoneTorchBlock;
++import net.minecraft.world.level.block.RedstoneWireBlock;
++import net.minecraft.world.level.block.SculkSensorBlock;
++import net.minecraft.world.level.block.ShelfBlock;
++import net.minecraft.world.level.block.TargetBlock;
++import net.minecraft.world.level.block.TripWireBlock;
++import net.minecraft.world.level.block.TripWireHookBlock;
++import net.minecraft.world.level.block.WallBlock;
++import net.minecraft.world.level.block.piston.MovingPistonBlock;
++import net.minecraft.world.level.block.piston.PistonBaseBlock;
++import net.minecraft.world.level.block.piston.PistonHeadBlock;
++import net.minecraft.world.level.block.state.BlockState;
++import net.minecraft.world.level.chunk.LevelChunk;
++import net.minecraft.world.level.chunk.LevelChunkSection;
++import net.minecraft.world.ticks.ScheduledTick;
++import org.jspecify.annotations.Nullable;
++
++/**
++ * Veltis parallel redstone machinery.
++ *
++ * <p>This class replaces the serial {@code level.blockTicks.tick(...)} phase with a clustered
++ * parallel execution while leaving every individual block tick (and therefore all redstone
++ * logic) byte-identical to vanilla. The tick collection, ordering, scheduling and cleanup
++ * stages are reused verbatim; only the "run collected ticks" stage is split across a worker
++ * pool, and only when the collected work can be proven region-independent.</p>
++ *
++ * <p>Independence model (see docs/redstone-concurrency.md for the full argument):</p>
++ * <ul>
++ *   <li>Pending ticks are grouped per chunk preserving vanilla drain order.</li>
++ *   <li>Two pending chunks merge when they are within Chebyshev distance 2 (all vanilla
++ *       cross-chunk side effects except wire networks are bounded by &lt; 1 chunk), or when
++ *       they touch the same connected "hot" component (single-linkage flood fill over
++ *       chunks holding signal-participating blocks, which is how wire networks, rail lines
++ *       and shape-update chains are captured).</li>
++ *   <li>Regions that end up at least 3 chunks apart touch disjoint chunk sets, so their
++ *       execution never observes another region's writes; everything shared that ticks do
++ *       (neighbor updates, wire handling, burnout maps, game events, block events, entity
++ *       adds, navigation recompute) is either per-thread, synchronized, or deferred to the
++ *       barrier and drained in enqueue order before the rest of the tick continues.</li>
++ *   <li>Anything that cannot be verified (unloaded chunk within reach, oversized component)
++ *       falls back to the exact vanilla serial path.</li>
++ * </ul>
++ */
++public final class ParallelRedstone {
++    public static final boolean ENABLED;
++    private static final int WORKER_THREADS;
++    private static final int MIN_TICKS_FOR_PARALLEL = 16;
++    private static final int MAX_COMPONENT_CHUNKS = 4096;
++
++    public static final byte ACTIVITY_UNKNOWN = 0;
++    public static final byte ACTIVITY_COLD = 1;
++    public static final byte ACTIVITY_HOT = 2;
++
++    private static volatile ExecutorService pool;
++    private static final ThreadLocal<Set<ScheduledTick<?>>> REGION_TICKS = new ThreadLocal<>();
++    private static final ConcurrentLinkedQueue<Runnable> DEFERRED = new ConcurrentLinkedQueue<>();
++    private static volatile boolean inPhase;
++
++    static {
++        boolean enabled = Boolean.parseBoolean(System.getProperty("veltis.parallelRedstone", "true"));
++        Integer configured = Integer.getInteger("veltis.parallelRedstoneThreads", 0);
++        int threads = configured != null && configured > 0 ? configured : Runtime.getRuntime().availableProcessors() - 1;
++        ENABLED = enabled && threads > 0;
++        WORKER_THREADS = threads;
++    }
++
++    private ParallelRedstone() {
++    }
++
++    private static ExecutorService pool() {
++        if (pool == null) {
++            synchronized (ParallelRedstone.class) {
++                if (pool == null) {
++                    ThreadFactory factory = runnable -> {
++                        Thread thread = new Thread(runnable, "Veltis-ParallelRedstone");
++                        thread.setDaemon(true);
++                        return thread;
++                    };
++                    pool = Executors.newFixedThreadPool(WORKER_THREADS, factory);
++                }
++            }
++        }
++        return pool;
++    }
++
++    // ---------------------------------------------------------------------
++    // Entry point - drop-in replacement for LevelTicks#tick
++    // ---------------------------------------------------------------------
++
++    public static void tickBlockTicks(final ServerLevel level, final long tick, final int maxTicks) {
++        ProfilerFiller profiler = Profiler.get();
++        profiler.push("collect");
++        level.blockTicks.collectTicks(tick, maxTicks, profiler);
++        profiler.popPush("run");
++        profiler.incrementCounter("ticksToRun", level.blockTicks.toRunThisTick.size());
++        run(level);
++        profiler.popPush("cleanup");
++        level.blockTicks.cleanupAfterTick();
++        profiler.pop();
++    }
++
++    private static void run(final ServerLevel level) {
++        Queue<ScheduledTick<Block>> pending = level.blockTicks.toRunThisTick;
++        if (!ENABLED || pending.size() < MIN_TICKS_FOR_PARALLEL) {
++            level.blockTicks.runCollectedTicks(level::tickBlock);
++            return;
++        }
++
++        // Global list in the exact vanilla drain order - the authoritative ordering for
++        // everything below (region contents keep their relative vanilla order).
++        List<ScheduledTick<Block>> global = new ArrayList<>(pending);
++        Map<Long, List<ScheduledTick<Block>>> byChunk = new LinkedHashMap<>();
++        for (ScheduledTick<Block> entry : global) {
++            byChunk.computeIfAbsent(ChunkPos.pack(entry.pos()), key -> new ArrayList<>()).add(entry);
++        }
++
++        Map<Long, Integer> chunkRegion = byChunk.size() < 2 ? null : computeRegions(level, byChunk.keySet());
++        if (chunkRegion == null) {
++            // Conservative fallback: exact vanilla serial execution.
++            level.blockTicks.runCollectedTicks(level::tickBlock);
++            return;
++        }
++
++        Map<Integer, List<ScheduledTick<Block>>> regionMap = new LinkedHashMap<>();
++        for (ScheduledTick<Block> entry : global) {
++            regionMap
++                .computeIfAbsent(chunkRegion.get(ChunkPos.pack(entry.pos())), key -> new ArrayList<>())
++                .add(entry);
++        }
++        if (regionMap.size() < 2) {
++            level.blockTicks.runCollectedTicks(level::tickBlock);
++            return;
++        }
++
++        executeRegions(level, global, new ArrayList<>(regionMap.values()));
++    }
++
++    // ---------------------------------------------------------------------
++    // Region formation - clustering over pending chunks
++    // ---------------------------------------------------------------------
++
++    /**
++     * Groups pending-tick chunks into independent regions. Returns a chunk-key to region-id
++     * map, or {@code null} when the tick must run on the exact vanilla serial path.
++     */
++    private static @Nullable Map<Long, Integer> computeRegions(final ServerLevel level, final Set<Long> pendingChunks) {
++        int size = pendingChunks.size();
++        Long2IntMap indexOf = new Long2IntOpenHashMap(size);
++        indexOf.defaultReturnValue(-1);
++        LongList keys = new LongArrayList(size);
++        int[] parent = new int[size];
++        int index = 0;
++        for (long key : pendingChunks) {
++            indexOf.put(key, index);
++            keys.add(key);
++            parent[index] = index;
++            index++;
++        }
++
++        RegionFinder finder = new RegionFinder(level, indexOf, parent, keys);
++
++        for (int i = 0; i < size; i++) {
++            long key = keys.getLong(i);
++            int centerX = ChunkPos.getX(key);
++            int centerZ = ChunkPos.getZ(key);
++
++            for (int dx = -2; dx <= 2; dx++) {
++                for (int dz = -2; dz <= 2; dz++) {
++                    int chunkX = centerX + dx;
++                    int chunkZ = centerZ + dz;
++                    long candidate = ChunkPos.pack(chunkX, chunkZ);
++
++                    if ((dx != 0 || dz != 0) && indexOf.get(candidate) != -1) {
++                        finder.unionPending(i, indexOf.get(candidate));
++                    }
++
++                    LevelChunk chunk = level.chunkSource.getChunkNow(chunkX, chunkZ);
++                    if (chunk == null) {
++                        // A chunk within side-effect reach of pending work is not loaded:
++                        // vanilla would be able to sync-load it at any point during the tick.
++                        // Refuse to parallelize rather than risk a mid-phase load.
++                        return null;
++                    }
++
++                    if (activityOf(chunk) == ACTIVITY_HOT) {
++                        int component = finder.componentFor(candidate);
++                        if (component < 0) {
++                            // Component unverifiable (missing chunk inside the network) or
++                            // oversized - fall back to the exact vanilla serial path.
++                            return null;
++                        }
++
++                        int componentRoot = finder.componentFind(component);
++                        int anchor = finder.componentAnchor.get(componentRoot);
++                        if (anchor == -1) {
++                            finder.componentAnchor.put(componentRoot, i);
++                        } else {
++                            finder.unionPending(i, anchor);
++                        }
++                    }
++                }
++            }
++        }
++
++        Map<Long, Integer> regions = new LinkedHashMap<>(size);
++        for (int i = 0; i < size; i++) {
++            regions.put(keys.getLong(i), finder.find(i));
++        }
++        return regions;
++    }
++
++    private static final class RegionFinder {
++        final ServerLevel level;
++        final Long2IntMap indexOf;
++        final int[] parent;
++        final LongList keys;
++        final Long2IntMap hotComponent = new Long2IntOpenHashMap();
++        final Long2IntMap componentAnchor = new Long2IntOpenHashMap();
++        int[] componentParent = new int[64];
++        int componentCount;
++
++        RegionFinder(final ServerLevel level, final Long2IntMap indexOf, final int[] parent, final LongList keys) {
++            this.level = level;
++            this.indexOf = indexOf;
++            this.parent = parent;
++            this.keys = keys;
++            this.hotComponent.defaultReturnValue(-1);
++            this.componentAnchor.defaultReturnValue(-1);
++        }
++
++        int find(int i) {
++            while (parent[i] != i) {
++                parent[i] = parent[parent[i]];
++                i = parent[i];
++            }
++            return i;
++        }
++
++        void unionPending(int a, int b) {
++            int rootA = find(a);
++            int rootB = find(b);
++            if (rootA != rootB) {
++                parent[Math.max(rootA, rootB)] = Math.min(rootA, rootB);
++            }
++        }
++
++        int componentFind(int id) {
++            while (componentParent[id] != id) {
++                componentParent[id] = componentParent[componentParent[id]];
++                id = componentParent[id];
++            }
++            return id;
++        }
++
++        void componentUnion(int a, int b) {
++            int rootA = componentFind(a);
++            int rootB = componentFind(b);
++            if (rootA == rootB) {
++                return;
++            }
++
++            int anchorA = componentAnchor.get(rootA);
++            int anchorB = componentAnchor.get(rootB);
++            componentParent[rootB] = rootA;
++            if (anchorA != -1 && anchorB != -1) {
++                unionPending(anchorA, anchorB);
++            } else if (anchorA == -1 && anchorB != -1) {
++                componentAnchor.put(rootA, anchorB);
++            }
++            componentAnchor.remove(rootB);
++        }
++
++        /**
++         * Returns the component id for a hot chunk, flood-filling its connected hot component
++         * on first use, or -1 when the component cannot be verified or is oversized.
++         */
++        int componentFor(final long startKey) {
++            int existing = hotComponent.get(startKey);
++            if (existing != -1) {
++                return componentFind(existing);
++            }
++
++            int componentId = componentCount++;
++            if (componentCount > componentParent.length) {
++                componentParent = Arrays.copyOf(componentParent, Math.max(componentParent.length * 2, componentCount));
++            }
++            componentParent[componentId] = componentId;
++
++            LongOpenHashSet visited = new LongOpenHashSet();
++            LongList frontier = new LongArrayList();
++            frontier.add(startKey);
++            visited.add(startKey);
++
++            for (int head = 0; head < frontier.size(); head++) {
++                long key = frontier.getLong(head);
++                hotComponent.put(key, componentId);
++                int centerX = ChunkPos.getX(key);
++                int centerZ = ChunkPos.getZ(key);
++
++                for (int dx = -1; dx <= 1; dx++) {
++                    for (int dz = -1; dz <= 1; dz++) {
++                        if (dx == 0 && dz == 0) {
++                            continue;
++                        }
++
++                        int chunkX = centerX + dx;
++                        int chunkZ = centerZ + dz;
++                        long neighbor = ChunkPos.pack(chunkX, chunkZ);
++                        if (visited.contains(neighbor)) {
++                            continue;
++                        }
++
++                        LevelChunk chunk = this.level.chunkSource.getChunkNow(chunkX, chunkZ);
++                        if (chunk == null) {
++                            return -1;
++                        }
++                        if (activityOf(chunk) != ACTIVITY_HOT) {
++                            continue;
++                        }
++
++                        int other = hotComponent.get(neighbor);
++                        if (other != -1) {
++                            this.componentUnion(componentId, other);
++                            continue;
++                        }
++
++                        if (visited.size() >= MAX_COMPONENT_CHUNKS) {
++                            return -1;
++                        }
++
++                        visited.add(neighbor);
++                        frontier.add(neighbor);
++                    }
++                }
++            }
++
++            return componentFind(componentId);
++        }
++    }
++
++    // ---------------------------------------------------------------------
++    // Region execution
++    // ---------------------------------------------------------------------
++
++    private static void executeRegions(final ServerLevel level, final List<ScheduledTick<Block>> global, final List<List<ScheduledTick<Block>>> regions) {
++        int regionCount = regions.size();
++        int taskCount = WORKER_THREADS + 1;
++        AtomicInteger cursor = new AtomicInteger();
++        AtomicReference<Throwable> failure = new AtomicReference<>();
++        CountDownLatch latch = new CountDownLatch(taskCount);
++
++        Runnable body = () -> {
++            try {
++                int next;
++                while (failure.get() == null && (next = cursor.getAndIncrement()) < regionCount) {
++                    runRegion(level, regions.get(next), failure);
++                }
++            } finally {
++                latch.countDown();
++            }
++        };
++
++        inPhase = true;
++        try {
++            for (int worker = 0; worker < WORKER_THREADS; worker++) {
++                pool().submit(body);
++            }
++
++            // The server thread participates as a worker, then waits for the remaining
++            // regions while pumping only the chunk source queue. Worker thread chunk reads
++            // that miss the non-blocking fast path queue their request there, so waiting
++            // on this queue can never deadlock against the barrier.
++            body.run();
++            level.chunkSource.mainThreadProcessor.managedBlock(() -> latch.getCount() == 0);
++        } finally {
++            inPhase = false;
++        }
++
++        // Drain shared-state operations that were deferred while regions ran, in enqueue
++        // order, before the rest of the server tick continues - exactly the position in the
++        // tick where vanilla would have performed them.
++        Runnable deferred;
++        while ((deferred = DEFERRED.poll()) != null) {
++            try {
++                deferred.run();
++            } catch (Throwable t) {
++                failure.compareAndSet(null, t);
++            }
++        }
++
++        // Vanilla bookkeeping: every collected tick has run; record them in drain order.
++        level.blockTicks.toRunThisTick.clear();
++        level.blockTicks.toRunThisTickSet.clear();
++        level.blockTicks.alreadyRunThisTick.addAll(global);
++
++        Throwable thrown = failure.get();
++        if (thrown != null) {
++            if (thrown instanceof RuntimeException runtimeException) {
++                throw runtimeException;
++            }
++            if (thrown instanceof Error error) {
++                throw error;
++            }
++            throw new RuntimeException(thrown);
++        }
++    }
++
++    private static void runRegion(final ServerLevel level, final List<ScheduledTick<Block>> ticks, final AtomicReference<Throwable> failure) {
++        // Mirrors vanilla's toRunThisTickSet semantics for this region: a tick is removed
++        // from the set the moment before it executes, and willTickThisTick only ever sees
++        // ticks belonging to the querying thread's own region.
++        Set<ScheduledTick<?>> remaining = new ObjectOpenCustomHashSet<>(ScheduledTick.UNIQUE_TICK_HASH);
++        remaining.addAll(ticks);
++        REGION_TICKS.set(remaining);
++
++        try {
++            for (ScheduledTick<Block> entry : ticks) {
++                remaining.remove(entry);
++                level.tickBlock(entry.pos(), entry.type());
++            }
++        } catch (Throwable t) {
++            failure.compareAndSet(null, t);
++        } finally {
++            REGION_TICKS.remove();
++        }
++    }
++
++    // ---------------------------------------------------------------------
++    // Shared-state access points
++    // ---------------------------------------------------------------------
++
++    /** The pending tick set of the region currently executing on this thread, if any. */
++    public static @Nullable Set<ScheduledTick<?>> currentRegionTicks() {
++        return REGION_TICKS.get();
++    }
++
++    /** True while a parallel region phase is active for any level. */
++    public static boolean inPhase() {
++        return inPhase;
++    }
++
++    /**
++     * Defers an entity addition to the post-barrier drain. Returns true when the caller
++     * should skip the immediate add (the caller reports success optimistically).
++     */
++    public static boolean deferEntityAdd(final ServerLevel level, final Entity entity) {
++        if (!inPhase) {
++            return false;
++        }
++
++        DEFERRED.add(() -> level.entityManager.addNewEntity(entity));
++        return true;
++    }
++
++    /**
++     * Defers sendBlockUpdated (chunk dirty marking, path type cache, navigation recompute)
++     * to the post-barrier drain.
++     */
++    public static boolean deferBlockUpdate(final ServerLevel level, final BlockPos pos, final BlockState oldState, final BlockState newState, final int updateFlags) {
++        if (!inPhase) {
++            return false;
++        }
++
++        final BlockPos immutablePos = pos.immutable();
++        DEFERRED.add(() -> level.sendBlockUpdated(immutablePos, oldState, newState, updateFlags));
++        return true;
++    }
++
++    // ---------------------------------------------------------------------
++    // Redstone activity tracking
++    // ---------------------------------------------------------------------
++
++    /**
++     * Conservative predicate: does block state take part in signal propagation or in an
++     * unbounded same-tick update chain (wire networks, rail lines, shape connections)?
++     * Over-inclusive answers only merge regions, which is always safe.
++     */
++    public static boolean isSignalParticipating(final BlockState state) {
++        if (state.isAir()) {
++            return false;
++        }
++        if (state.isSignalSource()) {
++            return true;
++        }
++
++        Block block = state.getBlock();
++        return block instanceof RedstoneWireBlock
++            || block instanceof RedstoneTorchBlock
++            || block instanceof DiodeBlock
++            || block instanceof ObserverBlock
++            || block instanceof PistonBaseBlock
++            || block instanceof PistonHeadBlock
++            || block instanceof MovingPistonBlock
++            || block instanceof RedstoneLampBlock
++            || block instanceof CopperBulbBlock
++            || block instanceof TripWireBlock
++            || block instanceof TripWireHookBlock
++            || block instanceof BaseRailBlock
++            || block instanceof TargetBlock
++            || block instanceof NoteBlock
++            || block instanceof SculkSensorBlock
++            || block instanceof ShelfBlock
++            || block instanceof PotentSulfurBlock
++            || block instanceof FenceBlock
++            || block instanceof WallBlock
++            || block instanceof IronBarsBlock;
++    }
++
++    /** Reads (and lazily computes, then caches on the chunk) the chunk's activity level. */
++    public static byte activityOf(final LevelChunk chunk) {
++        byte activity = chunk.veltisRedstoneActivity;
++        if (activity != ACTIVITY_UNKNOWN) {
++            return activity;
++        }
++
++        byte scanned = ACTIVITY_COLD;
++        for (LevelChunkSection section : chunk.getSections()) {
++            if (section.hasOnlyAir()) {
++                continue;
++            }
++            if (section.maybeHas(ParallelRedstone::isSignalParticipating)) {
++                scanned = ACTIVITY_HOT;
++                break;
++            }
++        }
++
++        chunk.veltisRedstoneActivity = scanned;
++        return scanned;
++    }
++}
