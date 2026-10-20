@@ -2,15 +2,18 @@
 
 This document is the contract for the parallel redstone implementation
 (`server/Shulker/code/019-Parallel-Redstone.patch`,
-`net/veltis/redstone/ParallelRedstone.java`). It records what runs in parallel, why the
+`org/veltismc/redstone/ParallelRedstone.java`). It records what runs in parallel, why the
 results are identical to vanilla serial ticking, which shared state was made thread-safe,
 and exactly where documented divergences remain.
 
 The governing rule of the feature: **redstone logic is never modified.** Patch
 `017-Alternate-Current.patch` and `018-Alternate-Current-Integration.patch` are byte-identical
 to their pre-parallel state; every Minecraft file change in 019 is concurrency plumbing only
-(access, ordering, synchronization, deferral). Every individual block tick executes the same
-vanilla code with the same inputs it would receive serially.
+(access, ordering, synchronization, deferral). Two plumbing adjustments to Alternate
+Current's own sources also live in 019 — a config-sharing `WireHandler` constructor for the
+per-thread handlers and a volatile `updateOrder` field — the wire-update algorithm itself is
+untouched. Every individual block tick executes the same vanilla code with the same inputs
+it would receive serially.
 
 ---
 
@@ -45,6 +48,7 @@ state vanilla would present at that boundary. No `/tick` command was disabled.
 |---|---|---|
 | `-Dveltis.parallelRedstone` | `true` | `false` forces the exact vanilla serial path every tick. |
 | `-Dveltis.parallelRedstoneThreads` | `availableProcessors - 1` | Worker pool size. `≤ 0` disables parallelism. |
+| `-Dveltis.parallelRedstoneStats` | `0` | `N > 0` logs one summary line every N block-tick phases (counted across all levels) to the `VeltisParallelRedstone` logger: parallel/serial-fallback counts, average pending ticks, average regions, and average clustering/phase times. Off by default; when off the cost is one field read per phase. |
 
 The pool is a lazily created fixed pool of daemon threads named `Veltis-ParallelRedstone`;
 it is created on first use and lives for the process lifetime.
@@ -57,8 +61,9 @@ it is created on first use and lives for the process lifetime.
    `runCollectedTicks(level::tickBlock)`, i.e. the byte-for-byte vanilla path:
    - parallelism disabled, or fewer than 16 collected ticks;
    - fewer than 2 distinct pending chunks;
-   - any chunk within the reach box of a pending chunk (see §4) is not loaded;
-   - a hot component could not be verified, or exceeds 4096 chunks.
+   - any chunk in the 25-chunk window (Chebyshev ≤ 2) of a pending chunk, or any chunk
+     reached while walking a propagator component, is not loaded (see §4);
+   - a propagator component could not be verified or exceeds 131072 positions.
 3. **Grouping:** collected ticks are grouped per chunk (`LinkedHashMap`, insertion order =
    vanilla drain order). A global list in vanilla order is kept as the ordering authority.
 4. **Clustering (main thread):** union-find over pending chunks (§4) yields independent
@@ -82,33 +87,57 @@ it is created on first use and lives for the process lifetime.
 
 ## 4. Isolation proof — how regions are formed
 
-Pending-tick chunks are merged (union-find) when either rule fires:
+The proof works at **chunk-column granularity**, relying on one modelled bound (stated
+explicitly below): every block a tick's own handler reads or writes stays within 16 blocks
+of its tick position, and every block a propagator component reads or writes stays within
+16 blocks of its component positions. (Signal reach ≤ 15, piston push ≤ 12, so 16 covers
+all bounded effects; Alternate Current's wire recomputation writes only wire positions.)
+With that bound, all read/write sets are confined to chunk halos of width 1, and pending
+chunks are merged (union-find) when either rule fires:
 
-**Rule A — proximity.** Two pending chunks within Chebyshev distance ≤ 2 merge.
+**Rule A — proximity.** Two pending chunks within Chebyshev distance ≤ 2 merge. Their
+±1-chunk halos can then share a column, so any two bounded side-effect zones that could
+overlap are forced into the same region.
 
-All *bounded* vanilla side effects of a block tick stay within < 1 chunk of their origin:
-redstone signal reach ≤ 15 blocks, piston push reach ≤ 12, grass/fire/random ticks ≤ 15.
-Two effect zones can only overlap if their anchors are within 2 chunks. Therefore separate
-regions are always ≥ 3 chunks (48 blocks) apart with respect to every bounded writer, so
-**distinct regions have disjoint write sets** for all bounded effects.
+**Rule B — unbounded-propagator components.** Wire networks (Alternate Current), rail
+lines, tripwire chains and fence/wall/iron-bar shape-update chains propagate same-tick
+updates without bound — through *unbounded propagators* only (`isUnboundedPropagator`:
+redstone wire, fences, walls, iron bars, rails, tripwire, tripwire hooks; the set is
+deliberately over-inclusive, §5). Every other reactive block either schedules its state
+change or reacts within a bounded radius, which Rule A already covers.
 
-**Rule B — hot-component bridging.** For each pending chunk, scan its 25-chunk box
-(Chebyshev ≤ 2): pending neighbours merge by Rule A; hot neighbours pull the pending chunk
-into that hot component's anchor. A hot component is the 8-connected flood fill over *hot*
-chunks (chunks containing any signal-participating block, §5), anchored per component with
-merging anchors when components merge.
+For each pending chunk, its 25-chunk window (Chebyshev ≤ 2) is scanned. Every propagator
+position in the window seeds a 6-connected flood fill over the per-chunk propagator sets,
+producing a *component* (the component is discovered once and reused). Each component is
+*anchored* to every pending chunk whose window contains any of its positions, so any
+pending tick that can reach a component joins that component's region. After anchoring,
+two components whose position columns sit within Chebyshev distance ≤ 2 of each other are
+merged: their ±16-block read/write halos then overlap, so they must never run apart.
 
-Unbounded same-tick propagation — wire networks (Alternate Current), rail lines, tripwire
-chains, fence/wall/iron-bar shape-update chains — only travels through *participating*
-blocks. Those blocks are exactly what makes a chunk hot, so any conducting bridge between
-two pending chunks lies inside a hot component, which both chunks join. A chain that stops
-in cold blocks stops within bounded reach, already covered by Rule A.
+The soundness argument is a T-set disjointness argument. A tick touches only
+chunks(position) ± 1 (modelled bound). A component touches only chunks(positions) ± 1
+(modelled bound). Therefore a conflict between the work of two pending ticks is captured
+exactly when their chunks are within Chebyshev ≤ 2 (Rule A); a conflict between a pending
+tick and a component is captured exactly when the component has a position inside the
+pending chunk's ±2 window (Rule B anchoring); and a conflict between two components is
+captured exactly when their position columns are within Chebyshev ≤ 2 (the final merge).
+If two pending chunks end in different regions, no bounded effect can cross between them
+and no unbounded chain connects them — running them on two threads cannot change any
+observable outcome.
 
-Consequently: if two pending chunks end in different regions, no bounded effect can cross
-between them and no unbounded chain connects them — running them on two threads cannot
-change any observable outcome. All region scans (`getChunkNow`, activity, flood fill) run
-on the main thread *before* dispatch, so no mid-phase chunk load can occur (any unloaded
-chunk within reach aborts to the serial path instead).
+**Documented assumption (the modelled bound).** The argument assumes that any same-tick
+update chain that does *not* pass through an unbounded propagator stays within 16 blocks of
+its origin. The code audit found the longest such chain to be 2 blocks; all unbounded
+propagation passes through a block that is in the propagator set. TNT needs no special
+case: a primed TNT entity's fuse is a scheduled tick, and its explosion radius (~6 blocks)
+is inside the bound above. Known remaining caveat: a *fall cascade* (e.g. vines or ladders
+losing support and popping downward block by block) chains through blocks that are not
+propagators; it is the same documented limitation as the pre-chunk-clustering
+implementation and is bounded in practice by how far a cascade can travel in one tick.
+
+All region scans (`getChunkNow`, per-chunk propagator sets, component walks) run on the
+main thread *before* dispatch, so no mid-phase chunk load can occur (any unloaded chunk
+inside the window or inside a component walk aborts to the serial path instead).
 
 **Same-tick visibility of deferred effects** (§5): deferred operations drain after the
 barrier but still inside `ServerLevel.tick`, before fluid ticks, the chunk-source tick,
@@ -121,7 +150,7 @@ concurrent queue in enqueue order.
 | State | Strategy |
 |---|---|
 | `Level.neighborUpdater` (`CollectingNeighborUpdater`) | The shared instance stays owned by the server thread. `Level.veltis$neighborUpdater()` returns it on the main thread and a per-thread `CollectingNeighborUpdater` (same `maxChainedNeighborUpdates`) on workers. Each updater's queue drains fully inside its top-level call, so no queued work leaks across threads. All four read sites switched (`Level.shapeUpdate`, three `ServerLevel` neighbor dispatches); the debug listener stays on the shared main-thread field (debug-only). |
-| Alternate Current `WireHandler` | Per-thread: `alternate_current$getWireHandlerForThread()` returns the primary handler on the server thread, else lazily constructs `new WireHandler(level, storage)` once per pool thread per level (config `load()` is read-only). The save path (018) keeps the primary handler. `RedstoneWireBlock`'s three call sites switched. |
+| Alternate Current `WireHandler` | Per-thread: `alternate_current$getWireHandlerForThread()` returns the primary handler on the server thread, else lazily constructs `new WireHandler(level, config)` once per pool thread per level, sharing the primary handler's already-loaded `Config` (the config file is read exactly once, by the primary's `storage` constructor; `Config.Primary.updateOrder` is `volatile` so runtime `/alternatecurrent` changes are visible to every thread). The save path (018) keeps the primary handler. `RedstoneWireBlock`'s three call sites switched. |
 | `LevelTicks` containers & schedule | Single-monitor design: `schedule`, `addContainer`, `removeContainer`, `updateContainerScheduling`, `hasScheduledTick` are `synchronized` (reentrant, so the `onTickAdded` → `updateContainerScheduling` path re-enters safely; container methods themselves are deliberately *not* synchronized to avoid lock-order inversion with `chunkScheduleUpdater`). Workers schedule, the barrier's chunk pump may register/unregister containers — both take the same monitor. |
 | `LevelTicks.willTickThisTick` | First checks the calling thread's region set (`ParallelRedstone.currentRegionTicks()`): workers only ever see their own region's pending ticks, with each entry removed from the set immediately before it executes — reproducing vanilla's poll-before-run semantics for the four vanilla callers, all of which query their own position (⇒ own region ⇒ exact vanilla answer). The vanilla path is only reachable off-phase (single-threaded). |
 | `Level.subTickCount` | `AtomicLong` (`getAndIncrement`); readers unchanged. |
@@ -132,8 +161,8 @@ concurrent queue in enqueue order.
 | `ServerLevel.sendBlockUpdated` | Deferred while the phase is active (concurrent queue): avoids the `isUpdatingNavigations` re-entrancy flag race, navigation recompute races, `chunkSource.blockChanged` / `pathTypesByPosCache` races. Drained post-barrier, before the fluid/entity phases; per-position FIFO preserved. |
 | `ServerLevel.addEntity` | Deferred while the phase is active (same queue, single FIFO): the entity manager is main-thread only. Returns `true` optimistically; the entity is registered before this tick's entity phase. (`addPlayer` stays direct — main-thread only.) POI writes already marshal through `getServer().execute`, which is *not* pumped mid-phase, so they run between ticks exactly as vanilla. |
 | Worker chunk reads | `ServerChunkCache.getChunk` gains a behavior-identical fast path for non-main threads: consult the volatile copy-on-write `visibleChunkMap`, return only on a positive status hit, otherwise fall through to the vanilla main-thread roundtrip. A hit is exactly what the roundtrip would have returned (`GenerationChunkHolder.getChunkIfPresent`), minus the queue hop that would stall against the barrier. |
-| Chunk activity marks | `LevelChunk.veltisRedstoneActivity` is a `volatile byte` (0 unknown / 1 cold / 2 hot, sticky). Set by the `setBlockState` hook on any change to a signal-participating block, and by the pre-phase lazy scan (skip empty sections, `section.maybeHas(predicate)`, else full 4096). Over-marking only merges regions — always safe. |
-| Hot predicate `isSignalParticipating` | Deliberately over-inclusive: `isSignalSource`, redstone wire, redstone torch (incl. wall torch), diode (repeater + comparator), observer, piston base/head/moving, lamp, copper bulb, tripwire, tripwire hook, rails, target, note block, sculk sensor, shelf, potent sulfur, fence, wall, iron bars. Anything participating in unbounded chain propagation must be hot; extra hot blocks only enlarge regions. |
+| Unbounded-propagator cache | `LevelChunk.veltisUnboundedPropagators` is a `volatile` fastutil `LongOpenHashSet` of packed `BlockPos`es (the chunk's unbounded-propagator positions), or `null` when not computed. It is computed on the server thread during clustering (`unboundedPropagatorsOf`: skip air-only sections, `section.maybeHas(predicate)`, else full section scan) and reused across ticks; the `setBlockState` hook resets it to `null` **only** when `propagatorMembershipChanged(old, new)` — i.e. only when a block change crosses the propagator boundary (air ↔ propagator, or propagator ↔ different propagator block). Power or state changes on existing propagators keep membership identical, so a ticking circuit never forces a rescan. Workers only ever write `null`; the main thread re-computes before the next phase. |
+| Propagator predicate `isUnboundedPropagator` | Conservative and deliberately over-inclusive: redstone wire, fence, wall, iron bars, any `BaseRailBlock`, tripwire, tripwire hook. Exactly the blocks whose same-tick update chains are unbounded (wire network recomputation; shape/connectivity update chains). Every other reactive block schedules its state change or reacts within bounded reach. Over-inclusion only merges regions — always safe. |
 
 **Iteration order within a region is vanilla order** (global drain order restricted to the
 region), so intra-region behaviour is bit-for-bit serial behaviour.
@@ -174,15 +203,22 @@ forcing the chunk-source queue to run tasks regardless of `haveTime`.
   death removal happens in the entity tick phase (main thread); only the exotic
   block-tick-driven instant death is at risk.
 - Exotic on-demand chunk load + instant unload could race a container registration; the
-  reach-box check converts the common cases to serial fallback.
+  loaded-window check converts the common cases to serial fallback.
 - `RandomSource` jitter across workers (see §7).
+- A same-tick chain that leaves the unbounded-propagator set (documented assumption in §4,
+  e.g. an exotic fall cascade) is not tracked; same accepted limitation as the previous
+  implementation.
 
 ## 9. Validation status
 
 - `applyVeltisPatches` applies 001..019 from pristine source; 017 and 018 remain
   byte-identical (verified via git — no diff).
-- `compileMinecraftJava` compiles the patched tree cleanly.
+- `buildVeltisMC` succeeds; the packaged server jar contains
+  `org/veltismc/redstone/ParallelRedstone.class` (+ the `RegionFinder` inner class) and no
+  `net/veltis` classes, and all three `ServerLevel` hooks `invokestatic` the
+  `org.veltismc.redstone.ParallelRedstone` FQN (verified via `jar tf` and `javap -c`).
 - The behavioral/E2E test suite and JFR benchmarks exist under
   `server/src/test/java/org/veltismc/redstone/` but are intentionally **not run** in this
-  pass (implementation-first instruction); run them before enabling the feature in a
-  release build if runtime evidence is required.
+  pass (implementation-first instruction; the maintainer benchmarks with a physical
+  calculator build). Run them before enabling the feature in a release build if runtime
+  evidence is required.
