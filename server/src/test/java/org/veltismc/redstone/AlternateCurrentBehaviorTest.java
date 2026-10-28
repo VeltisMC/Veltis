@@ -364,17 +364,21 @@ public class AlternateCurrentBehaviorTest {
 
     @Test
     public void unloadedChunkRejectsAndRecovers() throws Exception {
-        // Chunk (4,2) (x=64..79, z=32..47) is not force-loaded.
+        // Chunk (20,20) (x=320..335, z=320..335) lies far outside the spawn area
+        // (view-distance 4 loads roughly radius-4 chunks around 0,0) and no scenario
+        // force-loads it, so it is genuinely unloaded.
+        assertFalse(h.positionLoaded(320, y, 320),
+                "chunk (20,20) must start unloaded for this scenario; tail:\n" + h.tail(1200));
         int mark = h.mark();
-        h.cmd("setblock 65 " + y + " 42 minecraft:stone");
+        h.cmd("setblock 320 " + y + " 320 minecraft:stone");
         assertTrue(h.await(mark, "not loaded", 15_000),
                 "setblock into an unloaded chunk should be rejected; tail:\n" + h.tail(1200));
         // Force-load it; the same command must now succeed.
-        h.forceLoadChunks(4, 2, 4, 2);
-        h.awaitLoaded(65, y, 42);
+        h.forceLoadChunks(20, 20, 20, 20);
+        h.awaitLoaded(320, y, 320);
         String token = "UNLD" + System.nanoTime();
         int mark2 = h.mark();
-        h.cmd("setblock 65 " + y + " 42 minecraft:redstone_block");
+        h.cmd("setblock 320 " + y + " 320 minecraft:redstone_block");
         h.cmd("say " + token);
         assertTrue(h.await(mark2, java.util.regex.Pattern.quote(token), 15_000),
                 "setblock into a now-loaded chunk should succeed; tail:\n" + h.tail(1200));

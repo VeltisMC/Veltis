@@ -4,12 +4,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordedFrame;
+import jdk.jfr.consumer.RecordedThread;
 import jdk.jfr.consumer.RecordingFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -42,8 +45,31 @@ public class RedstoneWorkloadBenchmark {
         String mode = System.getProperty("veltis.parallelRedstone", "true");
         System.out.println("BENCH_mode parallelRedstone=" + mode);
 
+        // Optional knobs forwarded verbatim to the child so serial / 1-worker /
+        // N-worker runs are selectable from the Gradle command line
+        // (-PveltisParallelRedstoneThreads=N, -PveltisParallelRedstoneStats=N).
+        List<String> childArgs = new ArrayList<>();
+        childArgs.add("-Dveltis.parallelRedstone=" + mode);
+        String threads = System.getProperty("veltis.parallelRedstoneThreads");
+        if (threads != null) {
+            childArgs.add("-Dveltis.parallelRedstoneThreads=" + threads);
+            System.out.println("BENCH_mode parallelRedstoneThreads=" + threads);
+        }
+        String stats = System.getProperty("veltis.parallelRedstoneStats");
+        if (stats != null) {
+            childArgs.add("-Dveltis.parallelRedstoneStats=" + stats);
+            System.out.println("BENCH_mode parallelRedstoneStats=" + stats);
+        }
+
         RedstoneServerHarness h = RedstoneServerHarness.start("bench", true,
-                "-Dveltis.parallelRedstone=" + mode);
+                childArgs.toArray(new String[0]));
+        // Grid dimension per cluster: 2 (default) = 4 rings/cluster, 16 total — a
+        // small workload that hovers around the dispatch threshold; 4 = 16 rings
+        // per cluster, 64 total (~32 scheduled ticks per game tick spread over the
+        // four clusters), which keeps every drain above the threshold so the
+        // parallel path is exercised continuously.
+        int grid = Integer.getInteger("veltis.bench.grid", 2);
+        System.out.println("BENCH_mode grid=" + grid);
         try {
             boolean chunkCoords = h.detectForceloadChunkCoords();
             h.configureForceloadChunkCoords(chunkCoords);
@@ -55,12 +81,13 @@ public class RedstoneWorkloadBenchmark {
             assertTrue(surface > Integer.MIN_VALUE, "no surface found; tail:\n" + h.tail(1500));
             int y = surface + 1;
 
-            // Build 4 rings per cluster (2x2 grid, pitch 4).
+            // Build a grid of rings per cluster (pitch 4; clusters are 64 apart, so
+            // even a 4x4 grid never bridges two clusters).
             for (int[] cluster : CLUSTERS) {
                 int cx0 = cluster[0];
                 int cz0 = cluster[1];
-                for (int dx = 0; dx < 2; dx++) {
-                    for (int dz = 0; dz < 2; dz++) {
+                for (int dx = 0; dx < grid; dx++) {
+                    for (int dz = 0; dz < grid; dz++) {
                         buildRing(h, y, cx0 + dx * 4, cz0 + dz * 4);
                     }
                 }
@@ -69,8 +96,8 @@ public class RedstoneWorkloadBenchmark {
             // them across the repeater's +2gt schedule (~5 ticks), then retract. A
             // same-tick pulse would leave the ring start timing-dependent.
             for (int[] cluster : CLUSTERS) {
-                for (int dx = 0; dx < 2; dx++) {
-                    for (int dz = 0; dz < 2; dz++) {
+                for (int dx = 0; dx < grid; dx++) {
+                    for (int dz = 0; dz < grid; dz++) {
                         int cx = cluster[0] + dx * 4 + 2;
                         int cz = cluster[1] + dz * 4;
                         h.cmd("setblock " + cx + " " + y + " " + (cz - 1) + " minecraft:redstone_block");
@@ -79,8 +106,8 @@ public class RedstoneWorkloadBenchmark {
             }
             Thread.sleep(250);
             for (int[] cluster : CLUSTERS) {
-                for (int dx = 0; dx < 2; dx++) {
-                    for (int dz = 0; dz < 2; dz++) {
+                for (int dx = 0; dx < grid; dx++) {
+                    for (int dz = 0; dz < grid; dz++) {
                         int cx = cluster[0] + dx * 4 + 2;
                         int cz = cluster[1] + dz * 4;
                         h.cmd("setblock " + cx + " " + y + " " + (cz - 1) + " minecraft:air");
@@ -163,11 +190,19 @@ public class RedstoneWorkloadBenchmark {
                     continue;
                 }
                 totalSamples++;
-                String thread = event.getThread() != null ? event.getThread().getJavaName() : "?";
+                String thread = "?";
+                RecordedThread sampled = event.getThread("sampledThread");
+                if (sampled != null && sampled.getJavaName() != null) {
+                    thread = sampled.getJavaName();
+                }
                 perThread.merge(thread, 1L, Long::sum);
                 boolean inAc = false;
                 for (RecordedFrame frame : event.getStackTrace().getFrames()) {
-                    String cn = frame.getType();
+                    // RecordedFrame.getType() is the interpreter/JIT status; the declaring
+                    // class lives in the method's type.
+                    String cn = frame.getMethod() != null && frame.getMethod().getType() != null
+                            ? frame.getMethod().getType().getName()
+                            : "";
                     if (cn.startsWith("alternate.current")) {
                         acFrames++;
                         inAc = true;
