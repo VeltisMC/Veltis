@@ -40,6 +40,19 @@ public final class RedstoneServerHarness implements AutoCloseable {
 
     private static final long BOOT_TIMEOUT_MS = 240_000;
     private static final long COMMAND_TIMEOUT_MS = 15_000;
+    /**
+     * How long a predicate probe ({@link #blockMatches}, {@link #positionLoaded}) waits for
+     * its token. These are the only probes whose token legitimately never arrives: when the
+     * predicate is false the {@code run say} branch simply doesn't execute, so a false
+     * answer costs the full wait. A true answer cannot lag: the child drains its whole
+     * console queue on every server tick ({@code DedicatedServer#handleConsoleInputs} loops
+     * until empty) and executes each line synchronously inside that drain, so the token is
+     * spoken within one tick (~50ms) of the line being read — command backlog is drained in
+     * the same loop iteration. The 3s only has to absorb log shipping and OS scheduling,
+     * and keeps a full-tick scan of a 17-candidate fingerprint bounded at ~51s worst case
+     * instead of ~4min per diverging position.
+     */
+    private static final long PREDICATE_GRACE_MS = 3_000;
     private static final AtomicInteger HOMES = new AtomicInteger();
 
     private final Path home;
@@ -92,6 +105,13 @@ public final class RedstoneServerHarness implements AutoCloseable {
                 "level-type=minecraft:flat",
                 "generator-settings={\"layers\":[{\"block\":\"minecraft:bedrock\",\"height\":1},"
                         + "{\"block\":\"minecraft:stone\",\"height\":1}],\"biome\":\"minecraft:plains\"}",
+                // Flat worlds still generate structures (e.g. trial chambers) when this is
+                // left at its default of true. A structure intersecting the build band
+                // corrupts circuits (blocks replaced, surface probe returning the
+                // structure roof instead of the stone layer) and makes placement
+                // seed-dependent. Tests build their own circuits on the assumption of
+                // a bare two-layer flat world, so structures must stay off.
+                "generate-structures=false",
                 "online-mode=false",
                 "spawn-protection=0",
                 "view-distance=4",
@@ -289,7 +309,7 @@ public final class RedstoneServerHarness implements AutoCloseable {
         String token = "CHk" + checkIds.incrementAndGet() + "OK";
         int mark = mark();
         cmd("execute if block " + condition + " run say " + token);
-        return await(mark, "\\[Server\\] " + Pattern.quote(token), COMMAND_TIMEOUT_MS);
+        return await(mark, "\\[Server\\] " + Pattern.quote(token), PREDICATE_GRACE_MS);
     }
 
     /** True iff the given position is in a loaded chunk (per the child's own check). */
@@ -297,7 +317,7 @@ public final class RedstoneServerHarness implements AutoCloseable {
         String token = "LD" + checkIds.incrementAndGet() + "OK";
         int mark = mark();
         cmd("execute if loaded " + x + " " + y + " " + z + " run say " + token);
-        return await(mark, "\\[Server\\] " + Pattern.quote(token), COMMAND_TIMEOUT_MS);
+        return await(mark, "\\[Server\\] " + Pattern.quote(token), PREDICATE_GRACE_MS);
     }
 
     public void awaitLoaded(int x, int y, int z) throws IOException, InterruptedException {

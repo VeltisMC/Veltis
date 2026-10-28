@@ -709,6 +709,11 @@ project(":server") {
                 providers.gradleProperty("veltisBenchConfig").getOrElse("resource"),
             )
         }
+        // `-PveltisBenchGrid=4` scales the redstone benchmark's per-cluster ring
+        // grid (default 2 = 4 rings/cluster).
+        providers.gradleProperty("veltisBenchGrid").orNull?.let { value ->
+            systemProperty("veltis.bench.grid", value)
+        }
     }
     tasks.withType<Test>().configureEach {
         // `-PveltisParallelRedstone=false|true` forwards the redstone parallelism
@@ -716,6 +721,15 @@ project(":server") {
         // it on to the child verbatim).
         providers.gradleProperty("veltisParallelRedstone").orNull?.let { value ->
             systemProperty("veltis.parallelRedstone", value)
+        }
+        // Same story for the worker ceiling and the stats interval: the benchmark
+        // forwards both to its forked child so serial/1-worker/N-worker runs are
+        // configurable from the Gradle command line.
+        providers.gradleProperty("veltisParallelRedstoneThreads").orNull?.let { value ->
+            systemProperty("veltis.parallelRedstoneThreads", value)
+        }
+        providers.gradleProperty("veltisParallelRedstoneStats").orNull?.let { value ->
+            systemProperty("veltis.parallelRedstoneStats", value)
         }
     }
 }
