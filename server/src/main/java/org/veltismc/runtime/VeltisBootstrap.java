@@ -2,6 +2,9 @@ package org.veltismc.runtime;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.veltismc.nativeengine.NativeConfig;
+import org.veltismc.nativeengine.NativeEngine;
+import org.veltismc.nativeengine.NativeStatus;
 
 import java.nio.file.Path;
 
@@ -45,6 +48,11 @@ public final class VeltisBootstrap {
         // migrate.
         var home = detectHomeDirectory(args);
         org.veltismc.runtime.config.LegacyConfig.warnIfPresent(home, LOG);
+
+        // Native support is optional and never fatal. The configuration is read
+        // from the same server.properties file the rest of the server uses, with
+        // -Dveltis.native.* taking precedence for a single run.
+        initializeNative(home);
     }
 
     public static void onMinecraftServerCreated(Object server) {
@@ -58,6 +66,7 @@ public final class VeltisBootstrap {
         unbindMinecraftLevels();
         MINECRAFT_SERVER = null;
         stopRuntime();
+        stopNative();
     }
 
     /**
@@ -66,6 +75,44 @@ public final class VeltisBootstrap {
      */
     public static org.veltismc.runtime.ServerRuntime runtime() {
         return runtime;
+    }
+
+    /**
+     * The optional native engine facade. Callers must still handle
+     * {@link NativeStatus#fallbackActive()}; the server itself does not assume a
+     * native library is present.
+     */
+    public static NativeEngine nativeEngine() {
+        return NativeEngine.shared();
+    }
+
+    /**
+     * Attempts native initialization once, logging the outcome. A missing or
+     * incompatible library is reported and leaves the server on Java fallbacks.
+     */
+    private static void initializeNative(Path home) {
+        try {
+            var config = NativeConfig.load(home);
+            var status = NativeEngine.shared().initialize(config);
+            if (status.available()) {
+                LOG.info("Native support enabled: {}", status.summary());
+            } else if (status.loaded()) {
+                LOG.warn("Native library was found but cannot be used; Java fallback active: {}",
+                        status.reason());
+            } else {
+                LOG.info("Native support unavailable; Java fallback active: {}", status.reason());
+            }
+        } catch (Throwable t) {
+            LOG.warn("Failed to initialize native support; Java fallback remains active", t);
+        }
+    }
+
+    private static void stopNative() {
+        try {
+            NativeEngine.shared().shutdown();
+        } catch (Throwable t) {
+            LOG.warn("Failed to shut down native support", t);
+        }
     }
 
     /**

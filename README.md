@@ -45,6 +45,22 @@ cd Veltis
 
 If the build succeeds, check the repository's configured distribution and artifact directories for the generated server JAR.
 
+### Optional native engine
+
+VeltisMC can use an optional C/C++ engine through a stable C ABI and the Java
+Foreign Function & Memory API. It is not required: the normal build and server
+startup use the Java fallback unless a compatible library is installed. Building
+the library needs CMake 3.20+ and a C11/C++20 compiler, and is a separate task:
+
+```bash
+./gradlew :veltis-native:buildNative
+./gradlew :veltis-native:testNative
+```
+
+Supported and tested platforms are Windows x86-64 and Linux x86-64. See
+[`veltis-native/README.md`](veltis-native/README.md) for the ABI, installation
+layout and `veltis.native.*` configuration.
+
 ### Run
 
 Use the launch command documented by the current repository version. The exact command and runtime requirements may change during development.

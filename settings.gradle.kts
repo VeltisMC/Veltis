@@ -20,6 +20,12 @@ enableFeaturePreview("STABLE_CONFIGURATION_CACHE")
 //                 NMS entrypoint, the Veltis runtime framework and the world
 //                 engine.
 //
+//   :veltis-native the optional C/C++ engine and its Java FFM integration
+//                 layer. It is a real module even though its native artifact is
+//                 not required at runtime: :server compiles against its Java
+//                 classes, and the native library is loaded only when an
+//                 operator installs one.
+//
 // Two former modules are gone because their boundaries were not boundaries.
 // `build-tools` held one class whose callers all already depended on
 // `patch-engine`; `world` and `runtime` were three jars stitched together at
@@ -28,5 +34,6 @@ include(
     ":veltis-api",
     ":launcher",
     ":patch-engine",
-    ":server"
+    ":server",
+    ":veltis-native"
 )
