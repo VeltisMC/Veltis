@@ -158,6 +158,141 @@ jobs:
           path: build/metadata/build-metadata.json
           if-no-files-found: error
 
+  native-linux:
+    name: Native engine (Linux x86-64)
+    # This job is the only place Linux native support is actually built and
+    # executed. Until it has run green, the README describes Linux as
+    # "buildable, not yet verified" rather than supported.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 26 (build toolchain)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '26'
+          cache: gradle
+
+      - name: Install native toolchain
+        # CMake and Ninja are present on ubuntu-latest, but naming them makes
+        # the job self-contained when the runner image changes. binutils
+        # supplies `nm` and `readelf` for the ABI and dependency checks.
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc g++ binutils
+
+      - name: Configure and build the native library
+        run: >-
+          ./gradlew :veltis-native:buildNative
+          -PveltisNativeGenerator=Ninja
+          --stacktrace --no-daemon
+
+      - name: Run the C/C++ tests through CTest
+        run: >-
+          ./gradlew :veltis-native:testNative
+          -PveltisNativeGenerator=Ninja
+          --stacktrace --no-daemon
+
+      - name: Run Java integration tests against the real library
+        run: >-
+          ./gradlew :veltis-native:cleanTest :veltis-native:test
+          -PveltisNativeTest=true
+          -PveltisNativeGenerator=Ninja
+          --stacktrace --no-daemon
+
+      - name: Run Java tests with no native library available
+        # Every path is set to an empty value so the fixture tests skip as well;
+        # this is the Java-only checkout a contributor without a compiler has.
+        run: |
+          set -euo pipefail
+          ./gradlew \
+            -Dveltis.native.test.library= \
+            -Dveltis.native.test.fakeAbi= \
+            -Dveltis.native.test.fakeVersion= \
+            -Dveltis.native.test.fakeInit= \
+            -Dveltis.native.test.fakeTransform= \
+            -Dveltis.native.test.fakeMissing= \
+            -Dveltis.native.test.fakeMinimal= \
+            :veltis-native:cleanTest :veltis-native:test \
+            -PveltisNativeTest=false \
+            --stacktrace --no-daemon
+
+      - name: Verify the exported C ABI
+        run: |
+          set -euo pipefail
+          LIB=veltis-native/build/native/linux-x86_64/libveltis_native.so
+          test -f "$LIB" || { echo "::error::missing $LIB"; exit 1; }
+
+          EXPECTED=$(cat <<'EOF'
+          veltis_native_abi_version
+          veltis_native_capabilities
+          veltis_native_init
+          veltis_native_is_initialized
+          veltis_native_last_error
+          veltis_native_self_test
+          veltis_native_shutdown
+          veltis_native_status_string
+          veltis_native_transform_i32
+          veltis_native_version_major
+          veltis_native_version_minor
+          veltis_native_version_patch
+          veltis_native_version_string
+          EOF
+          )
+
+          ACTUAL=$(nm -D --defined-only "$LIB" | awk '{print $3}' \
+            | grep '^veltis_native_' | LC_ALL=C sort -u || true)
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::exported symbols do not match veltis_native.h"
+            diff <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$ACTUAL") || true
+            exit 1
+          fi
+
+          # Hidden visibility must keep every C++ implementation symbol internal.
+          if nm -D --defined-only "$LIB" | awk '{print $3}' | grep -q '^_Z'; then
+            echo "::error::C++ symbols leaked into the C ABI"
+            exit 1
+          fi
+          echo "$ACTUAL"
+
+      - name: Verify the native library dependencies
+        run: |
+          set -euo pipefail
+          LIB=veltis-native/build/native/linux-x86_64/libveltis_native.so
+          NEEDED=$(readelf -d "$LIB" | awk '/\(NEEDED\)/ {print $5}' | tr -d '[]')
+          echo "NEEDED:"
+          printf '%s\n' "$NEEDED" | sed 's/^/  /'
+
+          UNEXPECTED=$(printf '%s\n' "$NEEDED" | grep -Ev \
+            '^(libc|libm|libstdc\+\+|libgcc_s|libpthread|libdl|librt)\.so(\.[0-9]+)*$' || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "::error::unexpected shared-library dependency: $UNEXPECTED"
+            exit 1
+          fi
+
+      - name: Native-enabled server startup and shutdown
+        run: |
+          set -euo pipefail
+          LIB="$PWD/veltis-native/build/native/linux-x86_64/libveltis_native.so"
+          ./gradlew \
+            -Dveltis.native.path="$LIB" \
+            :server:cleanTest :server:test \
+            --tests "org.veltismc.runtime.NativeBootstrapTest" \
+            --stacktrace --no-daemon
+
+      - name: Java-only server startup and shutdown
+        run: |
+          set -euo pipefail
+          ./gradlew \
+            -Dveltis.native.path= \
+            :server:cleanTest :server:test \
+            --tests "org.veltismc.runtime.NativeBootstrapTest" \
+            --stacktrace --no-daemon
+
   publish:
     name: Publish durable release & notify website
     needs: build

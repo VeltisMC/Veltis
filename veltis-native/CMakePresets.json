@@ -1,0 +1,58 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-x86_64",
+      "displayName": "Windows x86-64 (Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/windows-x86_64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/windows-x86_64",
+        "VELTIS_NATIVE_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "linux-x86_64",
+      "displayName": "Linux x86-64 (Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/linux-x86_64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/linux-x86_64",
+        "VELTIS_NATIVE_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-x86_64",
+      "configurePreset": "windows-x86_64"
+    },
+    {
+      "name": "linux-x86_64",
+      "configurePreset": "linux-x86_64"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-x86_64",
+      "configurePreset": "windows-x86_64",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-x86_64",
+      "configurePreset": "linux-x86_64",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

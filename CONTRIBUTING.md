@@ -11,6 +11,10 @@ Contributions to bug fixes, performance, world simulation, source patches, and d
 - Internet access for initial setup
 - A Java IDE (IntelliJ IDEA recommended)
 
+CMake 3.20+ and a C11/C++20 compiler are needed only for the optional native
+engine's `native` tasks; ordinary Java builds do not require them. See
+[`veltis-native/README.md`](veltis-native/README.md).
+
 Gradle is provided through the repository wrapper.
 
 ## Setup
@@ -75,6 +79,16 @@ Before submitting a contribution, build the project:
 ```
 
 Also run relevant tests and verify the affected functionality.
+
+If a change touches the optional native engine, build and test both sides:
+
+```bash
+./gradlew :veltis-native:check -PveltisNativeTest=true
+```
+
+This requires CMake and a C/C++ compiler. Without that toolchain, run
+`./gradlew :veltis-native:test`; the real-library test skips and the unit tests
+still cover configuration, compatibility rules and the Java fallback.
 
 For Minecraft source changes, confirm that the patch workflow completes successfully and that rebuilding the project does not introduce unrelated changes.
 
