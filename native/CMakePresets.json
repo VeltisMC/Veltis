@@ -1,0 +1,286 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-x86_64-msvc",
+      "displayName": "Windows x86-64, MSVC (native)",
+      "description": "Native build and tests. Run from a Visual Studio developer prompt, or let the generator locate the toolchain.",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/native/cmake/windows-x86_64-msvc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/windows-x86_64",
+        "VELTIS_NATIVE_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "windows-x86_64-clang-cl",
+      "displayName": "Windows x86-64, clang-cl (native)",
+      "description": "Native build and tests. Needs clang-cl, lld-link and a Visual Studio Build Tools installation.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/windows-x86_64-clang-cl",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/windows-x86_64",
+        "VELTIS_NATIVE_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "windows-x86_64-mingw-gcc",
+      "displayName": "Windows x86-64, MinGW-w64 GCC (native)",
+      "description": "Native build and tests with the MSYS2/MinGW-w64 gcc on PATH.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/windows-x86_64-mingw-gcc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/windows-x86_64",
+        "VELTIS_NATIVE_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "windows-x86_64-llvm-mingw",
+      "displayName": "Windows x86-64, LLVM-MinGW (native)",
+      "description": "Native build and tests with LLVM-MinGW's clang/clang++ on PATH.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/windows-x86_64-llvm-mingw",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/windows-x86_64",
+        "VELTIS_NATIVE_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "windows-arm64-mingw-cross",
+      "displayName": "Windows ARM64, LLVM-MinGW (compile-only)",
+      "description": "Cross-compilation only. Compiling this DLL does not prove runtime support; Windows ARM64 tests must run on a Windows ARM64 host.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/windows-arm64-mingw-cross",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-arm64-mingw.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/windows-aarch64",
+        "VELTIS_NATIVE_BUILD_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "linux-x86_64-gcc",
+      "displayName": "Linux x86-64, GCC (native)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/linux-x86_64-gcc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/linux-x86_64",
+        "VELTIS_NATIVE_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "linux-x86_64-clang",
+      "displayName": "Linux x86-64, Clang (native)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/linux-x86_64-clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/linux-x86_64",
+        "VELTIS_NATIVE_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "linux-aarch64-native",
+      "displayName": "Linux AArch64, native GCC/Clang",
+      "description": "Run on an AArch64 Linux host. Configure with -DCMAKE_C_COMPILER if the default compiler is not the one under test.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/linux-aarch64-native",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/linux-aarch64",
+        "VELTIS_NATIVE_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "linux-aarch64-cross",
+      "displayName": "Linux AArch64, GNU cross (compile-only)",
+      "description": "Cross-compilation only. Needs VELTIS_CROSS_PREFIX or an aarch64-linux-gnu- toolchain on PATH.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/linux-aarch64-cross",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-aarch64.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/linux-aarch64",
+        "VELTIS_NATIVE_BUILD_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "linux-riscv64-cross",
+      "displayName": "Linux RISC-V 64, GNU cross (Tier 2 investigation)",
+      "description": "Compile-only investigation target. RISC-V is not a supported release platform until a real runtime executes the tests.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/linux-riscv64-cross",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-riscv64.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/linux-riscv64",
+        "VELTIS_NATIVE_BUILD_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "macos-aarch64",
+      "displayName": "macOS Apple Silicon (native)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/macos-aarch64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/macos-aarch64",
+        "VELTIS_NATIVE_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "macos-x86_64",
+      "displayName": "macOS Intel x86-64",
+      "description": "Build and test on an Intel Mac, or on Apple Silicon with Rosetta 2 installed.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native/cmake/macos-x86_64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_OSX_ARCHITECTURES": "x86_64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0",
+        "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/macos-x86_64",
+        "VELTIS_NATIVE_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-x86_64-msvc",
+      "configurePreset": "windows-x86_64-msvc",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-x86_64-clang-cl",
+      "configurePreset": "windows-x86_64-clang-cl"
+    },
+    {
+      "name": "windows-x86_64-mingw-gcc",
+      "configurePreset": "windows-x86_64-mingw-gcc"
+    },
+    {
+      "name": "windows-x86_64-llvm-mingw",
+      "configurePreset": "windows-x86_64-llvm-mingw"
+    },
+    {
+      "name": "windows-arm64-mingw-cross",
+      "configurePreset": "windows-arm64-mingw-cross"
+    },
+    {
+      "name": "linux-x86_64-gcc",
+      "configurePreset": "linux-x86_64-gcc"
+    },
+    {
+      "name": "linux-x86_64-clang",
+      "configurePreset": "linux-x86_64-clang"
+    },
+    {
+      "name": "linux-aarch64-native",
+      "configurePreset": "linux-aarch64-native"
+    },
+    {
+      "name": "linux-aarch64-cross",
+      "configurePreset": "linux-aarch64-cross"
+    },
+    {
+      "name": "linux-riscv64-cross",
+      "configurePreset": "linux-riscv64-cross"
+    },
+    {
+      "name": "macos-aarch64",
+      "configurePreset": "macos-aarch64"
+    },
+    {
+      "name": "macos-x86_64",
+      "configurePreset": "macos-x86_64"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-x86_64-msvc",
+      "configurePreset": "windows-x86_64-msvc",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-x86_64-clang-cl",
+      "configurePreset": "windows-x86_64-clang-cl",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-x86_64-mingw-gcc",
+      "configurePreset": "windows-x86_64-mingw-gcc",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-x86_64-llvm-mingw",
+      "configurePreset": "windows-x86_64-llvm-mingw",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-x86_64-gcc",
+      "configurePreset": "linux-x86_64-gcc",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-x86_64-clang",
+      "configurePreset": "linux-x86_64-clang",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-aarch64-native",
+      "configurePreset": "linux-aarch64-native",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "macos-aarch64",
+      "configurePreset": "macos-aarch64",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "macos-x86_64",
+      "configurePreset": "macos-x86_64",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

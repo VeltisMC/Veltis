@@ -390,7 +390,6 @@ repositories {
 }
 
 dependencies {
-    pipelineClasspath(project(":patch-engine"))
     // The decompiler the pipeline runs to produce `source/`. Named here rather
     // than exported by `:patch-engine`: that module declares Vineflower
     // `compileOnly`, so it cannot reach a runtime classpath, an installed jar or
@@ -770,6 +769,7 @@ tasks.named<JavaCompile>("compileMinecraftJava") {
 // navigation: Ctrl+Click on VeltisBootstrap opens VeltisBootstrap.java instead of
 // a decompiled view of a class file.
 dependencies {
+    "pipelineClasspath"(project(":patcher"))
     add("minecraftCompileOnly", project(":server"))
     // A declared output of prepareVeltisRuntime: the engine compiles the same
     // sources this source set does, and the IDE must not see a half-built one.
