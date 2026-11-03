@@ -158,12 +158,97 @@ jobs:
           path: build/metadata/build-metadata.json
           if-no-files-found: error
 
-  native-linux:
-    name: Native engine (Linux x86-64)
-    # This job is the only place Linux native support is actually built and
-    # executed. Until it has run green, the README describes Linux as
-    # "buildable, not yet verified" rather than supported.
-    runs-on: ubuntu-latest
+  # ---------------------------------------------------------------------------
+  # Native engine, executed on every Tier 1 runner this repository can use.
+  #
+  # Compiling a library is not evidence that it works: each native-host entry
+  # below builds the library, runs the C/C++ suite (including the export and
+  # binary-format check), runs the Java FFM integration suite against the real
+  # library, runs the Java-only fallback suite, and starts/stops the server once
+  # with the library and once without it. A platform enters the README support
+  # table only after its entry here has run green.
+  # ---------------------------------------------------------------------------
+  native-host:
+    name: Native host (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86-64 MSVC
+            os: windows-latest
+            platform: windows-x86_64
+            toolchain: msvc
+            generator: ""
+            cc: ""
+            cxx: ""
+            osxArch: ""
+          - name: Windows x86-64 clang-cl
+            os: windows-latest
+            platform: windows-x86_64
+            toolchain: clang-cl
+            generator: Ninja
+            cc: clang-cl
+            cxx: clang-cl
+            osxArch: ""
+          - name: Windows x86-64 LLVM-MinGW
+            os: windows-latest
+            platform: windows-x86_64
+            toolchain: llvm-mingw
+            generator: Ninja
+            cc: clang
+            cxx: clang++
+            osxArch: ""
+          - name: Windows ARM64 MSVC
+            # `windows-11-arm` is a generally available hosted label. There is no
+            # continue-on-error here: an ARM64 Windows regression must fail CI.
+            os: windows-11-arm
+            platform: windows-aarch64
+            toolchain: msvc
+            generator: ""
+            cc: ""
+            cxx: ""
+            osxArch: ""
+          - name: Linux x86-64 GCC
+            os: ubuntu-latest
+            platform: linux-x86_64
+            toolchain: gcc
+            generator: Ninja
+            cc: gcc
+            cxx: g++
+            osxArch: ""
+          - name: Linux x86-64 Clang
+            os: ubuntu-latest
+            platform: linux-x86_64
+            toolchain: clang
+            generator: Ninja
+            cc: clang
+            cxx: clang++
+            osxArch: ""
+          - name: Linux AArch64 GCC
+            os: ubuntu-24.04-arm
+            platform: linux-aarch64
+            toolchain: gcc
+            generator: Ninja
+            cc: gcc
+            cxx: g++
+            osxArch: ""
+          - name: macOS Apple Silicon
+            os: macos-14
+            platform: macos-aarch64
+            toolchain: apple-clang
+            generator: Ninja
+            cc: ""
+            cxx: ""
+            osxArch: arm64
+          - name: macOS Intel x86-64
+            os: macos-15-intel
+            platform: macos-x86_64
+            toolchain: apple-clang
+            generator: Ninja
+            cc: ""
+            cxx: ""
+            osxArch: x86_64
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -175,123 +260,476 @@ jobs:
           java-version: '26'
           cache: gradle
 
-      - name: Install native toolchain
-        # CMake and Ninja are present on ubuntu-latest, but naming them makes
-        # the job self-contained when the runner image changes. binutils
-        # supplies `nm` and `readelf` for the ABI and dependency checks.
+      - name: Prepare the MSVC environment for clang-cl
+        if: matrix.toolchain == 'clang-cl'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Add LLVM clang-cl to PATH
+        if: matrix.toolchain == 'clang-cl'
+        shell: pwsh
+        run: '"C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append'
+
+      - name: Ensure Ninja (Windows)
+        if: runner.os == 'Windows' && matrix.generator == 'Ninja'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja -y --no-progress
+          }
+
+      - name: Install LLVM-MinGW (x86-64 UCRT)
+        if: matrix.toolchain == 'llvm-mingw'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Invoke-RestMethod -Headers @{ 'User-Agent' = 'veltis-ci' } `
+            -Uri 'https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest'
+          $asset = $release.assets |
+            Where-Object { $_.name -match '^llvm-mingw-.*-ucrt-x86_64\.zip$' } |
+            Select-Object -First 1
+          if (-not $asset) { throw 'no LLVM-MinGW x86_64 UCRT asset in the latest release' }
+          $zip = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
+          $root = Get-ChildItem $env:RUNNER_TEMP -Directory -Filter 'llvm-mingw-*' |
+            Select-Object -First 1
+          (Join-Path $root.FullName 'bin') | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install native toolchain (Linux)
+        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build gcc g++ binutils
+          sudo apt-get install -y --no-install-recommends cmake ninja-build binutils file
+          case "${{ matrix.toolchain }}" in
+            gcc) sudo apt-get install -y --no-install-recommends gcc g++ ;;
+            clang) sudo apt-get install -y --no-install-recommends clang ;;
+          esac
 
-      - name: Configure and build the native library
-        run: >-
-          ./gradlew :veltis-native:buildNative
-          -PveltisNativeGenerator=Ninja
-          --stacktrace --no-daemon
-
-      - name: Run the C/C++ tests through CTest
-        run: >-
-          ./gradlew :veltis-native:testNative
-          -PveltisNativeGenerator=Ninja
-          --stacktrace --no-daemon
-
-      - name: Run Java integration tests against the real library
-        run: >-
-          ./gradlew :veltis-native:cleanTest :veltis-native:test
-          -PveltisNativeTest=true
-          -PveltisNativeGenerator=Ninja
-          --stacktrace --no-daemon
-
-      - name: Run Java tests with no native library available
-        # Every path is set to an empty value so the fixture tests skip as well;
-        # this is the Java-only checkout a contributor without a compiler has.
+      - name: Install native toolchain (macOS)
+        if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          ./gradlew \
-            -Dveltis.native.test.library= \
-            -Dveltis.native.test.fakeAbi= \
-            -Dveltis.native.test.fakeVersion= \
-            -Dveltis.native.test.fakeInit= \
-            -Dveltis.native.test.fakeTransform= \
-            -Dveltis.native.test.fakeMissing= \
-            -Dveltis.native.test.fakeMinimal= \
-            :veltis-native:cleanTest :veltis-native:test \
-            -PveltisNativeTest=false \
-            --stacktrace --no-daemon
+          command -v cmake >/dev/null || brew install cmake
+          command -v ninja >/dev/null || brew install ninja
 
-      - name: Verify the exported C ABI
+      - name: Select the compiler under test
+        if: matrix.cc != ''
+        shell: bash
         run: |
           set -euo pipefail
-          LIB=veltis-native/build/native/linux-x86_64/libveltis_native.so
-          test -f "$LIB" || { echo "::error::missing $LIB"; exit 1; }
+          echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
 
-          EXPECTED=$(cat <<'EOF'
-          veltis_native_abi_version
-          veltis_native_capabilities
-          veltis_native_init
-          veltis_native_is_initialized
-          veltis_native_last_error
-          veltis_native_self_test
-          veltis_native_shutdown
-          veltis_native_status_string
-          veltis_native_transform_i32
-          veltis_native_version_major
-          veltis_native_version_minor
-          veltis_native_version_patch
-          veltis_native_version_string
-          EOF
-          )
-
-          ACTUAL=$(nm -D --defined-only "$LIB" | awk '{print $3}' \
-            | grep '^veltis_native_' | LC_ALL=C sort -u || true)
-          if [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "::error::exported symbols do not match veltis_native.h"
-            diff <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$ACTUAL") || true
-            exit 1
+      - name: Build, test and package the native library
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=("-PveltisNativePlatform=${{ matrix.platform }}")
+          if [ -n "${{ matrix.generator }}" ]; then
+            args+=("-PveltisNativeGenerator=${{ matrix.generator }}")
           fi
-
-          # Hidden visibility must keep every C++ implementation symbol internal.
-          if nm -D --defined-only "$LIB" | awk '{print $3}' | grep -q '^_Z'; then
-            echo "::error::C++ symbols leaked into the C ABI"
-            exit 1
+          if [ -n "${{ matrix.osxArch }}" ]; then
+            args+=("-PveltisNativeOsxArchitectures=${{ matrix.osxArch }}")
           fi
-          echo "$ACTUAL"
+          # One task that proves configure, build, CTest, the export check, the
+          # Java FFM suite, packaging, manifest and checksums for this host.
+          ./gradlew :veltis-native:verifyNativeRelease -PveltisNativeTest=true \
+            "${args[@]}" --stacktrace --no-daemon
 
-      - name: Verify the native library dependencies
+      - name: Verify the native library dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dll = "veltis-native/build/native/dist/${{ matrix.platform }}/veltis_native.dll"
+          if (-not (Test-Path $dll)) { throw "native library was not packaged: $dll" }
+          $machine = if ("${{ matrix.platform }}" -like '*-aarch64') { 'aarch64' } else { 'x86_64' }
+          ./veltis-native/tools/check-pe-imports.ps1 -Path $dll -ExpectMachine $machine
+
+      - name: Verify the native library dependencies (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
           set -euo pipefail
-          LIB=veltis-native/build/native/linux-x86_64/libveltis_native.so
+          LIB="veltis-native/build/native/${{ matrix.platform }}/libveltis_native.so"
+          test -f "$LIB" || { echo "::error::native library was not produced"; exit 1; }
+          file "$LIB"
           NEEDED=$(readelf -d "$LIB" | awk '/\(NEEDED\)/ {print $5}' | tr -d '[]')
-          echo "NEEDED:"
-          printf '%s\n' "$NEEDED" | sed 's/^/  /'
-
+          printf 'NEEDED:\n'; printf '%s\n' "$NEEDED" | sed 's/^/  /'
           UNEXPECTED=$(printf '%s\n' "$NEEDED" | grep -Ev \
             '^(libc|libm|libstdc\+\+|libgcc_s|libpthread|libdl|librt)\.so(\.[0-9]+)*$' || true)
           if [ -n "$UNEXPECTED" ]; then
             echo "::error::unexpected shared-library dependency: $UNEXPECTED"
             exit 1
           fi
+          # The loader looks beside the JAR, never in a build tree, so a baked-in
+          # RPATH would be a packaging defect rather than a convenience.
+          if readelf -d "$LIB" | grep -Eq '\((RPATH|RUNPATH)\)'; then
+            echo "::error::native library embeds an RPATH/RUNPATH"
+            readelf -d "$LIB"
+            exit 1
+          fi
+          # Recorded, not asserted: the oldest glibc/libstdc++ symbols used.
+          REQUIREMENTS=$(readelf --version-info "$LIB" |
+            grep -oE '(GLIBC|GLIBCXX|CXXABI)_[0-9]+(\.[0-9]+)+' | sort -Vu)
+          printf 'version requirements:\n'; printf '%s\n' "$REQUIREMENTS" | sed 's/^/  /'
+          {
+            echo "### Native runtime requirements (Linux ${{ matrix.platform }})"
+            echo '```'
+            printf '%s\n' "$REQUIREMENTS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Native-enabled server startup and shutdown
+      - name: Verify the native library dependencies (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
         run: |
           set -euo pipefail
-          LIB="$PWD/veltis-native/build/native/linux-x86_64/libveltis_native.so"
-          ./gradlew \
-            -Dveltis.native.path="$LIB" \
+          LIB="veltis-native/build/native/${{ matrix.platform }}/libveltis_native.dylib"
+          test -f "$LIB" || { echo "::error::native library was not produced"; exit 1; }
+          file "$LIB"
+          SLICES=$(lipo -archs "$LIB")
+          if [ "${{ matrix.platform }}" = "macos-aarch64" ]; then EXPECTED=arm64; else EXPECTED=x86_64; fi
+          echo "slices: $SLICES (expected $EXPECTED)"
+          if [ "$SLICES" != "$EXPECTED" ]; then
+            echo "::error::unexpected architecture slices (no universal binary is published)"
+            exit 1
+          fi
+          DEPS=$(otool -L "$LIB" | tail -n +2 | awk '{print $1}')
+          printf 'dependencies:\n'; printf '%s\n' "$DEPS" | sed 's/^/  /'
+          UNEXPECTED=$(printf '%s\n' "$DEPS" | grep -Ev '^(/usr/lib/|/System/Library/)' || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "::error::unexpected dylib dependency: $UNEXPECTED"
+            exit 1
+          fi
+          # The deployment target is a build-time claim; record it instead of
+          # claiming support for an older macOS that was never executed.
+          MINOS=$(vtool -show-build "$LIB" | awk '/minos/ {print $2; exit}')
+          test -n "$MINOS" || { echo "::error::dylib has no LC_BUILD_VERSION minos"; exit 1; }
+          echo "minimum macOS: $MINOS"
+          echo "### Native runtime requirement (macOS ${{ matrix.platform }}): $MINOS" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Java-only fallback suite (no native fixture)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The flag makes the Gradle fixture wiring detach every library path and
+          # makes NativeLoaderTest assert that nothing leaked into the JVM.
+          ./gradlew :veltis-native:cleanTest :veltis-native:test \
+            "-Dveltis.native.test.expectJavaOnly=true" \
+            --stacktrace --no-daemon
+
+      - name: Native-enabled server startup and shutdown
+        shell: bash
+        run: |
+          set -euo pipefail
+          LIB=$(find veltis-native/build/native -maxdepth 2 -type f \
+            \( -name 'veltis_native.dll' -o -name 'libveltis_native.so' -o -name 'libveltis_native.dylib' \) \
+            | head -n 1)
+          test -f "$LIB" || { echo "::error::native library was not produced"; exit 1; }
+          ./gradlew -Dveltis.native.path="$LIB" \
             :server:cleanTest :server:test \
             --tests "org.veltismc.runtime.NativeBootstrapTest" \
             --stacktrace --no-daemon
 
       - name: Java-only server startup and shutdown
+        shell: bash
         run: |
           set -euo pipefail
-          ./gradlew \
-            -Dveltis.native.path= \
+          ./gradlew -Dveltis.native.path= \
             :server:cleanTest :server:test \
             --tests "org.veltismc.runtime.NativeBootstrapTest" \
             --stacktrace --no-daemon
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: veltis-native-${{ matrix.platform }}-${{ matrix.toolchain }}
+          path: |
+            veltis-native/build/native/dist/${{ matrix.platform }}
+            veltis-native/build/native/dist/verification-report-${{ matrix.platform }}.json
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Cross-compilation. These jobs prove that the source and CMake configuration
+  # compile for a target; they deliberately do not claim runtime support, because
+  # the producing runner cannot execute the artifact. CTest is configured off in
+  # every cross preset.
+  # ---------------------------------------------------------------------------
+  native-cross:
+    name: Native cross-compile (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows ARM64 LLVM-MinGW
+            os: windows-latest
+            platform: windows-aarch64
+            preset: windows-arm64-mingw-cross
+            builddir: veltis-native/build/native/cmake/windows-arm64-mingw-cross
+            artifact: veltis-native/build/native/windows-aarch64/veltis_native.dll
+            toolchain: cmake/toolchains/windows-arm64-mingw.cmake
+            optional: false
+          - name: Linux AArch64 GNU
+            os: ubuntu-latest
+            platform: linux-aarch64
+            preset: linux-aarch64-cross
+            builddir: veltis-native/build/native/cmake/linux-aarch64-cross
+            artifact: veltis-native/build/native/linux-aarch64/libveltis_native.so
+            toolchain: cmake/toolchains/linux-aarch64.cmake
+            optional: false
+          - name: Linux RISC-V 64 GNU
+            os: ubuntu-latest
+            platform: linux-riscv64
+            preset: linux-riscv64-cross
+            builddir: veltis-native/build/native/cmake/linux-riscv64-cross
+            artifact: veltis-native/build/native/linux-riscv64/libveltis_native.so
+            toolchain: cmake/toolchains/linux-riscv64.cmake
+            # Tier 2 investigation only. This is the one entry allowed to fail;
+            # Windows ARM64 and Linux AArch64 must fail the workflow.
+            optional: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 26 (cross-execution guard)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '26'
+          cache: gradle
+
+      - name: Install LLVM-MinGW (host x86-64 build)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # This job runs on an x86-64 host. The aarch64 distribution is a
+          # native ARM64 toolchain and cannot be executed here; the x86-64
+          # distribution contains the aarch64-w64-mingw32-* cross compilers.
+          $release = Invoke-RestMethod -Headers @{ 'User-Agent' = 'veltis-ci' } `
+            -Uri 'https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest'
+          $asset = $release.assets |
+            Where-Object { $_.name -match '^llvm-mingw-.*-ucrt-x86_64\.zip$' } |
+            Select-Object -First 1
+          if (-not $asset) { throw 'no LLVM-MinGW x86_64 UCRT asset in the latest release' }
+          $zip = Join-Path $env:RUNNER_TEMP 'llvm-mingw-cross.zip'
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
+          $root = Get-ChildItem $env:RUNNER_TEMP -Directory -Filter 'llvm-mingw-*' |
+            Select-Object -First 1
+          (Join-Path $root.FullName 'bin') | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install cross toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build binutils
+          case "${{ matrix.preset }}" in
+            linux-aarch64-cross)
+              sudo apt-get install -y --no-install-recommends \
+                gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+              ;;
+            linux-riscv64-cross)
+              sudo apt-get install -y --no-install-recommends \
+                gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+              ;;
+          esac
+
+      - name: Ensure Ninja (Windows cross-compile)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja -y --no-progress
+          }
+
+      - name: Configure and compile
+        working-directory: veltis-native
+        run: |
+          cmake --preset ${{ matrix.preset }}
+          cmake --build --preset ${{ matrix.preset }} --parallel
+
+      - name: Verify format, machine, exports and dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          ART="${{ matrix.artifact }}"
+          test -f "$ART" || { echo "::error::cross-compiled artifact missing: $ART"; exit 1; }
+          file "$ART" || true
+
+          # The header is the single source of truth for the public ABI.
+          EXPECTED=$(grep -E '^VELTIS_NATIVE_API ' veltis-native/include/veltis/native/veltis_native.h |
+            sed -E 's/.*[ *]([A-Za-z_][A-Za-z0-9_]*)\(.*/\1/' | sort)
+          EXPECTED_COUNT=$(printf '%s\n' "$EXPECTED" | wc -l | tr -d ' ')
+          [ "$EXPECTED_COUNT" -eq 13 ] || {
+            echo "::error::header declares $EXPECTED_COUNT exports, expected 13"
+            exit 1
+          }
+
+          case "${{ matrix.platform }}" in
+            windows-aarch64)
+              MACHINE=$(llvm-objdump -f "$ART" | sed -n 's/^architecture: //p' | head -n 1)
+              echo "machine: $MACHINE"
+              [ "$MACHINE" = "aarch64" ] || { echo "::error::not an ARM64 image"; exit 1; }
+              ACTUAL=$(llvm-readobj --coff-exports "$ART" | awk '/Name: / {print $2}' | sort)
+              if llvm-readobj --coff-exports "$ART" | grep -Eq 'Name: (\?|_Z)'; then
+                echo "::error::mangled C++ symbol in the export table"
+                exit 1
+              fi
+              pwsh -NoProfile -File veltis-native/tools/check-pe-imports.ps1 \
+                -Path "$ART" -ExpectMachine aarch64
+              ;;
+            linux-aarch64)
+              readelf -h "$ART" | grep 'Machine:.*AArch64' >/dev/null
+              ACTUAL=$(nm -D --defined-only --extern-only "$ART" |
+                awk '$2 ~ /^[TW]$/ {print $3}' | grep -v '^_' | sort)
+              ;;
+            linux-riscv64)
+              readelf -h "$ART" | grep -E 'Machine:.*(RISC-V|RISC-V 64)' >/dev/null
+              ACTUAL=$(nm -D --defined-only --extern-only "$ART" |
+                awk '$2 ~ /^[TW]$/ {print $3}' | grep -v '^_' | sort)
+              ;;
+            *)
+              echo "::error::unknown platform ${{ matrix.platform }}"
+              exit 1
+              ;;
+          esac
+
+          diff -u <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$ACTUAL") || {
+            echo "::error::exported symbols do not match the public header"
+            exit 1
+          }
+          echo "exports: 13 (exact match, no C++ symbols)"
+
+          if [ "${{ matrix.platform }}" = "windows-aarch64" ]; then
+            echo "compile-only: the x86-64 runner cannot execute an ARM64 DLL"
+          else
+            NEEDED=$(readelf -d "$ART" | awk '/\(NEEDED\)/ {print $5}' | tr -d '[]')
+            printf 'NEEDED:\n'; printf '%s\n' "$NEEDED" | sed 's/^/  /'
+            UNEXPECTED=$(printf '%s\n' "$NEEDED" | grep -Ev \
+              '^(libc|libm|libstdc\+\+|libgcc_s|libpthread|libdl|librt)\.so(\.[0-9]+)*$' || true)
+            [ -z "$UNEXPECTED" ] || {
+              echo "::error::unexpected shared-library dependency: $UNEXPECTED"
+              exit 1
+            }
+            echo "compile-only: no target binary was executed"
+          fi
+
+      - name: Verify the cross build cannot execute target binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "${{ matrix.builddir }}/CTestTestfile.cmake" ]; then
+            echo "::error::cross build registered CTest tests"
+            exit 1
+          fi
+          # The Gradle guard is the second half of the claim: even if a caller
+          # forgets, testNative must refuse to run a foreign executable.
+          set +e
+          ./gradlew :veltis-native:testNative \
+            "-PveltisNativePlatform=${{ matrix.platform }}" \
+            "-PveltisNativeToolchainFile=${{ matrix.toolchain }}" \
+            -PveltisNativeGenerator=Ninja --no-daemon --stacktrace > guard.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::cross build executed the target test binary"
+            cat guard.log
+            exit 1
+          fi
+          if ! grep -q 'cannot run a cross-compiled build' guard.log; then
+            echo "::error::the guard failed for an unexpected reason"
+            cat guard.log
+            exit 1
+          fi
+          echo "guard rejected execution as expected"
+
+      - name: Upload cross-compiled artifact (inspection only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: veltis-native-cross-${{ matrix.platform }}
+          path: veltis-native/build/native/${{ matrix.platform }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Debug configuration. Release is the shipped artifact; Debug exists to catch
+  # assertion-sensitive defects in the engine and its tests. The build type is
+  # recorded in the packaged manifest, so these jobs never masquerade as release
+  # builds.
+  # ---------------------------------------------------------------------------
+  native-debug:
+    name: Native debug (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86-64 MSVC
+            os: windows-latest
+            platform: windows-x86_64
+          - name: Linux x86-64 GCC
+            os: ubuntu-latest
+            platform: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 26 (build toolchain)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '26'
+          cache: gradle
+
+      - name: Install native toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build gcc g++
+
+      - name: Build and test in Debug
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :veltis-native:check -PveltisNativeTest=true \
+            "-PveltisNativePlatform=${{ matrix.platform }}" \
+            "-PveltisNativeBuildType=Debug" \
+            -PveltisNativeGenerator=Ninja --stacktrace --no-daemon
+
+  # ---------------------------------------------------------------------------
+  # Tier 2 investigation. FreeBSD is not a supported release platform; this job
+  # exists to find portability defects and is explicitly non-blocking. It must
+  # not be read as a support claim until the support table says so.
+  # ---------------------------------------------------------------------------
+  native-freebsd-investigation:
+    name: Native engine (FreeBSD investigation, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build and test inside a FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: pkg install -y cmake ninja
+          run: |
+            set -eu
+            cd veltis-native
+            cmake -S . -B build/native/cmake/freebsd-x86_64 -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DVELTIS_NATIVE_OUTPUT_DIR="$PWD/build/native/freebsd-x86_64" \
+              -DVELTIS_NATIVE_BUILD_TESTS=ON
+            cmake --build build/native/cmake/freebsd-x86_64 --parallel
+            ctest --test-dir build/native/cmake/freebsd-x86_64 --output-on-failure
 
   publish:
     name: Publish durable release & notify website

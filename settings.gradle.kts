@@ -31,9 +31,9 @@ enableFeaturePreview("STABLE_CONFIGURATION_CACHE")
 // `patch-engine`; `world` and `runtime` were three jars stitched together at
 // packaging time by a script that had to name all three in the right order.
 include(
-    ":veltis-api",
+    ":api",
     ":launcher",
-    ":patch-engine",
+    ":patcher",
     ":server",
-    ":veltis-native"
+    ":native"
 )

@@ -13,10 +13,10 @@ application {
 }
 
 dependencies {
+    implementation(project(":patcher"))
     // VeltisConsole: Log4j2 configuration plus the UTF-8 console setup, shared
     // with :server and the build pipeline. Nothing else from the patch engine is
     // reachable from a launcher jar — it does not download, decompile or patch.
-    implementation(project(":patch-engine"))
     // The Log4j2 core whose configuration VeltisConsole installs, plus the JUL
     // bridge the server installs its manager from. Declared here so a standalone
     // `gradlew :launcher:run` logs exactly like the packaged uber jar.
