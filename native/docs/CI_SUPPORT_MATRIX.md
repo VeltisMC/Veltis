@@ -67,24 +67,24 @@ archive and rebuild it from scratch), and the Java integration suite — plus a
 | 1 | Windows x86-64 MSVC (177) | `windows-latest` | `windows-x86_64` | MSVC (NMake default generator) | forced `true` (a DLL beside a JAR must not import `vcruntime140.dll`) | **Not tested** — no Visual Studio on this host |
 | 2 | Windows x86-64 clang-cl (188) | `windows-latest` | `windows-x86_64` | clang-cl + Ninja (MSVC env via `ilammy/msvc-dev-cmd`) | forced `true` | **Not tested** — no clang-cl here |
 | 3 | Windows x86-64 LLVM-MinGW (197) | `windows-latest` | `windows-x86_64` | LLVM-MinGW (latest release zip, downloaded at run time) + Ninja | left empty **on purpose**: proves the Windows static-by-default rather than a flag | **Executed locally** (same toolchain family: LLVM-MinGW Clang 23, 2026-11-03 round) |
-| 4 | Windows ARM64 MSVC (208) | `windows-11-arm` | `windows-aarch64` | MSVC ARM64 | forced `true` | **Not tested** — no ARM64 Windows host. No `continue-on-error`: an ARM64 regression must fail CI |
-| 5 | Linux x86-64 GCC (219) | `ubuntu-latest` | `linux-x86_64` | apt `gcc`/`g++` + Ninja | — | **Not tested** — no Linux host, no WSL, no container runtime |
-| 6 | Linux x86-64 Clang (227) | `ubuntu-latest` | `linux-x86_64` | apt `clang` + Ninja | — | **Not tested** |
-| 7 | Linux AArch64 GCC (235) | `ubuntu-24.04-arm` | `linux-aarch64` | native apt `gcc` + Ninja | — | **Not tested** — native ARM64 Linux lane, not a cross build |
-| 8 | macOS Apple Silicon (243) | `macos-15` | `macos-aarch64` | Apple clang + Ninja, `arm64` slice | — | **Not tested** — no macOS host. Label changed from `macos-14`, see §10 |
-| 9 | macOS Intel x86-64 (255) | `macos-15-intel` | `macos-x86_64` | Apple clang + Ninja, `x86_64` slice | — | **Not tested** — no macOS host |
+| 4 | Windows ARM64 MSVC (208) | `windows-11-arm` | `windows-aarch64` | MSVC ARM64; JDK **Zulu 25** (no vendor ships a win-aarch64 Temurin 26/25, so this lane overrides the distribution and the Gradle toolchain version) | forced `true` | **Not tested** — no ARM64 Windows host. No `continue-on-error`: an ARM64 regression must fail CI |
+| 5 | Linux x86-64 GCC (226) | `ubuntu-latest` | `linux-x86_64` | apt `gcc`/`g++` + Ninja | — | **Not tested** — no Linux host, no WSL, no container runtime |
+| 6 | Linux x86-64 Clang (234) | `ubuntu-latest` | `linux-x86_64` | apt `clang` + Ninja | — | **Not tested** |
+| 7 | Linux AArch64 GCC (242) | `ubuntu-24.04-arm` | `linux-aarch64` | native apt `gcc` + Ninja | — | **Not tested** — native ARM64 Linux lane, not a cross build |
+| 8 | macOS Apple Silicon (250) | `macos-15` | `macos-aarch64` | Apple clang + Ninja, `arm64` slice | — | **Not tested** — no macOS host. Label changed from `macos-14`, see §10 |
+| 9 | macOS Intel x86-64 (262) | `macos-15-intel` | `macos-x86_64` | Apple clang + Ninja, `x86_64` slice | — | **Not tested** — no macOS host |
 
 Steps after the core build, per OS:
 
 | Step (line) | Proves |
 | --- | --- |
-| Dependencies, Windows (357) | The packaged DLL passes `tools/check-pe-imports.ps1` — the **same script** `verifyNativeRuntimePolicy` calls, so CI and release cannot disagree. The import check follows the *manifest's* `staticRuntime`, not the job label: a static claim with a CRT import fails, a dynamic claim is allowed and announced in the step summary |
-| Dependencies, Linux (379) | `file` format; `NEEDED` allowlist (`libc`, `libm`, `libstdc++`, `libgcc_s`, `libpthread`, `libdl`, `librt` only); **no `RPATH`/`RUNPATH`** (Java passes an absolute path, so an embedded build-machine path would only break installs); oldest `GLIBC`/`GLIBCXX`/`CXXABI` symbols *recorded* in the step summary as the runtime floor, not asserted |
-| Dependencies, macOS (415) | `lipo -archs` is exactly one slice (no universal binary is ever published); `otool -L` allowlist (`/usr/lib/`, `/System/Library/`); `vtool` `minos` exists and **equals the manifest's `minimumOsVersion`**; the value is written to the step summary as a claim about that build only |
-| Java-only fallback suite (453) | `:veltis-native:test` with `-Dveltis.native.test.expectJavaOnly=true` — every fixture detached, and the suite asserts nothing leaked into the JVM |
-| Native-enabled server bootstrap (463) | `NativeBootstrapTest` with `-Dveltis.native.path=<library>`: server starts with the native engine and releases it on stop |
-| Java-only server bootstrap (476) | `NativeBootstrapTest` with an empty path: server starts on the fallback — the "native never blocks startup" claim, executed |
-| Upload (485) | `dist/<platform>/` plus `verification-report-<platform>.json` as a build artifact (not a release asset) |
+| Dependencies, Windows (381) | The packaged DLL passes `tools/check-pe-imports.ps1` — the **same script** `verifyNativeRuntimePolicy` calls, so CI and release cannot disagree. The import check follows the *manifest's* `staticRuntime`, not the job label: a static claim with a CRT import fails, a dynamic claim is allowed and announced in the step summary |
+| Dependencies, Linux (403) | `file` format; `NEEDED` allowlist (`libc`, `libm`, `libstdc++`, `libgcc_s`, `libpthread`, `libdl`, `librt`, plus glibc's own program interpreter `ld-linux*` — recorded for any object using dynamic TLS, which this module does via the thread-local last-error slot); **no `RPATH`/`RUNPATH`** (Java passes an absolute path, so an embedded build-machine path would only break installs); oldest `GLIBC`/`GLIBCXX`/`CXXABI` symbols *recorded* in the step summary as the runtime floor, not asserted |
+| Dependencies, macOS (443) | `lipo -archs` is exactly one slice (no universal binary is ever published); `otool -L` allowlist (`/usr/lib/`, `/System/Library/`); `vtool` `minos` exists and **equals the manifest's `minimumOsVersion`**; the value is written to the step summary as a claim about that build only |
+| Java-only fallback suite (481) | `:veltis-native:test` with `-Dveltis.native.test.expectJavaOnly=true` — every fixture detached, and the suite asserts nothing leaked into the JVM |
+| Native-enabled server bootstrap (491) | `NativeBootstrapTest` with `-Dveltis.native.path=<library>`: server starts with the native engine and releases it on stop |
+| Java-only server bootstrap (504) | `NativeBootstrapTest` with an empty path: server starts on the fallback — the "native never blocks startup" claim, executed |
+| Upload (513) | `dist/<platform>/` plus `verification-report-<platform>.json` as a build artifact (not a release asset) |
 
 ## 4. `native-cross` — three cross-compile lanes
 
@@ -93,9 +93,9 @@ Configure and build from presets (line 591), then **inspect** the artifact
 
 | Lane (line) | Runner | Preset / toolchain | Status |
 | --- | --- | --- | --- |
-| Windows ARM64 LLVM-MinGW (506) | `windows-latest` (x86-64 host) | `windows-arm64-mingw-cross` / `cmake/toolchains/windows-arm64-mingw.cmake` | blocking; **Not executed** locally (no LLVM-MinGW aarch64 cross attempt was made in this round) |
-| Linux AArch64 GNU (514) | `ubuntu-latest` | `linux-aarch64-cross` / `cmake/toolchains/linux-aarch64.cmake` | blocking; **cannot configure locally** — no `aarch64-linux-gnu-gcc` on this host (infrastructure absence, not a source failure) |
-| Linux RISC-V 64 GNU (522) | `ubuntu-latest` | `linux-riscv64-cross` / `cmake/toolchains/linux-riscv64.cmake` | `optional: true` → `continue-on-error` (line 533): the lane is a portability probe, not a support claim |
+| Windows ARM64 LLVM-MinGW (534) | `windows-latest` (x86-64 host) | `windows-arm64-mingw-cross` / `cmake/toolchains/windows-arm64-mingw.cmake` | blocking; **Not executed** locally (no LLVM-MinGW aarch64 cross attempt was made in this round) |
+| Linux AArch64 GNU (542) | `ubuntu-latest` | `linux-aarch64-cross` / `cmake/toolchains/linux-aarch64.cmake` | blocking; **cannot configure locally** — no `aarch64-linux-gnu-gcc` on this host (infrastructure absence, not a source failure) |
+| Linux RISC-V 64 GNU (550) | `ubuntu-latest` | `linux-riscv64-cross` / `cmake/toolchains/linux-riscv64.cmake` | `optional: true` → `continue-on-error` (line 561): the lane is a portability probe, not a support claim |
 
 What the inspection step asserts (all machine-checked):
 

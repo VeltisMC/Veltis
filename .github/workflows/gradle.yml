@@ -216,6 +216,13 @@ jobs:
             cxx: ""
             osxArch: ""
             staticRuntime: "true"
+            # No vendor ships a Windows ARM64 JDK 26 (or 25) for Temurin — the
+            # Adoptium API returns zero windows/aarch64 builds for both — so the
+            # default distribution fails at setup time before any build runs.
+            # Zulu does ship win-aarch64 25.0.5.0.3, matching the locally
+            # verified toolchain; Java 25 still provides the FFM API (22+).
+            javaDistribution: zulu
+            javaVersion: "25"
           - name: Linux x86-64 GCC
             os: ubuntu-latest
             platform: linux-x86_64
@@ -265,12 +272,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Temurin JDK 26 (build toolchain)
+      - name: Set up JDK ${{ matrix.javaVersion || '26' }} (build toolchain)
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: '26'
+          # Overridable per matrix entry: no vendor ships a Windows ARM64 JDK
+          # 26 or 25 for Temurin (the Adoptium API returns zero win-aarch64
+          # builds for both), so the default distribution fails at setup time
+          # before any build runs. Zulu does ship win-aarch64 25.0.5.0.3 —
+          # matching the locally verified toolchain — and Java 25 still has the
+          # FFM API (22+). Every other lane keeps the Temurin 26 default.
+          distribution: ${{ matrix.javaDistribution || 'temurin' }}
+          java-version: ${{ matrix.javaVersion || '26' }}
           cache: gradle
+
+      # The build JDK is a Gradle project property (`veltisToolchainVersion`,
+      # default 26), so a lane that installed a different JDK must build with
+      # the one it actually has — win-aarch64 has no JDK 26 to fall back to and
+      # Gradle does not auto-download toolchains. ORG_GRADLE_PROJECT_* is
+      # Gradle's documented environment-variable form of -P, so one line keeps
+      # every Gradle invocation in this job on the installed JDK.
+      - name: Match the Gradle toolchain to the installed JDK
+        if: matrix.javaVersion
+        shell: bash
+        run: echo "ORG_GRADLE_PROJECT_veltisToolchainVersion=${{ matrix.javaVersion }}" >> "$GITHUB_ENV"
 
       - name: Prepare the MSVC environment for clang-cl
         if: matrix.toolchain == 'clang-cl'
@@ -386,8 +410,12 @@ jobs:
           file "$LIB"
           NEEDED=$(readelf -d "$LIB" | awk '/\(NEEDED\)/ {print $5}' | tr -d '[]')
           printf 'NEEDED:\n'; printf '%s\n' "$NEEDED" | sed 's/^/  /'
+          # ld-linux-* is glibc's own program interpreter — as system a library
+          # as libc itself. It lands in NEEDED whenever an object uses dynamic
+          # TLS, which this module does (the thread-local last-error slot), so
+          # rejecting it would be a false positive on a core glibc component.
           UNEXPECTED=$(printf '%s\n' "$NEEDED" | grep -Ev \
-            '^(libc|libm|libstdc\+\+|libgcc_s|libpthread|libdl|librt)\.so(\.[0-9]+)*$' || true)
+            '^(libc|libm|libstdc\+\+|libgcc_s|libpthread|libdl|librt|ld-linux(-[A-Za-z0-9_-]+)?)\.so(\.[0-9]+)*$' || true)
           if [ -n "$UNEXPECTED" ]; then
             echo "::error::unexpected shared-library dependency: $UNEXPECTED"
             exit 1
@@ -681,8 +709,11 @@ jobs:
           else
             NEEDED=$(readelf -d "$ART" | awk '/\(NEEDED\)/ {print $5}' | tr -d '[]')
             printf 'NEEDED:\n'; printf '%s\n' "$NEEDED" | sed 's/^/  /'
+            # ld-linux-*: glibc's own program interpreter (as system a component
+            # as libc), recorded as NEEDED whenever an object uses dynamic TLS —
+            # which this module does via the thread-local last-error slot.
             UNEXPECTED=$(printf '%s\n' "$NEEDED" | grep -Ev \
-              '^(libc|libm|libstdc\+\+|libgcc_s|libpthread|libdl|librt)\.so(\.[0-9]+)*$' || true)
+              '^(libc|libm|libstdc\+\+|libgcc_s|libpthread|libdl|librt|ld-linux(-[A-Za-z0-9_-]+)?)\.so(\.[0-9]+)*$' || true)
             [ -z "$UNEXPECTED" ] || {
               echo "::error::unexpected shared-library dependency: $UNEXPECTED"
               exit 1

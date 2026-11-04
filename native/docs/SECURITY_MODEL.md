@@ -139,9 +139,12 @@ that is a machine check rather than a review habit:
 - the source archive is built from `git ls-files` only, so a `CMakeCache.txt`,
   a stray object file or a local toolchain path cannot enter a release, and
   `verifyNativeSourceArchive` then rebuilds the extracted copy from scratch;
-- builds are byte-reproducible (link timestamps and Mach-O UUIDs suppressed,
+- builds are byte-reproducible on Windows and ELF (link timestamps suppressed,
   sorted archive entries) — three clean builds produced identical SHA-256 — so
   "the bytes I tested are the bytes I ship" is checkable rather than assumed;
+  macOS keeps its Mach-O `LC_UUID` because Apple's linker requires it in any
+  dylib a consumer links against, so macOS bytes are not claimed identical
+  between builds;
 - `verification-report-<platform>.json` records `commit` and `treeState`
   honestly (`tree dirty` when the checkout is dirty, never a cleaned-up claim).
 

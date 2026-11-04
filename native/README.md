@@ -653,10 +653,14 @@ Nothing from the toolchain or the operating system is bundled: no compiler
 runtime, no `libstdc++`, no system dylib. `SHA256SUMS` covers both the library
 and the manifest, so an edited manifest is detectable before it is trusted.
 
-The build is byte-reproducible: PE link timestamps (`/Brepro`,
-`--no-insert-timestamp`) and Mach-O UUIDs (`-no_uuid`) are suppressed, and
-archive entries are sorted with fixed timestamps. Verified locally: three clean
-Release builds and two packaging runs produced identical hashes.
+The build is byte-reproducible on Windows and ELF: PE link timestamps
+(`/Brepro`, `--no-insert-timestamp`) are suppressed and archive entries are
+sorted with fixed timestamps. Verified locally: three clean Release builds and
+two packaging runs produced identical hashes. macOS deliberately keeps its
+Mach-O `LC_UUID` — Apple's current linker refuses to link any consumer against
+a dylib that lacks it (the CI test executables fail with "missing LC_UUID load
+command in libveltis_native.dylib") — so byte reproducibility is a Windows/ELF
+property and is not claimed for macOS builds.
 
 No universal macOS binary is produced: it would require building and validating
 both slices on one host, and `lipo -archs` in CI asserts the artifact contains

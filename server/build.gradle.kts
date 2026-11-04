@@ -69,6 +69,19 @@ tasks.withType<Test>().configureEach {
     // passes this flag to the server, and the test JVM must match it.
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     providers.systemProperty("veltis.native.path").orNull?.let { value ->
-        systemProperty("veltis.native.path", value)
+        // A path handed to Gradle is written relative to the repository, but the
+        // test JVM resolves a relative path against ITS working directory, which
+        // is this project's directory — so `native/build/.../veltis_native.dll`
+        // silently names `server/native/build/...`, the loader reports
+        // "configured native library not found", and the bootstrap assertion
+        // fails with no hint that the file exists a directory over. Anchor the
+        // path to the repository root here, the one place that knows it.
+        val anchored = if (value.isBlank()) {
+            value
+        } else {
+            val named = File(value)
+            (if (named.isAbsolute) named else rootProject.projectDir.resolve(named)).path
+        }
+        systemProperty("veltis.native.path", anchored)
     }
 }

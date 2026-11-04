@@ -330,33 +330,36 @@ if(NOT WIN32 AND NOT APPLE)
     target_link_options(veltis_native PRIVATE "LINKER:--no-undefined")
 endif()
 
-# Reproducible artifact bytes. PE embeds the link time and Mach-O embeds a random
-# LC_UUID; both change between otherwise identical builds, which makes the
-# published checksum meaningless. ELF build IDs are content-derived, so they are
-# left alone.
+# Reproducible artifact bytes. PE embeds the link time, which changes between
+# otherwise identical builds and makes the published checksum meaningless; ELF
+# build IDs are content-derived. Mach-O was given the same treatment with
+# `-no_uuid`, but Apple's current linker refuses to link ANY consumer against a
+# dylib that has no LC_UUID — the CI test executables fail with
+# "missing LC_UUID load command in libveltis_native.dylib" — and suppressing it
+# was never executed on a macOS runner before the first CI run showed this.
+# macOS therefore keeps its UUID: byte reproducibility is a Windows/ELF property
+# and is deliberately not claimed for macOS builds.
 if(MSVC)
     target_link_options(veltis_native PRIVATE "/Brepro")
 elseif(MINGW)
     target_link_options(veltis_native PRIVATE "-Wl,--no-insert-timestamp")
 endif()
-if(APPLE)
-    target_link_options(veltis_native PRIVATE "LINKER:-no_uuid")
 
-    # Belt and braces for the deployment target. CMake's Darwin platform module
-    # normally turns CMAKE_OSX_DEPLOYMENT_TARGET into -mmacosx-version-min while
-    # project() runs; if it did not, the artifact would silently carry the SDK's
-    # own floor while the manifest claimed the configured one. The value is still
-    # only a build-time floor: it is not evidence that an older macOS executed the
-    # library, and the JVM's own requirement is usually higher than this.
-    if(CMAKE_OSX_DEPLOYMENT_TARGET AND NOT CMAKE_C_FLAGS MATCHES "mmacosx-version-min")
-        message(STATUS
-            "VeltisNative: -mmacosx-version-min was absent from the compiler flags; "
-            "adding it explicitly for ${CMAKE_OSX_DEPLOYMENT_TARGET}")
-        target_compile_options(veltis_native PRIVATE
-            "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
-        target_link_options(veltis_native PRIVATE
-            "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
-    endif()
+# Belt and braces for the deployment target (macOS only). CMake's Darwin
+# platform module normally turns CMAKE_OSX_DEPLOYMENT_TARGET into
+# -mmacosx-version-min while project() runs; if it did not, the artifact would
+# silently carry the SDK's own floor while the manifest claimed the configured
+# one. The value is still only a build-time floor: it is not evidence that an
+# older macOS executed the library, and the JVM's own requirement is usually
+# higher than this.
+if(APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET AND NOT CMAKE_C_FLAGS MATCHES "mmacosx-version-min")
+    message(STATUS
+        "VeltisNative: -mmacosx-version-min was absent from the compiler flags; "
+        "adding it explicitly for ${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    target_compile_options(veltis_native PRIVATE
+        "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    target_link_options(veltis_native PRIVATE
+        "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
 endif()
 
 # A multi-config generator (Visual Studio, Xcode, Ninja Multi-Config) appends a

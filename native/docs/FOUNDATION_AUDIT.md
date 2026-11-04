@@ -179,8 +179,8 @@ workload ever arrives.
    read container headers by random access and refuse a library for another OS
    or architecture before `System.loadLibrary` semantics are involved — proven
    by the three loader cases added last session.
-7. **Reproducible links** (`/Brepro`, `-Wl,--no-insert-timestamp`, `-no_uuid`),
-   so an artifact digest is a meaningful identity.
+7. **Reproducible links** (`/Brepro`, `-Wl,--no-insert-timestamp`; Mach-O keeps
+   its required `LC_UUID`), so an artifact digest is a meaningful identity.
 8. **Idempotent, lock-guarded lifecycle on both sides**, so a mis-ordered
    integration cannot produce a half-open library.
 
@@ -265,14 +265,16 @@ workload ever arrives.
 - Linux glibc/libstdc++ floors are recorded by CI from the built artifact, not
   invented — the CI step exists and has never run here.
 - `VELTIS_NATIVE_MINIMUM_OS` is empty for Windows and Linux at configure time
-  ([CMakeLists.txt:352](../CMakeLists.txt#L352)); the comment already
+  ([CMakeLists.txt:516-518](../CMakeLists.txt#L516-L518)); the comment already
   calls that the honest answer. Keep it.
 
 ### 5.6 Build system (Phase 6)
 
-- **Configure-time build-info JSON.** `configure_file` runs at configure and
-  writes into `VELTIS_NATIVE_OUTPUT_DIR`
-  ([CMakeLists.txt:353-357](../CMakeLists.txt#L353-L357)). Gradle's stale-output
+- **Configure-time build-info JSON.** `configure_file` used to run at configure
+  and write into `VELTIS_NATIVE_OUTPUT_DIR`
+  ([CMakeLists.txt:537-549](../CMakeLists.txt#L537-L549) now renders into the
+  build tree and the `veltis_native_build_info` target copies it beside the
+  library). Gradle's stale-output
   pruning can remove that file while the library remains, which previously broke
   `packageNative`. Fix: make the JSON a real build-byproduct (or regenerate it
   as part of the build), not a configure side effect.
@@ -765,7 +767,7 @@ written into `BUILD_SYSTEM.md` §13 so the next reader diagnoses it in one comma
 
 - **R2 — the build-info JSON was a configure side effect.** It is now produced by
   a CMake target (`veltis_native_build_info`,
-  [CMakeLists.txt:371-383](../CMakeLists.txt#L371-L383)) that `veltis_native`
+  [CMakeLists.txt:544-549](../CMakeLists.txt#L544-L549)) that `veltis_native`
   depends on, so it is regenerated beside the library on every build (visible as
   `[1/1] VeltisNative: refreshing veltis-native-build-info.json beside the
   library`) and cannot be pruned while the library survives.

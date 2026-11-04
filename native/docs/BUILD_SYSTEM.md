@@ -226,7 +226,7 @@ it did not produce.
    CMake itself no-ops, and the compiler check stays unconditional.
 3. **The build-info JSON is a build byproduct, not a configure side effect.**
    `veltis_native_build_info`
-   ([CMakeLists.txt:371-383](../CMakeLists.txt#L371-L383)) regenerates it beside
+   ([CMakeLists.txt:544-549](../CMakeLists.txt#L544-L549)) regenerates it beside
    the library on every build and `veltis_native` depends on it. As a configure
    artifact it could be pruned while the library survived, which broke
    `packageNative` (audit §5.6). Observed in the log as

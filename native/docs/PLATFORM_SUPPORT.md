@@ -103,12 +103,12 @@ It is called from:
    the artifact that was linked and a property only says what was requested. It
    fails when no PowerShell is on PATH instead of skipping: a gate that passes
    quietly because its inspector is missing is not a gate.
-2. The CI Windows dependency step ([gradle.yml:353-373](../../.github/workflows/gradle.yml#L353-L373))
+2. The CI Windows dependency step ([gradle.yml:377-397](../../.github/workflows/gradle.yml#L377-L397))
    — same script, same flag rule, but it reads `runtime.staticRuntime` from the
    **packaged manifest** and inspects the DLL inside `dist/`. That is not
    duplication of policy; it is the same policy applied to two different files,
    one of which is what a release actually ships.
-3. The CI cross-compile step ([gradle.yml:593+](../../.github/workflows/gradle.yml#L593))
+3. The CI cross-compile step ([gradle.yml:621+](../../.github/workflows/gradle.yml#L621))
    for `windows-aarch64`, where nothing can be executed.
 
 `verifyNativeRuntimePolicy` is wired into `verifyNativeRelease`, so a release run
@@ -210,10 +210,10 @@ Two distinct configurations, never to be conflated:
   `verifyNativeRuntimePolicy` prints "not applicable" on Linux instead of
   pretending to check something.
 - **Unresolved symbols fail at link, not at `dlopen`:**
-  `LINKER:--no-undefined` ([CMakeLists.txt:183-185](../CMakeLists.txt#L183-L185)).
-- **Dependencies:** the CI Linux step ([gradle.yml:375-409](../../.github/workflows/gradle.yml#L375-L409))
+  `LINKER:--no-undefined` ([CMakeLists.txt:329-331](../CMakeLists.txt#L329-L331)).
+- **Dependencies:** the CI Linux step ([gradle.yml:399-437](../../.github/workflows/gradle.yml#L399-L437))
   reads `NEEDED` with `readelf -d`, rejects anything outside
-  `libc|libm|libstdc++|libgcc_s|libpthread|libdl|librt`, and rejects an embedded
+  `libc|libm|libstdc++|libgcc_s|libpthread|libdl|librt|ld-linux*`, and rejects an embedded
   `RPATH`/`RUNPATH` because Java passes an absolute path to the OS loader and an
   RPATH could only ever be a build-machine path.
 - **GLIBC / GLIBCXX floors are measured, never invented.** The same step records
@@ -237,13 +237,15 @@ Two distinct configurations, never to be conflated:
 - **The floor is a build-time claim, not evidence.** `verifyNativeArtifact`
   requires `minimumOsVersion` to be a real version on macOS, and the CI step
   compares it against `vtool -show-build` → `LC_BUILD_VERSION minos`
-  ([gradle.yml:435-447](../../.github/workflows/gradle.yml#L435-L447)) so the
+  ([gradle.yml:463-475](../../.github/workflows/gradle.yml#L463-L475)) so the
   manifest cannot drift from the linker's record. Neither check runs an older
   macOS, so this file does not claim macOS 11 execution.
 - **Architectures, install names, visibility.** CI asserts `lipo -archs` equals
   the single expected slice, that every dependency lives under `/usr/lib/` or
-  `/System/Library/`, and hidden visibility plus `-no_uuid` come from the same
-  reproducibility block as the Windows timestamp rule.
+  `/System/Library/`, and that hidden visibility is applied. The Mach-O
+  `LC_UUID` is deliberately *kept*: `-no_uuid` made Apple's current linker
+  refuse every test executable linking the dylib ("missing LC_UUID load
+  command"), so macOS is excluded from byte reproducibility instead.
 - **Universal binaries are investigated, not published.** The loader accepts a
   Mach-O file carrying the expected slice ([NativeLoader.java:603-622](../src/main/java/org/veltismc/nativeengine/NativeLoader.java#L603-L622)
   reads a fat header), `-PveltisNativeOsxArchitectures` exists, and no artifact is
