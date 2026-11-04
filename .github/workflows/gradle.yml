@@ -296,6 +296,26 @@ jobs:
         shell: bash
         run: echo "ORG_GRADLE_PROJECT_veltisToolchainVersion=${{ matrix.javaVersion }}" >> "$GITHUB_ENV"
 
+      - name: Record Windows runner and toolchain state
+        if: runner.os == 'Windows' && matrix.platform == 'windows-aarch64'
+        shell: pwsh
+        run: |
+          Write-Host "PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE"
+          Write-Host "PROCESSOR_IDENTIFIER=$env:PROCESSOR_IDENTIFIER"
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, OSArchitecture
+          Get-CimInstance Win32_Processor | Select-Object Name, Architecture
+          java -XshowSettings:properties -version 2>&1 | Select-String "os.arch"
+          foreach ($cmd in @('cl', 'clang-cl', 'gcc', 'cmake')) {
+            $resolved = Get-Command $cmd -ErrorAction SilentlyContinue
+            if ($resolved) {
+              Write-Host "$cmd=$($resolved.Source)"
+            } else {
+              Write-Host "$cmd=not found"
+            }
+          }
+          Write-Host "CMake target architecture=${{ matrix.platform }}"
+          Write-Host "CMake generator=${{ matrix.generator || 'default' }}"
+
       - name: Prepare the MSVC environment for clang-cl
         if: matrix.toolchain == 'clang-cl'
         uses: ilammy/msvc-dev-cmd@v1
@@ -378,6 +398,24 @@ jobs:
           ./gradlew :veltis-native:verifyNativeRelease -PveltisNativeTest=true \
             "${args[@]}" --stacktrace --no-daemon
 
+      - name: Validate Windows ARM64 compiler and target configuration
+        if: runner.os == 'Windows' && matrix.platform == 'windows-aarch64'
+        shell: pwsh
+        run: |
+          $cache = "native/build/native/cmake/windows-aarch64/CMakeCache.txt"
+          if (Test-Path $cache) {
+            Write-Host "CMAKE_C_COMPILER="
+            Select-String -Path $cache -Pattern "^CMAKE_C_COMPILER:" -SimpleMatch
+            Write-Host "CMAKE_CXX_COMPILER="
+            Select-String -Path $cache -Pattern "^CMAKE_CXX_COMPILER:" -SimpleMatch
+            Write-Host "CMAKE_SYSTEM_PROCESSOR="
+            Select-String -Path $cache -Pattern "^CMAKE_SYSTEM_PROCESSOR:" -SimpleMatch
+            Write-Host "CMAKE_HOST_SYSTEM_PROCESSOR="
+            Select-String -Path $cache -Pattern "^CMAKE_HOST_SYSTEM_PROCESSOR:" -SimpleMatch
+          } else {
+            Write-Host "CMake cache not found yet: $cache"
+          }
+
       - name: Verify the native library dependencies (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -455,18 +493,37 @@ jobs:
             echo "::error::unexpected architecture slices (no universal binary is published)"
             exit 1
           fi
-          DINSTALL_NAME=$(otool -D "$LIB" | sed -n '2p' | xargs)
+          INSTALL_NAME=$(otool -D "$LIB" | awk 'NR == 2 {print $1}')
           test -n "$INSTALL_NAME" || {
             echo "::error::could not read dylib install name"
+            otool -D "$LIB" || true
             exit 1
           }
-          DEPS=$(otool -L "$LIB" | tail -n +2 | awk '{print $1}' |
-            grep -Fvx "$INSTALL_NAME" || true)
-          UNEXPECTED=$(printf '%s\n' "$DEPS" | grep -Ev '^(/usr/lib/|/System/Library/)' || true)
-          if [ -n "$UNEXPECTED" ]; then
-            echo "::error::unexpected dylib dependency: $UNEXPECTED"
+          echo "install name: $INSTALL_NAME"
+          echo "linked dependencies:"
+          otool -L "$LIB" | sed 's/^/  /'
+
+          mapfile -t DEPS < <(otool -L "$LIB" | awk 'NR > 2 {print $1}')
+          UNEXPECTED=()
+          for dep in "${DEPS[@]}"; do
+            if [ "$dep" = "$INSTALL_NAME" ]; then
+              continue
+            fi
+            case "$dep" in
+              /usr/lib/*|/System/Library/*)
+                ;;
+              *)
+                UNEXPECTED+=("$dep")
+                ;;
+            esac
+          done
+
+          if [ "${#UNEXPECTED[@]}" -gt 0 ]; then
+            echo "::error::unexpected dylib dependency: ${UNEXPECTED[*]}"
+            printf '%s\n' "${UNEXPECTED[@]}" | sed 's/^/  /'
             exit 1
           fi
+          echo "external dependencies: none beyond the macOS system libraries"
           # The deployment target is a build-time claim; record it instead of
           # claiming support for an older macOS that was never executed.
           MINOS=$(vtool -show-build "$LIB" | awk '/minos/ {print $2; exit}')
