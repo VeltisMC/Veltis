@@ -19,7 +19,7 @@ import java.util.TreeMap;
 /**
  * Repeatable benchmark for the Veltis patch pipeline.
  *
- * <p>Not run by {@code build}. Run it with {@code ./gradlew :patch-engine:benchmark}
+ * <p>Not run by {@code build}. Run it with {@code ./gradlew :patcher:benchmark}
  * (or with explicit arguments via {@code -PbenchArgs="..."}).
  *
  * <pre>
@@ -661,7 +661,7 @@ public final class PatchBench {
         metrics.forEach((k, v) -> props.setProperty(k, String.format("%.4f", v)));
         Files.createDirectories(file.toAbsolutePath().getParent());
         try (var out = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
-            props.store(out, "VeltisMC patch-engine benchmark");
+            props.store(out, "VeltisMC :patcher benchmark");
         }
         System.out.println("baseline saved to " + file.toAbsolutePath());
     }

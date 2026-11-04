@@ -11,9 +11,9 @@ Contributions to bug fixes, performance, world simulation, source patches, and d
 - Internet access for initial setup
 - A Java IDE (IntelliJ IDEA recommended)
 
-CMake 3.20+ and a C11/C++20 compiler are needed only for the optional native
+CMake 3.21+ and a C11/C++20 compiler are needed only for the optional native
 engine's `native` tasks; ordinary Java builds do not require them. See
-[`veltis-native/README.md`](veltis-native/README.md).
+[`native/README.md`](native/README.md).
 
 Gradle is provided through the repository wrapper.
 

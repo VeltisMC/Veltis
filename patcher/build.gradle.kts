@@ -58,9 +58,9 @@ tasks.test {
 
 // Repeatable patch-pipeline benchmark (discovery / parsing / application / I/O).
 // Not attached to `build`. Run:
-//   ./gradlew :patch-engine:benchmark                       -> all scenarios
-//   ./gradlew :patch-engine:benchmark -PbenchArgs="scale"   -> one scenario
-//   ./gradlew :patch-engine:benchmark -Pjfr                  -> also record a JFR profile
+//   ./gradlew :patcher:benchmark                       -> all scenarios
+//   ./gradlew :patcher:benchmark -PbenchArgs="scale"   -> one scenario
+//   ./gradlew :patcher:benchmark -Pjfr                  -> also record a JFR profile
 tasks.register<JavaExec>("benchmark") {
     group = "verification"
     description = "Benchmarks the patch pipeline (discovery, parsing, application, I/O)."

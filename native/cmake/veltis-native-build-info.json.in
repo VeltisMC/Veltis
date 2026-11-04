@@ -22,5 +22,9 @@
   "runtime": {
     "staticRuntime": @VELTIS_NATIVE_STATIC_RUNTIME_JSON@,
     "minimumOsVersion": "@VELTIS_NATIVE_MINIMUM_OS@"
+  },
+  "diagnostics": {
+    "werror": @VELTIS_NATIVE_WERROR_JSON@,
+    "sanitizers": [@VELTIS_NATIVE_SANITIZERS_JSON@]
   }
 }

@@ -1,7 +1,6 @@
 package org.veltismc.nativeengine;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -9,10 +8,15 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
@@ -58,11 +62,52 @@ public final class NativeLoader {
             "macos-x86_64",
             "macos-aarch64");
 
+    /** The same keys in a stable order, because a log line is read by a human. */
+    private static final String RECOGNIZED_PLATFORM_LIST =
+            String.join(", ", RECOGNIZED_PLATFORMS.stream().sorted().toList());
+
     private static final String LIBRARY_BASE_NAME = "veltis_native";
+
+    /**
+     * The window a returned C string is reinterpreted to before reading it. The
+     * public header promises a NUL terminator within 256 bytes; this is deliberately
+     * larger, because {@code getString} throws when the terminator falls outside
+     * the window, and a library that lengthened its messages must not turn a
+     * diagnostic read into a load failure.
+     */
     private static final long STRING_READ_LIMIT = 4096L;
 
-    /** Enough for the ELF header and the PE/Mach-O load headers. */
+    /** {@code VELTIS_NATIVE_OK} in the public header; the only status queried here. */
+    private static final int VELTIS_NATIVE_OK = 0;
+
+    /**
+     * The largest prefix any probe reads. ELF and Mach-O keep their headers at
+     * offset zero, so this covers them; a PE header position is a variable, so it
+     * is sought to rather than assumed. No probe ever reads a whole library.
+     */
     private static final int HEADER_BYTES = 4096;
+
+    /** The DOS header is 64 bytes and e_lfanew is its last field, at 0x3C. */
+    private static final int DOS_HEADER_BYTES = 0x40;
+
+    /** A PE header cannot begin inside the DOS header that points at it. */
+    private static final int MINIMUM_PE_HEADER_OFFSET = DOS_HEADER_BYTES;
+
+    /** The PE signature (4 bytes) plus the COFF file header (20 bytes). */
+    private static final int PE_HEADER_BYTES = 24;
+
+    /** mach_header and mach_header_64 are both eight fields wide. */
+    private static final int MACHO_HEADER_BYTES = 32;
+
+    /**
+     * Apple's own limit on the slice count of a fat container. A larger value is
+     * either corruption or a file that merely begins with the bytes CA FE BA BE:
+     * a Java class file does, and its version field lands exactly where nfat_arch
+     * is read.
+     */
+    private static final int MAX_FAT_ARCHITECTURES = 16;
+
+    private static final int PE_OFFSET_FIELD = 0x3C;
 
     private static final int PE_MACHINE_X86_64 = 0x8664;
     private static final int PE_MACHINE_ARM64 = 0xAA64;
@@ -81,6 +126,13 @@ public final class NativeLoader {
     private static final FunctionDescriptor INT_RESULT = FunctionDescriptor.of(ValueLayout.JAVA_INT);
     private static final FunctionDescriptor POINTER_RESULT = FunctionDescriptor.of(ValueLayout.ADDRESS);
     private static final FunctionDescriptor VOID_RESULT = FunctionDescriptor.ofVoid();
+    private static final FunctionDescriptor STATUS_TEXT =
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_INT);
+    // size_t is JAVA_LONG, not JAVA_INT: the element counts cross the ABI as the
+    // platform's native pointer-width integer. That mapping is only correct on a
+    // 64-bit target, which is why probeBinary reports the architecture and
+    // checkBinary rejects every file whose machine type is not x86_64 or aarch64
+    // before this descriptor is ever invoked.
     private static final FunctionDescriptor TRANSFORM = FunctionDescriptor.of(
             ValueLayout.JAVA_INT,
             ValueLayout.ADDRESS,
@@ -235,7 +287,7 @@ public final class NativeLoader {
         if (!RECOGNIZED_PLATFORMS.contains(platform)) {
             return failure(false, 0, "0.0.0",
                     "unsupported platform '" + platform
-                            + "'; this integration supports " + RECOGNIZED_PLATFORMS
+                            + "'; this integration supports " + RECOGNIZED_PLATFORM_LIST
                             + " and the Java fallback remains active");
         }
 
@@ -248,10 +300,14 @@ public final class NativeLoader {
                             + invalidPath.getMessage());
         }
         if (located.isEmpty()) {
+            var searched = new ArrayList<String>();
+            for (var candidate : candidatePaths(platform, libraryFileName(platform))) {
+                searched.add(candidate.toString());
+            }
             var reason = config.hasLibraryPath()
                     ? "configured native library not found: " + config.libraryPath()
-                    : "no native library for " + platform + " (looked in native/" + platform
-                            + " and build/native/" + platform + ")";
+                    : "no native library for " + platform + " (looked in "
+                            + String.join(", ", searched) + ")";
             return failure(false, 0, "0.0.0", reason);
         }
 
@@ -280,7 +336,8 @@ public final class NativeLoader {
             if (abiVersion != EXPECTED_ABI_VERSION) {
                 closeQuietly(arena);
                 return failure(true, abiVersion, engineVersion,
-                        checkCompatibility(abiVersion, SUPPORTED_ENGINE_MAJOR, MINIMUM_ENGINE_MINOR));
+                        path + ": " + checkCompatibility(
+                                abiVersion, SUPPORTED_ENGINE_MAJOR, MINIMUM_ENGINE_MINOR));
             }
 
             var major = invokeInt(downcall(lookup, linker, "veltis_native_version_major", INT_RESULT));
@@ -289,11 +346,23 @@ public final class NativeLoader {
             // symbol the ABI promises must exist before the library is accepted.
             invokeInt(downcall(lookup, linker, "veltis_native_version_patch", INT_RESULT));
             engineVersion = readString(downcall(lookup, linker, "veltis_native_version_string", POINTER_RESULT));
-
             var incompatibility = checkCompatibility(abiVersion, major, minor);
             if (incompatibility != null) {
                 closeQuietly(arena);
-                return failure(true, abiVersion, engineVersion, incompatibility);
+                return failure(true, abiVersion, engineVersion, path + ": " + incompatibility);
+            }
+
+            // The one export no call path in this class uses yet still has to
+            // resolve and answer: a library that dropped it is not this ABI, and
+            // finding that out on first use would raise UnsatisfiedLinkError from
+            // inside a running server instead of falling back at startup. It is
+            // checked after compatibility so an incompatible library is reported
+            // as the incompatibility it actually is.
+            var statusText = (MemorySegment) downcall(
+                    lookup, linker, "veltis_native_status_string", STATUS_TEXT).invokeExact(VELTIS_NATIVE_OK);
+            if (statusText.equals(MemorySegment.NULL)
+                    || statusText.reinterpret(STRING_READ_LIMIT).getString(0).isBlank()) {
+                throw new IllegalStateException("veltis_native_status_string returned no text");
             }
 
             var bindings = Bindings.bind(lookup, linker);
@@ -327,6 +396,22 @@ public final class NativeLoader {
 
         var platform = platformKey();
         var fileName = libraryFileName(platform);
+        var candidates = candidatePaths(platform, fileName);
+
+        for (var candidate : candidates) {
+            if (Files.isRegularFile(candidate)) {
+                return Optional.of(candidate.toAbsolutePath().normalize());
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * The locations searched when no library path is configured, in order. The
+     * "not found" report is built from this same list so that the message a
+     * debugging operator reads cannot describe a search the loader did not run.
+     */
+    static List<Path> candidatePaths(String platform, String fileName) {
         var candidates = new ArrayList<Path>();
 
         var home = System.getProperty("veltismc.home");
@@ -338,12 +423,7 @@ public final class NativeLoader {
         candidates.add(workingDirectory.resolve("native").resolve(platform).resolve(fileName));
         candidates.add(workingDirectory.resolve("build").resolve("native").resolve(platform).resolve(fileName));
 
-        for (var candidate : candidates) {
-            if (Files.isRegularFile(candidate)) {
-                return Optional.of(candidate.toAbsolutePath().normalize());
-            }
-        }
-        return Optional.empty();
+        return List.copyOf(candidates);
     }
 
     /**
@@ -386,54 +466,98 @@ public final class NativeLoader {
 
     /** Reads the container/architecture headers of PE, ELF and Mach-O files. */
     static BinaryInfo probeBinary(Path path) throws IOException {
-        var header = readHeader(path);
-        if (header.length >= 2 && (header[0] & 0xFF) == 'M' && (header[1] & 0xFF) == 'Z') {
-            return probePe(header);
-        }
-        if (header.length >= 4
-                && (header[0] & 0xFF) == 0x7F
-                && header[1] == 'E' && header[2] == 'L' && header[3] == 'F') {
-            return probeElf(header);
-        }
-        if (header.length >= 8) {
-            var littleEndian = u32le(header, 0);
-            var bigEndian = u32be(header, 0);
-            if (littleEndian == MACHO_MAGIC || littleEndian == MACHO_MAGIC_64) {
-                return probeMachO(header, true);
+        try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+            var size = channel.size();
+            var header = readAt(channel, 0, (int) Math.min(size, (long) HEADER_BYTES));
+            if (header.length >= 2 && (header[0] & 0xFF) == 'M' && (header[1] & 0xFF) == 'Z') {
+                return probePe(channel, size, header);
             }
-            if (bigEndian == MACHO_MAGIC || bigEndian == MACHO_MAGIC_64) {
-                return probeMachO(header, false);
+            if (header.length >= 4
+                    && (header[0] & 0xFF) == 0x7F
+                    && header[1] == 'E' && header[2] == 'L' && header[3] == 'F') {
+                return probeElf(header);
             }
-            if (bigEndian == MACHO_FAT_MAGIC) {
-                return probeFat(header, true);
+            if (header.length >= 8) {
+                var littleEndian = u32le(header, 0);
+                var bigEndian = u32be(header, 0);
+                if (littleEndian == MACHO_MAGIC || littleEndian == MACHO_MAGIC_64) {
+                    return probeMachO(header, true, littleEndian == MACHO_MAGIC_64);
+                }
+                if (bigEndian == MACHO_MAGIC || bigEndian == MACHO_MAGIC_64) {
+                    return probeMachO(header, false, bigEndian == MACHO_MAGIC_64);
+                }
+                if (bigEndian == MACHO_FAT_MAGIC || littleEndian == MACHO_FAT_MAGIC) {
+                    return probeFat(header, bigEndian == MACHO_FAT_MAGIC);
+                }
             }
-            if (littleEndian == MACHO_FAT_MAGIC) {
-                return probeFat(header, false);
-            }
-        }
-        throw new IOException("not a recognised PE, ELF or Mach-O shared library");
-    }
-
-    private static byte[] readHeader(Path path) throws IOException {
-        try (InputStream input = Files.newInputStream(path)) {
-            return input.readNBytes(HEADER_BYTES);
+            throw new IOException("not a recognised PE, ELF or Mach-O shared library");
         }
     }
 
-    private static BinaryInfo probePe(byte[] header) throws IOException {
-        if (header.length < 0x40) {
-            throw new IOException("truncated PE header");
+    /**
+     * Reads up to {@code length} bytes starting at {@code offset}, stopping at
+     * end of file. The returned array is short exactly when the file is, which is
+     * what every caller's truncation check is written against.
+     */
+    private static byte[] readAt(FileChannel channel, long offset, int length) throws IOException {
+        var bytes = new byte[length];
+        var buffer = ByteBuffer.wrap(bytes);
+        var position = offset;
+        while (buffer.hasRemaining()) {
+            var read = channel.read(buffer, position);
+            if (read <= 0) {
+                break;
+            }
+            position += read;
         }
-        var peOffset = u32le(header, 0x3C);
-        if (peOffset < 0 || peOffset + 6 > header.length) {
-            throw new IOException("truncated PE header");
+        return buffer.position() == length ? bytes : Arrays.copyOf(bytes, buffer.position());
+    }
+
+    /*
+     * Random access, because e_lfanew is a field the linker chooses rather than a
+     * constant: a legitimate binary can carry its PE header well past the prefix
+     * this method already read. Every offset is kept in long arithmetic and
+     * checked against the real file size, so a hostile value can neither wrap an
+     * int cast nor send the probe past end of file.
+     */
+    private static BinaryInfo probePe(FileChannel channel, long fileSize, byte[] header) throws IOException {
+        if (header.length < DOS_HEADER_BYTES) {
+            throw new IOException("truncated DOS header: the file is " + header.length
+                    + " bytes, but an MZ header needs at least " + DOS_HEADER_BYTES);
         }
-        var offset = (int) peOffset;
-        if (header[offset] != 'P' || header[offset + 1] != 'E'
-                || header[offset + 2] != 0 || header[offset + 3] != 0) {
-            throw new IOException("missing PE signature");
+        var peOffset = u32le(header, PE_OFFSET_FIELD);
+        if (peOffset < MINIMUM_PE_HEADER_OFFSET) {
+            throw new IOException("invalid PE header offset " + peOffset
+                    + " at file position " + PE_OFFSET_FIELD + "; it must be at least "
+                    + MINIMUM_PE_HEADER_OFFSET);
         }
-        var machine = u16le(header, offset + 4);
+        if (peOffset >= fileSize) {
+            throw new IOException("PE header offset " + peOffset + " points past the end of a "
+                    + fileSize + "-byte file");
+        }
+        var available = fileSize - peOffset;
+        if (available < 4) {
+            throw new IOException("truncated PE signature at offset " + peOffset + ": only "
+                    + available + " of 4 signature bytes are present");
+        }
+        if (available < PE_HEADER_BYTES) {
+            throw new IOException("truncated COFF header at offset " + peOffset + ": only "
+                    + available + " of " + PE_HEADER_BYTES
+                    + " bytes are present, so the machine type is unreadable");
+        }
+
+        var peHeader = readAt(channel, peOffset, PE_HEADER_BYTES);
+        if (peHeader.length < PE_HEADER_BYTES) {
+            throw new IOException("PE header at offset " + peOffset + " shrank while it was being "
+                    + "read: got " + peHeader.length + " of " + PE_HEADER_BYTES + " bytes");
+        }
+        if (peHeader[0] != 'P' || peHeader[1] != 'E' || peHeader[2] != 0 || peHeader[3] != 0) {
+            throw new IOException(String.format(
+                    "missing PE signature at offset %d: found %02X %02X %02X %02X",
+                    peOffset,
+                    peHeader[0] & 0xFF, peHeader[1] & 0xFF, peHeader[2] & 0xFF, peHeader[3] & 0xFF));
+        }
+        var machine = u16le(peHeader, 4);
         var architecture = switch (machine) {
             case PE_MACHINE_X86_64 -> "x86_64";
             case PE_MACHINE_ARM64 -> "aarch64";
@@ -461,11 +585,18 @@ public final class NativeLoader {
         return new BinaryInfo("ELF", Set.of(architecture));
     }
 
-    private static BinaryInfo probeMachO(byte[] header, boolean littleEndian) throws IOException {
-        if (header.length < 8) {
-            throw new IOException("truncated Mach-O header");
+    private static BinaryInfo probeMachO(byte[] header, boolean littleEndian, boolean is64Bit)
+            throws IOException {
+        if (header.length < MACHO_HEADER_BYTES) {
+            throw new IOException("truncated Mach-O header: read " + header.length
+                    + " of " + MACHO_HEADER_BYTES + " bytes");
         }
         var cpu = littleEndian ? u32le(header, 4) : u32be(header, 4);
+        if (!is64Bit && requires64BitSlice(cpu)) {
+            throw new IOException(String.format(
+                    "Mach-O header is 32-bit but declares CPU type 0x%X, which exists only as a 64-bit ABI",
+                    cpu));
+        }
         return new BinaryInfo("Mach-O", Set.of(machOArchitecture(cpu)));
     }
 
@@ -474,19 +605,26 @@ public final class NativeLoader {
             throw new IOException("truncated universal Mach-O header");
         }
         var count = bigEndian ? u32be(header, 4) : u32le(header, 4);
-        if (count <= 0 || count > 64) {
-            throw new IOException("invalid universal Mach-O architecture count " + count);
+        if (count <= 0 || count > MAX_FAT_ARCHITECTURES) {
+            throw new IOException("invalid universal Mach-O architecture count " + count
+                    + "; a fat container holds between 1 and " + MAX_FAT_ARCHITECTURES + " slices");
         }
         var architectures = new LinkedHashSet<String>();
         for (var i = 0; i < count; i++) {
             var offset = 8 + i * 20;
             if (offset + 4 > header.length) {
-                throw new IOException("truncated universal Mach-O architecture table");
+                throw new IOException("truncated universal Mach-O architecture table: slice "
+                        + i + " of " + count + " is not readable within " + header.length + " bytes");
             }
             var cpu = bigEndian ? u32be(header, offset) : u32le(header, offset);
             architectures.add(machOArchitecture(cpu));
         }
         return new BinaryInfo("Mach-O", architectures);
+    }
+
+    /** CPU types with no 32-bit ABI, so a 32-bit magic naming one is corruption. */
+    private static boolean requires64BitSlice(long cpu) {
+        return cpu == MACHO_CPU_X86_64 || cpu == MACHO_CPU_ARM64;
     }
 
     private static String machOArchitecture(long cpu) {

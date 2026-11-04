@@ -10,9 +10,22 @@
  * Lifetime and threading
  * ----------------------
  *   - veltis_native_init() and veltis_native_shutdown() are process-wide and
- *     idempotent. Every operation other than the version/status queries
- *     requires a prior successful init and returns
- *     VELTIS_NATIVE_ERROR_NOT_INITIALIZED otherwise.
+ *     idempotent. Two exports require a prior successful init and return
+ *     VELTIS_NATIVE_ERROR_NOT_INITIALIZED otherwise:
+ *     veltis_native_transform_i32() and veltis_native_self_test(). Every other
+ *     export answers before init, which is what lets a consumer validate a
+ *     library without starting an engine: the four version queries,
+ *     veltis_native_status_string(), veltis_native_last_error(),
+ *     veltis_native_is_initialized() (which answers 0) and
+ *     veltis_native_capabilities().
+ *   - The capability mask describes the compiled library, not the engine state,
+ *     so it is identical before and after init. The Java loader reads it in
+ *     both positions and the ABI test asserts the two answers are equal.
+ *   - Strings returned by veltis_native_version_string(),
+ *     veltis_native_status_string() and veltis_native_last_error() are
+ *     NUL-terminated, owned by the library and never longer than 255 bytes. A
+ *     caller that reinterprets a fixed-size window needs at least 256 bytes to
+ *     reach the terminator, and nothing may be freed.
  *   - The library is thread-safe. Buffers passed to veltis_native_transform_i32
  *     must not overlap.
  *   - veltis_native_last_error() returns a pointer to thread-local storage: it

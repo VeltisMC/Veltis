@@ -196,6 +196,36 @@ class NativeEngineTest {
         engine.shutdown();
     }
 
+    /**
+     * A library that fails every transform must not write one warning per call.
+     *
+     * <p>The clock is frozen and the interval is unreachable, so the engine's
+     * production schedule is not what is under test here: what is tested is that
+     * the transform path routes its warnings through the throttle at all, and
+     * that the caller still receives Java results while they are being held
+     * back. {@code FailureLogThrottleTest} covers the schedule itself.
+     */
+    @Test
+    void repeatedNativeTransformFailuresDoNotWriteAWarningPerCall() {
+        var fixture = fixturePath("veltis.native.test.fakeTransform");
+        var engine = new NativeEngine(2, Long.MAX_VALUE, () -> 0L);
+
+        var status = engine.initialize(new NativeConfig(true, true, true, false, fixture.toString()));
+        assertTrue(status.available(), status.summary());
+
+        var input = new int[] {10, -10, 0, Integer.MIN_VALUE, Integer.MAX_VALUE};
+        var expected = NativeEngine.javaTransform(input, -3);
+        for (var i = 0; i < 25; i++) {
+            assertArrayEquals(expected, engine.transform(input, -3));
+        }
+
+        assertEquals(23L, engine.suppressedTransformWarnings(),
+                "the first two failures are reported and the other twenty-three wait for the next message");
+        engine.shutdown();
+        assertEquals(0L, engine.suppressedTransformWarnings(),
+                "a new lifecycle generation does not inherit the previous engine's backlog");
+    }
+
     @Test
     void concurrentInitializationLoadsAtMostOneLibrary() throws Exception {
         var missing = temp.resolve("missing").resolve(NativeLoader.libraryFileName());
@@ -275,6 +305,94 @@ class NativeEngineTest {
         start.countDown();
         assertTrue(done.await(30, TimeUnit.SECONDS), "concurrent fallback transforms did not finish");
         assertEquals(0, mismatches.get(), "every concurrent fallback result must match javaTransform");
+        engine.shutdown();
+    }
+
+    /**
+     * Concurrent lifecycle calls must publish one consistent state, not a
+     * half-initialized one.
+     *
+     * <p>Every thread that calls {@code initialize} receives the *same*
+     * {@link NativeStatus} instance: the write lock serializes the calls, so one
+     * thread performs the load and the rest observe the published result. A race
+     * here would mean two libraries mapped into one engine, each with its own
+     * arena. The lock-free accessors are also hammered throughout, because
+     * {@code status()} and {@code nativeAvailable()} take no lock and are the only
+     * way an outside observer — a metrics endpoint, a health check — can read the
+     * engine; a null status or a wrong transform result under contention is a
+     * publication bug.
+     */
+    @Test
+    void concurrentLifecycleCallsPublishOneConsistentState() throws Exception {
+        var engine = new NativeEngine();
+        var missing = temp.resolve("missing").resolve(NativeLoader.libraryFileName());
+        var config = new NativeConfig(true, true, true, false, missing.toString());
+
+        var threads = 8;
+        var rounds = 60;
+        var start = new CountDownLatch(1);
+        var done = new CountDownLatch(threads);
+        var errors = new Throwable[threads];
+        var publishedStatuses = new ArrayList<Object>();
+
+        for (var t = 0; t < threads; t++) {
+            final int index = t;
+            var worker = new Thread(() -> {
+                try {
+                    start.await();
+                    for (var round = 0; round < rounds; round++) {
+                        if (index % 2 == 0) {
+                            var status = engine.initialize(config);
+                            synchronized (publishedStatuses) {
+                                publishedStatuses.add(status);
+                            }
+                        } else {
+                            // Lock-free observers. With no library on disk the
+                            // only states these can witness are "not yet
+                            // initialized" and "initialized, unavailable" —
+                            // paired reads against a *live* library are covered
+                            // by NativeEndToEndTest's shutdown-during-calls cases,
+                            // which is where the mixture would be observable.
+                            var seen = engine.status();
+                            if (seen == null) {
+                                throw new IllegalStateException("status() returned null");
+                            }
+                            if (engine.nativeAvailable() && !seen.available()) {
+                                throw new IllegalStateException(
+                                    "nativeAvailable() and status() disagree: " + seen.summary());
+                            }
+                            var result = engine.transform(new int[] {1, 2, 3}, 5);
+                            if (!Arrays.equals(NativeEngine.javaTransform(new int[] {1, 2, 3}, 5),
+                                    result)) {
+                                throw new IllegalStateException("transform returned a wrong value");
+                            }
+                        }
+                    }
+                } catch (Throwable failure) {
+                    errors[index] = failure;
+                } finally {
+                    done.countDown();
+                }
+            }, "lifecycle-" + t);
+            worker.setDaemon(true);
+            worker.start();
+        }
+
+        start.countDown();
+        assertTrue(done.await(60, TimeUnit.SECONDS), "concurrent lifecycle calls did not finish");
+        for (var error : errors) {
+            assertEquals(null, error, "a concurrent lifecycle call failed");
+        }
+
+        synchronized (publishedStatuses) {
+            assertFalse(publishedStatuses.isEmpty(), "the initializing threads ran");
+            for (var status : publishedStatuses) {
+                assertSame(publishedStatuses.get(0), status,
+                        "every initialize() call must observe one published status");
+            }
+        }
+        assertFalse(engine.nativeAvailable(),
+                "a library that does not exist is never reported as available");
         engine.shutdown();
     }
 

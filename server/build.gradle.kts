@@ -22,7 +22,7 @@ description = "VeltisMC server: the NMS entrypoint, the Veltis runtime framework
 
 dependencies {
     implementation(project(":api"))
-    implementation(project(":native"))
+    implementation(project(":veltis-native"))
     implementation(project(":patcher"))
     // For the Veltis API
     // Optional native acceleration. The dependency is on the module's Java FFM
@@ -47,7 +47,7 @@ dependencies {
     // The class-file parser the runtime delta applier needs: applying a patch
     // set splices `ClassDelta` payloads onto the verified vanilla classes, and
     // that splice parses both sides with ASM's tree API. Declared here rather
-    // than inherited through `:patch-engine` so the start-up classpath this
+    // than inherited through `:patcher` so the start-up classpath this
     // build assembles for the server names its own requirement: these two are
     // in the bootstrap table the launcher preflights, not in veltismc.jar.
     implementation("org.ow2.asm:asm:9.10.1")
@@ -69,6 +69,19 @@ tasks.withType<Test>().configureEach {
     // passes this flag to the server, and the test JVM must match it.
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     providers.systemProperty("veltis.native.path").orNull?.let { value ->
-        systemProperty("veltis.native.path", value)
+        // A path handed to Gradle is written relative to the repository, but the
+        // test JVM resolves a relative path against ITS working directory, which
+        // is this project's directory — so `native/build/.../veltis_native.dll`
+        // silently names `server/native/build/...`, the loader reports
+        // "configured native library not found", and the bootstrap assertion
+        // fails with no hint that the file exists a directory over. Anchor the
+        // path to the repository root here, the one place that knows it.
+        val anchored = if (value.isBlank()) {
+            value
+        } else {
+            val named = File(value)
+            (if (named.isAbsolute) named else rootProject.projectDir.resolve(named)).path
+        }
+        systemProperty("veltis.native.path", anchored)
     }
 }

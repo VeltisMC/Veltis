@@ -6,6 +6,7 @@ import java.lang.foreign.ValueLayout;
 import java.util.Objects;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.LongSupplier;
 
 /**
  * Lifecycle and operation facade for VeltisMC's optional native engine.
@@ -24,6 +25,8 @@ public final class NativeEngine {
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
     private final LongAdder nativeInvocations = new LongAdder();
     private final LongAdder fallbackInvocations = new LongAdder();
+    private final FailureLogThrottle transformFailures;
+    private final FailureLogThrottle selfTestFailures;
 
     private volatile NativeConfig config = NativeConfig.defaults();
     private volatile NativeLoader.LoadedLibrary library;
@@ -31,6 +34,14 @@ public final class NativeEngine {
     private boolean initialized;
 
     public NativeEngine() {
+        this(FailureLogThrottle.DEFAULT_BURST_LIMIT, FailureLogThrottle.DEFAULT_INTERVAL_NANOS,
+                System::nanoTime);
+    }
+
+    /** Test seam: the same engine with a different warning schedule. */
+    NativeEngine(long warningBurstLimit, long warningIntervalNanos, LongSupplier clock) {
+        this.transformFailures = new FailureLogThrottle(warningBurstLimit, warningIntervalNanos, clock);
+        this.selfTestFailures = new FailureLogThrottle(warningBurstLimit, warningIntervalNanos, clock);
     }
 
     /** The process-wide instance the server bootstrap initializes and shuts down. */
@@ -52,6 +63,8 @@ public final class NativeEngine {
             }
             config = requested;
             initialized = true;
+            transformFailures.clearBudget();
+            selfTestFailures.clearBudget();
             if (!requested.enabled()) {
                 status = NativeStatus.disabled("disabled by " + NativeConfig.ENABLED_PROPERTY);
                 return status;
@@ -101,7 +114,7 @@ public final class NativeEngine {
         try {
             rc = loaded.initialize();
         } catch (Throwable t) {
-            loaded.close();
+            closeQuietly(loaded);
             status = NativeStatus.unavailable(true, loaded.status().abiVersion(),
                     loaded.status().engineVersion(),
                     "native initialization failed: " + describe(t));
@@ -111,18 +124,41 @@ public final class NativeEngine {
         if (rc != 0) {
             var reason = "native initialization failed: " + loaded.lastError()
                     + " (status " + rc + ")";
-            loaded.close();
+            closeQuietly(loaded);
             status = NativeStatus.unavailable(true, loaded.status().abiVersion(),
                     loaded.status().engineVersion(), reason);
             return status;
         }
 
+        // The capability query happens before the library is published. If it
+        // throws, an unpublished library is closed here; publishing first would
+        // leave `library` non-null with a stale status, so the server would keep
+        // using Java while reporting native support as unavailable.
+        NativeStatus available;
+        try {
+            available = NativeStatus.available(
+                    loaded.status().abiVersion(),
+                    loaded.status().engineVersion(),
+                    NativeCapabilities.fromMask(loaded.capabilitiesMask()));
+        } catch (Throwable t) {
+            closeQuietly(loaded);
+            status = NativeStatus.unavailable(true, loaded.status().abiVersion(),
+                    loaded.status().engineVersion(),
+                    "native capability query failed: " + describe(t));
+            return status;
+        }
         library = loaded;
-        status = NativeStatus.available(
-                loaded.status().abiVersion(),
-                loaded.status().engineVersion(),
-                NativeCapabilities.fromMask(loaded.capabilitiesMask()));
+        status = available;
         return status;
+    }
+
+    /** A failed load must not turn into a second failure that hides the first. */
+    private static void closeQuietly(AutoCloseable loaded) {
+        try {
+            loaded.close();
+        } catch (Throwable ignored) {
+            // The status being reported by the caller is the useful one.
+        }
     }
 
     /** Shuts down and unloads the native library. Safe to call repeatedly. */
@@ -141,6 +177,8 @@ public final class NativeEngine {
             }
             initialized = false;
             status = NativeStatus.disabled("native engine stopped");
+            transformFailures.clearBudget();
+            selfTestFailures.clearBudget();
         } finally {
             write.unlock();
         }
@@ -166,9 +204,23 @@ public final class NativeEngine {
             var loaded = library;
             if (loaded != null && status.supports(NativeCapabilities.SELF_TEST)) {
                 try {
-                    return loaded.selfTest() == 0;
+                    var rc = loaded.selfTest();
+                    if (rc == 0) {
+                        selfTestFailures.clearBudget();
+                        return true;
+                    }
+                    var decision = selfTestFailures.record();
+                    if (decision.log()) {
+                        LOG.log(System.Logger.Level.WARNING,
+                                "Native self-test returned a failure status" + decision.suppressedNote());
+                    }
+                    return false;
                 } catch (Throwable t) {
-                    LOG.log(System.Logger.Level.WARNING, "Native self-test failed", t);
+                    var decision = selfTestFailures.record();
+                    if (decision.log()) {
+                        LOG.log(System.Logger.Level.WARNING,
+                                "Native self-test failed" + decision.suppressedNote(), t);
+                    }
                     return false;
                 }
             }
@@ -186,6 +238,10 @@ public final class NativeEngine {
      * A native call that reports an error is logged and, when fallback is
      * enabled, retried in Java. With fallback disabled an unavailable operation
      * throws instead of silently changing its result source.
+     *
+     * <p>Repeated failures of the same call are bounded: the first few are
+     * logged and the rest are counted into the next message, because a library
+     * that fails every transform would otherwise write a warning per chunk.
      */
     public int[] transform(int[] input, int salt) {
         Objects.requireNonNull(input, "input");
@@ -200,17 +256,23 @@ public final class NativeEngine {
             if (loaded != null && status.supports(NativeCapabilities.TRANSFORM_I32)) {
                 try {
                     var result = nativeTransform(loaded, input, salt);
+                    transformFailures.clearBudget();
                     if (config.stats()) {
                         nativeInvocations.increment();
                     }
                     return result;
                 } catch (Throwable t) {
-                    LOG.log(System.Logger.Level.WARNING,
-                            "Native transform failed; " +
-                                    (config.fallback() ? "using Java fallback" : "fallback disabled"),
-                            t);
                     if (!config.fallback()) {
+                        // Nothing is hidden here: the caller receives the
+                        // failure as an exception, so there is no budget to
+                        // spend on a log line for it.
                         throw new IllegalStateException("Native transform failed and fallback is disabled", t);
+                    }
+                    var decision = transformFailures.record();
+                    if (decision.log()) {
+                        LOG.log(System.Logger.Level.WARNING,
+                                "Native transform failed; using Java fallback"
+                                        + decision.suppressedNote(), t);
                     }
                 }
             } else if (!config.fallback()) {
@@ -230,6 +292,11 @@ public final class NativeEngine {
     /** Invocation counters; only incremented when {@code veltis.native.stats=true}. */
     public Stats stats() {
         return new Stats(nativeInvocations.sum(), fallbackInvocations.sum());
+    }
+
+    /** Transform warnings held back because the same fault is still repeating. */
+    long suppressedTransformWarnings() {
+        return transformFailures.suppressedCount();
     }
 
     public record Stats(long nativeInvocations, long fallbackInvocations) {}

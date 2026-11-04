@@ -62,3 +62,53 @@ run/
 /server.properties
 /logs/
 /config/
+
+# ---------------------------------------------------------------------------
+# Native module: generated build state, never source.
+#
+# `build/` above already hides the CMake trees Gradle uses
+# (`native/build/native/...`). What follows catches a configure step pointed
+# somewhere else, because CMake scatters state across several file names rather
+# than into one directory, and a compiler-identification run leaves executables
+# nobody asked for. The source archive is built from `git ls-files`, so anything
+# that has to stay out of it has to be ignored here first.
+# ---------------------------------------------------------------------------
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+DartConfiguration.tcl
+# A CMake configure step compiles and runs these before it knows your compiler.
+CMakeCCompilerId.c
+CMakeCCompilerId.cpp
+CMakeCCompilerId
+CMakeCXXCompilerId.cpp
+CMakeDetermineCompilerABI_*.bin
+# Ninja's own output, and the artefacts of one build directory.
+build.ninja
+.ninja_deps
+.ninja_log
+rules.ninja
+# Object files and static archives, whichever suffix the toolchain prefers.
+*.o
+*.obj
+*.a
+*.lib
+# Locally built shared libraries. A released artifact is distributed from CI,
+# so nothing in the source tree has any business being one.
+*.dll
+*.so
+*.so.*
+*.dylib
+*.pdb
+*.dSYM/
+# Native release archives and local verification output, including a previous
+# release's — they are derived from a commit, so the commit rebuilds them.
+/native-*.zip
+native/out/
+native/native/
+native/*.zip.sha256
+native/reports/

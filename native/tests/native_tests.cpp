@@ -1,4 +1,5 @@
 #include "veltis/native/veltis_native.h"
+#include "native_buffer_checks.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -372,12 +373,12 @@ void test_concurrent_lifecycle() {
     constexpr int thread_count = 8;
     constexpr int rounds = 300;
     std::latch start(thread_count);
-    std::atomic<int> failures{0};
+    std::atomic<int> worker_failures{0};
     std::vector<std::thread> threads;
     threads.reserve(thread_count);
 
     for (int t = 0; t < thread_count; ++t) {
-        threads.emplace_back([t, &start, &failures] {
+        threads.emplace_back([t, &start, &worker_failures] {
             std::int32_t input[33] = {};
             std::int32_t output[33] = {};
             for (std::size_t i = 0; i < 33; ++i) {
@@ -386,28 +387,28 @@ void test_concurrent_lifecycle() {
             start.arrive_and_wait();
             for (int round = 0; round < rounds; ++round) {
                 if (veltis_native_init() != VELTIS_NATIVE_OK) {
-                    ++failures;
+                    ++worker_failures;
                 }
 
                 const auto rc = veltis_native_transform_i32(input, 33, t, output, 33);
                 if (rc == VELTIS_NATIVE_OK) {
                     for (std::size_t i = 0; i < 33; ++i) {
                         if (output[i] != reference_value(input[i], t, i)) {
-                            ++failures;
+                            ++worker_failures;
                             break;
                         }
                     }
                 } else if (rc != VELTIS_NATIVE_ERROR_NOT_INITIALIZED) {
-                    ++failures;
+                    ++worker_failures;
                 }
 
                 const auto self = veltis_native_self_test();
                 if (self != VELTIS_NATIVE_OK && self != VELTIS_NATIVE_ERROR_NOT_INITIALIZED) {
-                    ++failures;
+                    ++worker_failures;
                 }
                 const auto initialized = veltis_native_is_initialized();
                 if (initialized != 0 && initialized != 1) {
-                    ++failures;
+                    ++worker_failures;
                 }
                 veltis_native_shutdown();
             }
@@ -416,7 +417,7 @@ void test_concurrent_lifecycle() {
     for (auto& thread : threads) {
         thread.join();
     }
-    CHECK(failures.load() == 0, "concurrent init/shutdown/transform never corrupts results or state");
+    CHECK(worker_failures.load() == 0, "concurrent init/shutdown/transform never corrupts results or state");
     CHECK(veltis_native_init() == VELTIS_NATIVE_OK, "engine can be initialized after the lifecycle race");
 }
 
@@ -426,12 +427,12 @@ void test_shutdown_while_transforms_run() {
     CHECK(veltis_native_init() == VELTIS_NATIVE_OK, "init before shutdown-during-transform stress");
 
     std::atomic<bool> stop{false};
-    std::atomic<int> failures{0};
+    std::atomic<int> worker_failures{0};
     std::vector<std::thread> threads;
     threads.reserve(thread_count);
 
     for (int t = 0; t < thread_count; ++t) {
-        threads.emplace_back([t, &stop, &failures] {
+        threads.emplace_back([t, &stop, &worker_failures] {
             std::vector<std::int32_t> input(count);
             std::vector<std::int32_t> output(count);
             for (std::size_t i = 0; i < count; ++i) {
@@ -443,12 +444,12 @@ void test_shutdown_while_transforms_run() {
                 if (rc == VELTIS_NATIVE_OK) {
                     for (std::size_t i = 0; i < count; ++i) {
                         if (output[i] != reference_value(input[i], t, i)) {
-                            ++failures;
+                            ++worker_failures;
                             break;
                         }
                     }
                 } else if (rc != VELTIS_NATIVE_ERROR_NOT_INITIALIZED) {
-                    ++failures;
+                    ++worker_failures;
                 }
             }
         });
@@ -464,7 +465,7 @@ void test_shutdown_while_transforms_run() {
         thread.join();
     }
 
-    CHECK(failures.load() == 0,
+    CHECK(worker_failures.load() == 0,
           "shutdown during active transforms never produces a wrong result or an unexpected error");
     CHECK(veltis_native_init() == VELTIS_NATIVE_OK, "init after the shutdown stress");
 }
@@ -488,6 +489,98 @@ void test_shutdown() {
     veltis_native_shutdown();
 }
 
+/*
+ * The buffer predicates tested directly, not only through an export. Through
+ * veltis_native_transform_i32 a mistake in one of them shows up as a wrong
+ * status code, which hides which predicate was wrong and cannot reach the exact
+ * arithmetic boundary: the export also has its own ordering, so a case that
+ * should be decided by the extent check may be reported by an earlier one.
+ */
+void test_buffer_predicates_directly() {
+    using veltis::native::detail::byte_ranges_overlap;
+    using veltis::native::detail::checked_byte_extent;
+    using veltis::native::detail::naturally_aligned;
+
+    /* --- overflow-safe extent ------------------------------------------- */
+    std::size_t bytes = 1;
+    CHECK(checked_byte_extent<std::int32_t>(0, bytes) && bytes == 0,
+          "zero elements have a zero extent");
+    bytes = 1;
+    CHECK(checked_byte_extent<std::int32_t>(1, bytes) && bytes == 4, "one element is four bytes");
+
+    constexpr std::size_t max_count = (std::numeric_limits<std::size_t>::max)();
+    /* The exact boundary: 4 * (SIZE_MAX / 4) still fits, one past it does not. */
+    bytes = 0;
+    CHECK(checked_byte_extent<std::int32_t>(max_count / 4u, bytes),
+          "the largest count whose extent fits is accepted");
+    CHECK(bytes == (max_count / 4u) * 4u, "the accepted extent is the exact product");
+    bytes = 7;
+    CHECK(!checked_byte_extent<std::int32_t>(max_count / 4u + 1u, bytes),
+          "one element past the boundary is refused");
+    CHECK(bytes == 7, "a refused extent leaves the caller's variable untouched");
+    CHECK(!checked_byte_extent<std::int32_t>(max_count, bytes), "SIZE_MAX is refused");
+
+    /* The predicate is per element type, which is why it is a template. */
+    bytes = 0;
+    CHECK(checked_byte_extent<std::uint8_t>(max_count, bytes) && bytes == max_count,
+          "a one-byte element type can represent the full range");
+    bytes = 0;
+    CHECK(!checked_byte_extent<std::uint64_t>(max_count / 8u + 1u, bytes),
+          "an eight-byte element type refuses earlier");
+
+    /* --- natural alignment ---------------------------------------------- */
+    alignas(16) std::int32_t aligned[4] = {1, 2, 3, 4};
+    CHECK(naturally_aligned<std::int32_t>(aligned), "an aligned buffer is accepted");
+    CHECK(naturally_aligned<std::int32_t>(nullptr),
+          "a null pointer is aligned; its validity is a separate question");
+    for (std::size_t offset = 1; offset < 4; ++offset) {
+        const auto* misaligned = reinterpret_cast<const std::int32_t*>(
+            reinterpret_cast<const unsigned char*>(aligned) + offset);
+        CHECK(!naturally_aligned<std::int32_t>(misaligned),
+              "every non-multiple of the element alignment is refused");
+    }
+    CHECK(naturally_aligned<std::int32_t>(aligned + 2), "an interior aligned offset stays aligned");
+    CHECK(naturally_aligned<std::uint8_t>(
+              reinterpret_cast<const unsigned char*>(aligned) + 1),
+          "a byte type accepts any address");
+
+    /* --- overlap -------------------------------------------------------- */
+    /*
+     * These ranges are synthesized addresses, not buffers: the predicate only
+     * does integer arithmetic and never dereferences, and forming a pointer 1 KB
+     * past a 16-byte array is undefined behaviour that a compiler is entitled to
+     * warn about. The addresses still have to behave like the real thing.
+     */
+    const auto base_address = reinterpret_cast<std::uintptr_t>(aligned);
+    auto at = [](std::uintptr_t address) {
+        return reinterpret_cast<const unsigned char*>(address);
+    };
+
+    CHECK(byte_ranges_overlap(at(base_address), 16, at(base_address), 16),
+          "a buffer overlaps itself");
+    CHECK(byte_ranges_overlap(at(base_address), 16, at(base_address + 8), 16),
+          "a partial overlap is detected");
+    CHECK(byte_ranges_overlap(at(base_address), 16, at(base_address + 4), 4),
+          "a contained range is detected");
+    CHECK(byte_ranges_overlap(at(base_address + 4), 4, at(base_address), 16),
+          "containment is detected from either side");
+    CHECK(!byte_ranges_overlap(at(base_address), 8, at(base_address + 8), 8),
+          "two ranges that merely touch do not overlap — rejecting this would refuse a legal call");
+    CHECK(!byte_ranges_overlap(at(base_address), 16, at(base_address + 17), 16),
+          "a one-byte gap is not an overlap");
+    CHECK(!byte_ranges_overlap(at(base_address), 0, at(base_address), 16),
+          "a zero-length range overlaps nothing, even at the same address");
+    CHECK(!byte_ranges_overlap(at(base_address), 16, at(base_address + 4096), 16),
+          "distant ranges are independent");
+
+    /* An extent that would wrap the address space is treated as invalid. */
+    const auto top = (std::numeric_limits<std::uintptr_t>::max)();
+    CHECK(byte_ranges_overlap(at(top - 8u), 64, at(base_address), 16),
+          "a wrapping extent is reported as overlapping rather than as safe");
+    CHECK(!byte_ranges_overlap(at(top - 8u), 8, at(base_address), 16),
+          "an extent that stops exactly at the top of the address space does not wrap");
+}
+
 } // namespace
 
 int main() {
@@ -503,6 +596,7 @@ int main() {
     test_thread_local_last_error();
     test_null_and_zero_length_matrix();
     test_alignment_overlap_and_overflow();
+    test_buffer_predicates_directly();
     test_error_clears_on_success();
     test_byte_order_neutral_values();
     test_repeated_lifecycle();

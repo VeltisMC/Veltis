@@ -192,7 +192,7 @@ val writeBootstrapLibraries by tasks.registering {
                             + " failure the JVM reports as a class being wrong rather than"
                             + " as a mismatch"
                             + "\n  Fix: set it to $coordinate:$declaredByMojang in"
-                            + " server/build.gradle.kts and patch-engine/build.gradle.kts"
+                            + " server/build.gradle.kts and patcher/build.gradle.kts"
                             + "\n  Looked for: " + copy.absolutePath
                     )
                 }
@@ -369,7 +369,7 @@ val compileJavaVersionGuard = tasks.register<JavaCompile>("compileJavaVersionGua
 
 tasks.register("uberJar", Jar::class) {
     dependsOn(
-        ":patch-engine:jar",
+        ":patcher:jar",
         ":server:jar",
         // The launcher cannot bootstrap itself without a patch set and the
         // version it was built for, so these are inputs to the jar, not to the
