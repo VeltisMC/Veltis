@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
@@ -133,9 +134,171 @@ class NativeLoaderTest {
         assertTrue(NativeLoader.probeBinary(universal).architectures().contains("aarch64"));
     }
 
+    /*
+     * e_lfanew is chosen by the linker, not fixed at 0x40. These cases are the
+     * reason the probe seeks instead of reading one static window: the old
+     * behaviour rejected a well-formed binary simply because its header sat past
+     * the first 4096 bytes.
+     */
     @Test
-    void wrongArchitectureIsExplainedBeforeTheOperatingSystemLoader() throws Exception {
-        var arm64 = write("arm64.dll", peImage(0xAA64));
+    void peHeaderAtAnUnusualOffsetIsFoundBySeeking() throws Exception {
+        for (var offset : new int[] {0x40, 0x100, 0x200, 0xFFF, 0x1000, 0x1234, 0x8000}) {
+            var path = write("pe-at-" + offset, peImageAt(0x8664, offset, offset + 0x400));
+            var info = NativeLoader.probeBinary(path);
+
+            assertEquals("PE", info.format(), "offset " + offset);
+            assertTrue(info.architectures().contains("x86_64"), "offset " + offset);
+            assertNull(NativeLoader.checkBinary(path, "windows-x86_64"), "offset " + offset);
+        }
+    }
+
+    @Test
+    void peArm64AndX86AreToldApartFromX8664() throws Exception {
+        assertEquals("aarch64",
+                NativeLoader.probeBinary(write("arm64.dll", peImage(0xAA64))).architectures().iterator().next());
+        assertEquals("x86",
+                NativeLoader.probeBinary(write("x86.dll", peImage(0x014C))).architectures().iterator().next());
+        assertEquals("x86_64",
+                NativeLoader.probeBinary(write("x64.dll", peImage(0x8664))).architectures().iterator().next());
+    }
+
+    @Test
+    void unknownPeMachineIsReportedRatherThanGuessed() throws Exception {
+        var info = NativeLoader.probeBinary(write("itanium.dll", peImage(0x200)));
+
+        assertEquals("PE", info.format());
+        assertTrue(info.architectures().contains("unknown-0x200"), info.describe());
+        var reason = NativeLoader.checkBinary(write("itanium2.dll", peImage(0x200)), "windows-x86_64");
+        assertNotNull(reason);
+        assertTrue(reason.contains("unknown-0x200"), reason);
+    }
+
+    @Test
+    void truncatedDosHeaderSaysHowShortTheFileIs() {
+        var twoBytes = assertThrows(IOException.class,
+                () -> NativeLoader.probeBinary(write("mz-2.dll", new byte[] {'M', 'Z'})));
+        assertTrue(twoBytes.getMessage().contains("DOS header"), twoBytes.getMessage());
+        assertTrue(twoBytes.getMessage().contains("2 bytes"), twoBytes.getMessage());
+
+        // One byte short of the field that holds e_lfanew.
+        var justShort = new byte[0x3F];
+        justShort[0] = 'M';
+        justShort[1] = 'Z';
+        var shortHeader = assertThrows(IOException.class,
+                () -> NativeLoader.probeBinary(write("mz-63.dll", justShort)));
+        assertTrue(shortHeader.getMessage().contains("DOS header"), shortHeader.getMessage());
+    }
+
+    @Test
+    void impossiblePeOffsetsAreRejectedWithoutWrappingOrReadingTheFile() throws Exception {
+        // e_lfanew below the end of the DOS header cannot address a PE header.
+        var overlapping = new byte[0x80];
+        overlapping[0] = 'M';
+        overlapping[1] = 'Z';
+        putLe32(overlapping, 0x3C, 0x20);
+        var inside = assertThrows(IOException.class,
+                () -> NativeLoader.probeBinary(write("overlap.dll", overlapping)));
+        assertTrue(inside.getMessage().contains("invalid PE header offset"), inside.getMessage());
+
+        // The maximum value of a 32-bit field must not become a negative int.
+        var wrapped = new byte[0x80];
+        wrapped[0] = 'M';
+        wrapped[1] = 'Z';
+        putLe32(wrapped, 0x3C, 0xFFFFFFFF);
+        var past = assertThrows(IOException.class,
+                () -> NativeLoader.probeBinary(write("wrapped.dll", wrapped)));
+        assertTrue(past.getMessage().contains("past the end"), past.getMessage());
+        assertTrue(past.getMessage().contains("4294967295"), past.getMessage());
+    }
+
+    @Test
+    void truncatedSignatureAndMissingSignatureAreDistinguishable() throws Exception {
+        // The four signature bytes themselves are cut off by the end of file.
+        var cut = new byte[0x42];
+        cut[0] = 'M';
+        cut[1] = 'Z';
+        putLe32(cut, 0x3C, 0x40);
+        cut[0x40] = 'P';
+        var cutReason = assertThrows(IOException.class, () -> NativeLoader.probeBinary(write("cut.dll", cut)));
+        assertTrue(cutReason.getMessage().contains("truncated PE signature"), cutReason.getMessage());
+        assertTrue(cutReason.getMessage().contains("2 of 4"), cutReason.getMessage());
+
+        // The signature starts, but the COFF header holding the machine type does
+        // not fit before the end of the file.
+        var halfCoff = peHeaderOnlyShell(0x40 + 10, 0x40);
+        halfCoff[0x40] = 'P';
+        halfCoff[0x41] = 'E';
+        var coffReason = assertThrows(IOException.class,
+                () -> NativeLoader.probeBinary(write("halfCoff.dll", halfCoff)));
+        assertTrue(coffReason.getMessage().contains("truncated COFF header"), coffReason.getMessage());
+        assertTrue(coffReason.getMessage().contains("10 of 24"), coffReason.getMessage());
+
+        // Every byte is present; it is simply not a PE header.
+        var bogus = peHeaderOnlyShell(0x80, 0x40);
+        putLe32(bogus, 0x40, 0x0A0B0C0D);
+        var bogusReason = assertThrows(IOException.class,
+                () -> NativeLoader.probeBinary(write("bogus.dll", bogus)));
+        assertTrue(bogusReason.getMessage().contains("missing PE signature"), bogusReason.getMessage());
+        assertTrue(bogusReason.getMessage().contains("0D 0C 0B 0A"), bogusReason.getMessage());
+    }
+
+    @Test
+    void machOHeaderBitnessMustMatchTheCpuItDeclares() throws Exception {
+        // MH_MAGIC (32-bit) carrying an arm64 CPU is corruption, not a library.
+        var mismatch = write("macho-32-with-arm64", machOImage(0xFEEDFACE, 0x0100000C, true));
+        var reason = assertThrows(IOException.class, () -> NativeLoader.probeBinary(mismatch));
+        assertTrue(reason.getMessage().contains("32-bit"), reason.getMessage());
+        assertTrue(reason.getMessage().contains("0x100000C"), reason.getMessage());
+
+        // The same CPU in the 64-bit container is the normal Apple Silicon case.
+        assertEquals("aarch64",
+                NativeLoader.probeBinary(write("macho-64-arm64", machOImage(0xFEEDFACF, 0x0100000C, true)))
+                        .architectures().iterator().next());
+
+        // Big-endian thin headers (MH_CIGAM_64) still resolve to the same CPU.
+        assertEquals("x86_64",
+                NativeLoader.probeBinary(write("macho-be-x64", machOImage(0xFEEDFACF, 0x01000007, false)))
+                        .architectures().iterator().next());
+
+        // A header shorter than mach_header is truncated, whatever its magic says.
+        var stub = new byte[16];
+        stub[0] = (byte) 0xCF;
+        stub[1] = (byte) 0xFA;
+        stub[2] = (byte) 0xED;
+        stub[3] = (byte) 0xFE;
+        putLe32(stub, 4, 0x0100000C);
+        var truncated = assertThrows(IOException.class, () -> NativeLoader.probeBinary(write("macho-stub", stub)));
+        assertTrue(truncated.getMessage().contains("truncated Mach-O header"), truncated.getMessage());
+    }
+
+    @Test
+    void fatMachOCountsAreSanityCheckedAgainstRealContainers() throws Exception {
+        var noSlices = write("fat-zero", fatImageWithCount(0));
+        assertTrue(assertThrows(IOException.class, () -> NativeLoader.probeBinary(noSlices))
+                .getMessage().contains("architecture count 0"));
+
+        var tooMany = write("fat-huge", fatImageWithCount(64));
+        assertTrue(assertThrows(IOException.class, () -> NativeLoader.probeBinary(tooMany))
+                .getMessage().contains("between 1 and 16"));
+
+        // A Java class file starts with the same four bytes as a fat Mach-O. Its
+        // major version sits where nfat_arch is read, so the count is the only
+        // thing that tells the two containers apart before the slices are garbage.
+        var classFile = write("Hello.class", fatImageWithCount(52));
+        var rejected = assertThrows(IOException.class, () -> NativeLoader.probeBinary(classFile));
+        assertTrue(rejected.getMessage().contains("architecture count 52"), rejected.getMessage());
+
+        // Slice count promises more table than the file holds.
+        var cutTable = new byte[8 + 20];
+        putBe32(cutTable, 0, 0xCAFEBABE);
+        putBe32(cutTable, 4, 4);
+        putBe32(cutTable, 8, 0x0100000C);
+        assertTrue(assertThrows(IOException.class, () -> NativeLoader.probeBinary(write("fat-cut", cutTable)))
+                .getMessage().contains("truncated universal Mach-O architecture table"));
+    }
+
+    @Test
+    void wrongArchitectureIsExplainedBeforeTheOperatingSystemLoader() throws Exception {        var arm64 = write("arm64.dll", peImage(0xAA64));
         var reason = NativeLoader.checkBinary(arm64, "windows-x86_64");
 
         assertNotNull(reason);
@@ -294,6 +457,88 @@ class NativeLoaderTest {
     }
 
     @Test
+    void aLibraryFromAnotherOperatingSystemIsRejectedBeforeTheSystemLoaderRuns() throws Exception {
+        var host = switch (NativeLoader.platformKey()) {
+            case "windows-x86_64", "windows-aarch64" -> "PE";
+            case "linux-x86_64", "linux-aarch64" -> "ELF";
+            case "macos-x86_64", "macos-aarch64" -> "Mach-O";
+            default -> null;
+        };
+        Assumptions.assumeTrue(host != null, "unrecognised host platform");
+        // The file written is the container after the host's own, in rotation, so
+        // the test means the same thing on every supported system.
+        var foreign = switch (host) {
+            case "PE" -> "ELF";
+            case "ELF" -> "Mach-O";
+            default -> "PE";
+        };
+        var bytes = switch (foreign) {
+            case "ELF" -> elfImage(0x3E, true);
+            case "Mach-O" -> machOImage(0x0100000C, true);
+            default -> peImage(0x8664);
+        };
+        var name = switch (foreign) {
+            case "ELF" -> "libveltis_native.so";
+            case "Mach-O" -> "libveltis_native.dylib";
+            default -> "veltis_native.dll";
+        };
+
+        var file = write(name, bytes);
+        var result = NativeLoader.tryLoad(new NativeConfig(true, true, true, false, file.toString()));
+
+        assertNull(result.library(), "a foreign container must never be returned");
+        assertTrue(result.status().loaded(), "the file exists, so this is found-but-rejected");
+        assertFalse(result.status().available());
+        assertTrue(result.status().reason().contains(foreign), result.status().reason());
+        assertTrue(result.status().reason().contains(host), result.status().reason());
+    }
+
+    @Test
+    void aLibraryForAnotherArchitectureIsRejectedBeforeTheSystemLoaderRuns() throws Exception {
+        var platform = NativeLoader.platformKey();
+        // Right container, wrong machine. The operating system loader also
+        // refuses this, but only with a generic "could not load" message.
+        var mismatched = switch (platform) {
+            case "windows-x86_64" -> peImage(0xAA64);
+            case "windows-aarch64" -> peImage(0x8664);
+            case "linux-x86_64" -> elfImage(0xB7, true);
+            case "linux-aarch64" -> elfImage(0x3E, true);
+            case "macos-aarch64" -> machOImage(0x01000007, true);
+            case "macos-x86_64" -> machOImage(0x0100000C, true);
+            default -> null;
+        };
+        Assumptions.assumeTrue(mismatched != null, "no mismatched-arch image for this host");
+
+        var file = write(NativeLoader.libraryFileName(platform), mismatched);
+        var result = NativeLoader.tryLoad(new NativeConfig(true, true, true, false, file.toString()));
+
+        assertNull(result.library(), "an incompatible architecture must never be returned");
+        assertTrue(result.status().loaded(), "the file exists, so this is found-but-rejected");
+        assertFalse(result.status().available());
+        assertTrue(result.status().reason().contains(platform), result.status().reason());
+        assertEquals(0, result.status().abiVersion(), "no ABI was negotiated");
+    }
+
+    @Test
+    void anUnusableConfiguredPathIsAReportedFailureNotAnException() {
+        // A path the filesystem cannot name is a configuration mistake, and the
+        // server starts before an administrator fixes it. Path.of() rejects a NUL
+        // with InvalidPathException on some platforms and accepts it on others, so
+        // the contract asserted here is the one NativeLoader promises: a status
+        // that explains itself, never an unchecked exception into the caller.
+        var result = NativeLoader.tryLoad(
+                new NativeConfig(true, true, true, false, "veltis\u0000native"));
+
+        assertNull(result.library(), "no library can come from a path that does not resolve");
+        assertFalse(result.status().available());
+        assertFalse(result.status().loaded());
+        assertTrue(result.status().fallbackActive());
+        assertTrue(result.status().reason().startsWith("invalid native library path '")
+                        || result.status().reason().startsWith("configured native library not found: "),
+                result.status().reason());
+    }
+
+    @Test
     void closedLibraryRejectsFurtherOperations() {
         var path = fixturePath("veltis.native.test.fakeTransform");
         var result = NativeLoader.tryLoad(new NativeConfig(true, true, true, false, path.toString()));
@@ -341,18 +586,30 @@ class NativeLoaderTest {
     }
 
     /*
-     * Minimal syntactically valid headers. The probe reads format and machine
-     * only, so no section table or program header is needed; the operating
-     * system is never asked to load these synthetic files.
+     * Minimal syntactically valid headers. The probe reads the container, the
+     * header position and the machine type only, so no section table or program
+     * header is needed; the operating system is never asked to load these
+     * synthetic files.
      */
     private static byte[] peImage(int machine) {
-        var bytes = new byte[0x80];
+        return peImageAt(machine, 0x40, 0x80);
+    }
+
+    /** A syntactically valid PE whose header starts at {@code peOffset}. */
+    private static byte[] peImageAt(int machine, int peOffset, int fileSize) {
+        var bytes = peHeaderOnlyShell(fileSize, peOffset);
+        bytes[peOffset] = 'P';
+        bytes[peOffset + 1] = 'E';
+        putLe16(bytes, peOffset + 4, machine);
+        return bytes;
+    }
+
+    /** An MZ file of {@code fileSize} bytes whose e_lfanew names {@code peOffset}. */
+    private static byte[] peHeaderOnlyShell(int fileSize, int peOffset) {
+        var bytes = new byte[fileSize];
         bytes[0] = 'M';
         bytes[1] = 'Z';
-        putLe32(bytes, 0x3C, 0x40);
-        bytes[0x40] = 'P';
-        bytes[0x41] = 'E';
-        putLe16(bytes, 0x44, machine);
+        putLe32(bytes, 0x3C, peOffset);
         return bytes;
     }
 
@@ -373,31 +630,35 @@ class NativeLoaderTest {
     }
 
     private static byte[] machOImage(int cpuType, boolean littleEndian) {
+        // MH_MAGIC_64: the only bitness a supported Apple slice can have.
+        return machOImage(0xFEEDFACF, cpuType, littleEndian);
+    }
+
+    private static byte[] machOImage(int magic, int cpuType, boolean littleEndian) {
         var bytes = new byte[32];
         if (littleEndian) {
-            // MH_MAGIC_64 (0xFEEDFACF) stored little-endian.
-            bytes[0] = (byte) 0xCF;
-            bytes[1] = (byte) 0xFA;
-            bytes[2] = (byte) 0xED;
-            bytes[3] = (byte) 0xFE;
+            putLe32(bytes, 0, magic);
             putLe32(bytes, 4, cpuType);
         } else {
-            bytes[0] = (byte) 0xFE;
-            bytes[1] = (byte) 0xED;
-            bytes[2] = (byte) 0xFA;
-            bytes[3] = (byte) 0xCF;
+            putBe32(bytes, 0, magic);
             putBe32(bytes, 4, cpuType);
         }
         return bytes;
     }
 
     private static byte[] fatImage(int... cpuTypes) {
-        var bytes = new byte[8 + 20 * cpuTypes.length];
-        putBe32(bytes, 0, 0xCAFEBABE);
-        putBe32(bytes, 4, cpuTypes.length);
+        var bytes = fatImageWithCount(cpuTypes.length);
         for (var i = 0; i < cpuTypes.length; i++) {
             putBe32(bytes, 8 + 20 * i, cpuTypes[i]);
         }
+        return bytes;
+    }
+
+    /** A fat header that declares {@code count} slices, all with CPU type zero. */
+    private static byte[] fatImageWithCount(int count) {
+        var bytes = new byte[8 + 20 * count];
+        putBe32(bytes, 0, 0xCAFEBABE);
+        putBe32(bytes, 4, count);
         return bytes;
     }
 

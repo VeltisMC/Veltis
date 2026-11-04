@@ -29,7 +29,7 @@ import java.util.zip.ZipOutputStream;
  * widened classes at all — "attempting to assign weaker access privileges" on
  * every override the patch set touches.
  *
- * <p>It lives in {@code patch-engine} rather than in {@code build-tools} so both
+ * <p>It lives in {@code :patcher} rather than in {@code build-tools} so both
  * callers run one implementation: the Gradle pipeline and a checkout's own
  * {@code VeltisRuntime.prepare()}. Neither is a server start. A server
  * installation never widens anything — it downloads Mojang's jar and applies

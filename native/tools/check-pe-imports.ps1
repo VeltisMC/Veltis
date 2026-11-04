@@ -16,8 +16,18 @@
 .PARAMETER ExpectMachine
     Optional. x86_64 or aarch64. When given, the COFF machine field must match.
 
+.PARAMETER AllowMsvcruntime
+    Accept a dynamic MSVC CRT. Passed when the build records
+    VELTIS_NATIVE_STATIC_RUNTIME=OFF; MinGW/LLVM runtimes stay rejected.
+
 .NOTES
     Exit code 0 on success, 1 on any unexpected import or machine mismatch.
+    This is the one authority for the Windows runtime policy: the CI dependency
+    step and ':veltis-native:verifyNativeRuntimePolicy' both call it, so a
+    release run and a CI run cannot disagree about what the artifact imports.
+    Imports that are neither a compiler runtime nor a system library are not
+    rejected here - the list is printed for review, and widening these patterns
+    is a decision a reviewer makes consciously.
 #>
 [CmdletBinding()]
 param(
@@ -33,7 +43,10 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Compiler runtimes that must never be an import of a redistributed artifact.
-$MinGwRuntimePattern = '(?i)^(libc\+\+|libunwind|libgcc|libstdc\+\+|libwinpthread|libssp)[^/\\]*\.dll$'
+# libatomic is in the list because a cross build for aarch64 can pull it in for
+# 128-bit atomics; every entry here is a file the toolchain installs beside its
+# own binaries and a server operator does not have.
+$MinGwRuntimePattern = '(?i)^(libc\+\+|libunwind|libgcc|libstdc\+\+|libwinpthread|libssp|libatomic)[^/\\]*\.dll$'
 $MsvcruntimePattern = '(?i)^(vcruntime|msvcp|msvcr|concrt)[0-9_]*\.dll$'
 
 $MachineNames = @{

@@ -22,7 +22,7 @@ description = "VeltisMC server: the NMS entrypoint, the Veltis runtime framework
 
 dependencies {
     implementation(project(":api"))
-    implementation(project(":native"))
+    implementation(project(":veltis-native"))
     implementation(project(":patcher"))
     // For the Veltis API
     // Optional native acceleration. The dependency is on the module's Java FFM
@@ -47,7 +47,7 @@ dependencies {
     // The class-file parser the runtime delta applier needs: applying a patch
     // set splices `ClassDelta` payloads onto the verified vanilla classes, and
     // that splice parses both sides with ASM's tree API. Declared here rather
-    // than inherited through `:patch-engine` so the start-up classpath this
+    // than inherited through `:patcher` so the start-up classpath this
     // build assembles for the server names its own requirement: these two are
     // in the bootstrap table the launcher preflights, not in veltismc.jar.
     implementation("org.ow2.asm:asm:9.10.1")

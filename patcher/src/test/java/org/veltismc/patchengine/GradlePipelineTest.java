@@ -28,12 +28,12 @@ class GradlePipelineTest {
     /**
      * The pipeline's entry point, in the module that owns the pipeline.
      *
-     * <p>It lives in {@code :patch-engine} because that is where the code it
+     * <p>It lives in {@code :patcher} because that is where the code it
      * calls lives and every caller of it already depended on that module; it used
      * to sit in a {@code :build-tools} module that existed for this one class.
      */
     private static final String PIPELINE_RUNNER =
-        "patch-engine/src/main/java/org/veltismc/patchengine/PipelineRunner.java";
+        "patcher/src/main/java/org/veltismc/patchengine/PipelineRunner.java";
 
     private static final Path REPO = repositoryRoot();
 
@@ -729,7 +729,7 @@ class GradlePipelineTest {
 
     @Test
     void noBuildScriptReferencesTheRetiredLayout() {
-        for (var module : List.of("server", "launcher", "patch-engine")) {
+        for (var module : List.of("server", "launcher", "patcher")) {
             var script = read(module + "/build.gradle.kts");
             assertFalse(script.contains("File.separator + \"ver\" + File.separator"),
                 module + "/build.gradle.kts still filters on the retired ver/ layout");
@@ -863,7 +863,7 @@ class GradlePipelineTest {
 
     @Test
     void noModuleDefinesItsOwnViewOfTheMinecraftWorkspace() {
-        for (var module : List.of("server", "launcher", "patch-engine")) {
+        for (var module : List.of("server", "launcher", "patcher")) {
             var code = withoutComments(read(module + "/build.gradle.kts"));
             if (module.equals("launcher")) {
                 // The one permitted mention, and it is a subtraction rather than a
@@ -886,29 +886,29 @@ class GradlePipelineTest {
     // ------------------------------------------------------------------
 
     /**
-     * Four modules, and the list is the decision.
+     * Five modules, and the list is the decision.
      *
-     * <p>{@code :veltis-api} is the newest and deliberately holds no classes yet:
+     * <p>{@code :api} is the newest and deliberately holds no classes yet:
      * it exists so the public surface is its own boundary, and so CI compiles
      * it, rather than arriving as a package inside a module that ships something
      * else.
      *
      * <p>Pinned because it is the easiest thing in a build to grow back. Each
      * name here answers to something real — an operator runs {@code :launcher},
-     * the pipeline is {@code :patch-engine}, everything that needs Minecraft
-     * compiles in {@code :server} — and the moment a fourth appears someone has
-     * to say which of those it is not.
+     * the pipeline is {@code :patcher}, everything that needs Minecraft
+     * compiles in {@code :server} — and the moment another one appears someone
+     * has to say which of those it is not.
      */
     @Test
     void settingsListsEveryModuleAndEachIsARealBoundary() {
         var settings = read("settings.gradle.kts");
-        var included = new ArrayList<String>();
-        var matcher = Pattern.compile("\":([A-Za-z0-9_-]+)\"").matcher(settings);
-        while (matcher.find()) {
-            included.add(":" + matcher.group(1));
-        }
-        assertEquals(List.of(":veltis-api", ":launcher", ":patch-engine", ":server"), included,
+        var included = moduleList(settings);
+        assertEquals(List.of(":api", ":launcher", ":patcher", ":server", ":veltis-native"), included,
             "settings.gradle.kts is the module list; everything else follows from it");
+        assertTrue(settings.contains("project(\":veltis-native\").projectDir = file(\"native\")"),
+            ":veltis-native is the project identity and native/ is the source"
+                + " directory; only the explicit mapping makes those two names the"
+                + " same module");
         assertFalse(settings.contains(":build-tools"),
             "build-tools held one class whose only callers already depended on the"
                 + " module that class calls into");
@@ -917,6 +917,25 @@ class GradlePipelineTest {
                 + " outside the repository and were always packaged into one jar in a"
                 + " fixed order by a script; three modules for one deployable unit is a"
                 + " boundary maintained for its own sake");
+    }
+
+    /**
+     * The paths inside the {@code include(...)} block, in declaration order.
+     *
+     * <p>Scoped to the block rather than swept from the whole file because a
+     * project path legitimately appears twice now: once to include the module
+     * and once to point it at its directory. The module list is the include, so
+     * that is what this pins.
+     */
+    private static List<String> moduleList(String settings) {
+        var block = Pattern.compile("(?s)include\\s*\\((.*?)\\)").matcher(settings);
+        assertTrue(block.find(), "settings.gradle.kts must contain the include block");
+        var included = new ArrayList<String>();
+        var matcher = Pattern.compile("\":([A-Za-z0-9_-]+)\"").matcher(block.group(1));
+        while (matcher.find()) {
+            included.add(":" + matcher.group(1));
+        }
+        return included;
     }
 
     /**
@@ -972,8 +991,8 @@ class GradlePipelineTest {
     void nothingThatBuildsOrRunsTheServerMentionsTheRetiredStateDirectory() {
         var roots = List.of(
             "build.gradle.kts", "settings.gradle.kts", "gradle.properties",
-            "veltis-api/build.gradle.kts", "launcher/build.gradle.kts",
-            "server/build.gradle.kts", "patch-engine/build.gradle.kts");
+            "api/build.gradle.kts", "launcher/build.gradle.kts",
+            "server/build.gradle.kts", "patcher/build.gradle.kts");
         for (var script : roots) {
             assertFalse(read(script).contains(".vlt"),
                 script + " still knows about the retired state directory");
@@ -981,7 +1000,7 @@ class GradlePipelineTest {
         var sources = new ArrayList<String>();
         sources.addAll(javaFiles("launcher/src/main/java"));
         sources.addAll(javaFiles("server/src/main/java"));
-        sources.addAll(javaFiles("patch-engine/src/main/java"));
+        sources.addAll(javaFiles("patcher/src/main/java"));
         for (var source : sources) {
             assertFalse(read(source).contains("\".vlt"),
                 source + " still builds a path under the retired state directory");

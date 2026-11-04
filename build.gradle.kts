@@ -31,7 +31,7 @@ version = "1.0.0-SNAPSHOT"
 // Minecraft pipeline configuration
 //
 // The development cache lives at minecraft/<minecraftVersion>/, laid out by
-// patch-engine's VeltisWorkspace: the pristine decompile gets its own tree at
+// :patcher's VeltisWorkspace: the pristine decompile gets its own tree at
 // minecraft/<version>/ — the only directory the decompile step writes, and the
 // one a contributor reads as minecraft/<version>/net/minecraft/... — and
 // everything else the pipeline produces sits in the workspace beside it at
@@ -391,7 +391,7 @@ repositories {
 
 dependencies {
     // The decompiler the pipeline runs to produce `source/`. Named here rather
-    // than exported by `:patch-engine`: that module declares Vineflower
+    // than exported by `:patcher`: that module declares Vineflower
     // `compileOnly`, so it cannot reach a runtime classpath, an installed jar or
     // `libraries/` — and this is the one classpath that actually needs it.
     // Removing it here breaks `decompileMinecraft` (and therefore `applyPatches`)
@@ -862,7 +862,7 @@ val writePackagedJavaVersion by tasks.registering {
 //
 // Every step is a JavaExec with declared inputs and outputs, so Gradle can skip
 // work that is genuinely done and rerun work that is not. The steps themselves
-// are thin wrappers around patch-engine (see patch-engine/PipelineRunner).
+// are thin wrappers around :patcher (see patcher/PipelineRunner).
 // ---------------------------------------------------------------------------
 fun pipelineStep(
     name: String,
@@ -878,7 +878,7 @@ fun pipelineStep(
     // step; each step ignores the argument it does not use.
     args(step, minecraftVersion, rootDir.absolutePath, patchWorkers.toString(),
         veltisJavaRelease.toString())
-    dependsOn(":patch-engine:classes")
+    dependsOn(":patcher:classes")
     // Any change to the pipeline code itself must invalidate the pipeline's
     // own outputs, otherwise a fix to the patcher would not take effect until
     // something unrelated changed.

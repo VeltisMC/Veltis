@@ -21,7 +21,10 @@ void transform_i32(
         // Java's int arithmetic has the same two's-complement result.
         const auto mixed = value * 31u + salt_bits + index;
         // bit_cast makes the bit-preserving uint32_t -> int32_t conversion
-        // explicit on every compiler, including pre-C++20 library modes.
+        // explicit instead of relying on the implementation-defined narrowing a
+        // pre-C++20 compiler would perform. C++20 defines that narrowing too, so
+        // this is documentation as much as code: it needs the C++20 library that
+        // CMakeLists.txt already requires.
         output[i] = std::bit_cast<std::int32_t>(mixed);
     }
 }

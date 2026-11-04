@@ -69,10 +69,10 @@ jobs:
         run: ./gradlew build --stacktrace --no-daemon
 
       - name: Build the API module
-        # `veltis-api` ships nothing yet, so it is named here rather than left to
+        # `api` ships nothing yet, so it is named here rather than left to
         # the aggregate `build`: the module is a CI gate in its own right, and a
         # future change that narrows what CI builds must not drop it silently.
-        run: ./gradlew :veltis-api:build --stacktrace --no-daemon
+        run: ./gradlew :api:build --stacktrace --no-daemon
 
       - name: Build VeltisMC
         env:
@@ -182,6 +182,9 @@ jobs:
             cc: ""
             cxx: ""
             osxArch: ""
+            # A DLL copied beside a JAR must not need a compiler runtime; MSVC's
+            # own default (/MD) would import vcruntime140.dll.
+            staticRuntime: "true"
           - name: Windows x86-64 clang-cl
             os: windows-latest
             platform: windows-x86_64
@@ -190,6 +193,7 @@ jobs:
             cc: clang-cl
             cxx: clang-cl
             osxArch: ""
+            staticRuntime: "true"
           - name: Windows x86-64 LLVM-MinGW
             os: windows-latest
             platform: windows-x86_64
@@ -198,6 +202,9 @@ jobs:
             cc: clang
             cxx: clang++
             osxArch: ""
+            # Left empty on purpose: a Windows build is already static by the
+            # CMake default, and this lane proves the default rather than a flag.
+            staticRuntime: ""
           - name: Windows ARM64 MSVC
             # `windows-11-arm` is a generally available hosted label. There is no
             # continue-on-error here: an ARM64 Windows regression must fail CI.
@@ -208,6 +215,7 @@ jobs:
             cc: ""
             cxx: ""
             osxArch: ""
+            staticRuntime: "true"
           - name: Linux x86-64 GCC
             os: ubuntu-latest
             platform: linux-x86_64
@@ -233,7 +241,11 @@ jobs:
             cxx: g++
             osxArch: ""
           - name: macOS Apple Silicon
-            os: macos-14
+            # All macOS 14 images were retired from GitHub-hosted Actions on
+            # 2026-11-02, so `macos-14` no longer schedules. `macos-15` is the
+            # GA arm64 label; `macos-26`/`macos-latest` would silently move the
+            # lane to a newer OS than the deployment target claims to cover.
+            os: macos-15
             platform: macos-aarch64
             toolchain: apple-clang
             generator: Ninja
@@ -334,6 +346,9 @@ jobs:
           if [ -n "${{ matrix.osxArch }}" ]; then
             args+=("-PveltisNativeOsxArchitectures=${{ matrix.osxArch }}")
           fi
+          if [ -n "${{ matrix.staticRuntime }}" ]; then
+            args+=("-PveltisNativeStaticRuntime=${{ matrix.staticRuntime }}")
+          fi
           # One task that proves configure, build, CTest, the export check, the
           # Java FFM suite, packaging, manifest and checksums for this host.
           ./gradlew :veltis-native:verifyNativeRelease -PveltisNativeTest=true \
@@ -343,17 +358,30 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $dll = "veltis-native/build/native/dist/${{ matrix.platform }}/veltis_native.dll"
+          $dll = "native/build/native/dist/${{ matrix.platform }}/veltis_native.dll"
           if (-not (Test-Path $dll)) { throw "native library was not packaged: $dll" }
           $machine = if ("${{ matrix.platform }}" -like '*-aarch64') { 'aarch64' } else { 'x86_64' }
-          ./veltis-native/tools/check-pe-imports.ps1 -Path $dll -ExpectMachine $machine
+          # The import check follows the manifest, not the job label: an artifact
+          # that claims a static runtime must really import no CRT, and one that
+          # links it dynamically has to be recorded as the requirement it is.
+          $manifest = "native/build/native/dist/${{ matrix.platform }}/veltis-native-manifest.json"
+          if (-not (Test-Path $manifest)) { throw "no artifact manifest: $manifest" }
+          $static = (Get-Content -Raw $manifest | ConvertFrom-Json).runtime.staticRuntime
+          if ($null -eq $static) { throw "manifest has no runtime.staticRuntime field" }
+          $checkArgs = @{ Path = $dll; ExpectMachine = $machine }
+          if ($static -ne $true) { $checkArgs['AllowMsvcruntime'] = $true }
+          ./native/tools/check-pe-imports.ps1 @checkArgs
+          if ($static -ne $true) {
+            "::notice::$($machine) DLL links the MSVC runtime dynamically; it needs that runtime installed" |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
 
       - name: Verify the native library dependencies (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          LIB="veltis-native/build/native/${{ matrix.platform }}/libveltis_native.so"
+          LIB="native/build/native/${{ matrix.platform }}/libveltis_native.so"
           test -f "$LIB" || { echo "::error::native library was not produced"; exit 1; }
           file "$LIB"
           NEEDED=$(readelf -d "$LIB" | awk '/\(NEEDED\)/ {print $5}' | tr -d '[]')
@@ -364,8 +392,10 @@ jobs:
             echo "::error::unexpected shared-library dependency: $UNEXPECTED"
             exit 1
           fi
-          # The loader looks beside the JAR, never in a build tree, so a baked-in
-          # RPATH would be a packaging defect rather than a convenience.
+          # Java passes the resolved absolute path to the OS loader, so an
+          # embedded RPATH could only ever be a build-machine path that the
+          # shipped library would keep trying to consult for its dependencies.
+          # Distribution relies on the caller's search, never on the binary.
           if readelf -d "$LIB" | grep -Eq '\((RPATH|RUNPATH)\)'; then
             echo "::error::native library embeds an RPATH/RUNPATH"
             readelf -d "$LIB"
@@ -387,7 +417,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LIB="veltis-native/build/native/${{ matrix.platform }}/libveltis_native.dylib"
+          LIB="native/build/native/${{ matrix.platform }}/libveltis_native.dylib"
           test -f "$LIB" || { echo "::error::native library was not produced"; exit 1; }
           file "$LIB"
           SLICES=$(lipo -archs "$LIB")
@@ -409,6 +439,15 @@ jobs:
           MINOS=$(vtool -show-build "$LIB" | awk '/minos/ {print $2; exit}')
           test -n "$MINOS" || { echo "::error::dylib has no LC_BUILD_VERSION minos"; exit 1; }
           echo "minimum macOS: $MINOS"
+          # The manifest is what a downstream packager reads, so it must agree
+          # with what the linker actually baked in.
+          MANIFEST="native/build/native/dist/${{ matrix.platform }}/veltis-native-manifest.json"
+          test -f "$MANIFEST" || { echo "::error::no artifact manifest: $MANIFEST"; exit 1; }
+          CLAIMED=$(sed -n 's/.*"minimumOsVersion": "\([^"]*\)".*/\1/p' "$MANIFEST")
+          if [ "$CLAIMED" != "$MINOS" ]; then
+            echo "::error::manifest claims minimum macOS '$CLAIMED' but the binary declares minos $MINOS"
+            exit 1
+          fi
           echo "### Native runtime requirement (macOS ${{ matrix.platform }}): $MINOS" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Java-only fallback suite (no native fixture)
@@ -425,7 +464,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LIB=$(find veltis-native/build/native -maxdepth 2 -type f \
+          LIB=$(find native/build/native -maxdepth 2 -type f \
             \( -name 'veltis_native.dll' -o -name 'libveltis_native.so' -o -name 'libveltis_native.dylib' \) \
             | head -n 1)
           test -f "$LIB" || { echo "::error::native library was not produced"; exit 1; }
@@ -448,8 +487,8 @@ jobs:
         with:
           name: veltis-native-${{ matrix.platform }}-${{ matrix.toolchain }}
           path: |
-            veltis-native/build/native/dist/${{ matrix.platform }}
-            veltis-native/build/native/dist/verification-report-${{ matrix.platform }}.json
+            native/build/native/dist/${{ matrix.platform }}
+            native/build/native/dist/verification-report-${{ matrix.platform }}.json
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -468,24 +507,24 @@ jobs:
             os: windows-latest
             platform: windows-aarch64
             preset: windows-arm64-mingw-cross
-            builddir: veltis-native/build/native/cmake/windows-arm64-mingw-cross
-            artifact: veltis-native/build/native/windows-aarch64/veltis_native.dll
+            builddir: native/build/native/cmake/windows-arm64-mingw-cross
+            artifact: native/build/native/windows-aarch64/veltis_native.dll
             toolchain: cmake/toolchains/windows-arm64-mingw.cmake
             optional: false
           - name: Linux AArch64 GNU
             os: ubuntu-latest
             platform: linux-aarch64
             preset: linux-aarch64-cross
-            builddir: veltis-native/build/native/cmake/linux-aarch64-cross
-            artifact: veltis-native/build/native/linux-aarch64/libveltis_native.so
+            builddir: native/build/native/cmake/linux-aarch64-cross
+            artifact: native/build/native/linux-aarch64/libveltis_native.so
             toolchain: cmake/toolchains/linux-aarch64.cmake
             optional: false
           - name: Linux RISC-V 64 GNU
             os: ubuntu-latest
             platform: linux-riscv64
             preset: linux-riscv64-cross
-            builddir: veltis-native/build/native/cmake/linux-riscv64-cross
-            artifact: veltis-native/build/native/linux-riscv64/libveltis_native.so
+            builddir: native/build/native/cmake/linux-riscv64-cross
+            artifact: native/build/native/linux-riscv64/libveltis_native.so
             toolchain: cmake/toolchains/linux-riscv64.cmake
             # Tier 2 investigation only. This is the one entry allowed to fail;
             # Windows ARM64 and Linux AArch64 must fail the workflow.
@@ -550,7 +589,7 @@ jobs:
           }
 
       - name: Configure and compile
-        working-directory: veltis-native
+        working-directory: native
         run: |
           cmake --preset ${{ matrix.preset }}
           cmake --build --preset ${{ matrix.preset }} --parallel
@@ -564,13 +603,43 @@ jobs:
           file "$ART" || true
 
           # The header is the single source of truth for the public ABI.
-          EXPECTED=$(grep -E '^VELTIS_NATIVE_API ' veltis-native/include/veltis/native/veltis_native.h |
+          EXPECTED=$(grep -E '^VELTIS_NATIVE_API ' native/include/veltis/native/veltis_native.h |
             sed -E 's/.*[ *]([A-Za-z_][A-Za-z0-9_]*)\(.*/\1/' | sort)
           EXPECTED_COUNT=$(printf '%s\n' "$EXPECTED" | wc -l | tr -d ' ')
           [ "$EXPECTED_COUNT" -eq 13 ] || {
             echo "::error::header declares $EXPECTED_COUNT exports, expected 13"
             exit 1
           }
+
+          # CMake writes the identity fields beside the library. This runner
+          # cannot execute the artifact, but it can still prove that what a
+          # downstream packager would read describes the bytes it ships.
+          INFO="$(dirname "$ART")/veltis-native-build-info.json"
+          test -f "$INFO" || { echo "::error::no build metadata beside $ART"; exit 1; }
+          json_string() { grep -o "\"$1\": \"[^\"]*\"" "$INFO" | head -n 1 | cut -d'"' -f4 || true; }
+          json_number() { grep -o "\"$1\": [0-9]*" "$INFO" | head -n 1 | awk '{print $2}' || true; }
+          PLATFORM="${{ matrix.platform }}"
+          for pair in "os:${PLATFORM%%-*}" "architecture:${PLATFORM##*-}" "platform:$PLATFORM"; do
+            key="${pair%%:*}"; want="${pair#*:}"
+            got=$(json_string "$key")
+            [ "$got" = "$want" ] || {
+              echo "::error::$key is '$got' in $INFO but the build targeted '$want'"
+              exit 1
+            }
+          done
+          # 64-bit is a property of the Java descriptor, not a preference: size_t
+          # is mapped to JAVA_LONG, so a 32-bit artifact would corrupt lengths.
+          BITS=$(json_number pointerBits)
+          [ "$BITS" = "64" ] || { echo "::error::manifest pointerBits is $BITS, expected 64"; exit 1; }
+          ABI=$(json_number abiVersion)
+          [ "$ABI" = "1" ] || { echo "::error::manifest abiVersion is $ABI, expected 1"; exit 1; }
+          MANIFEST_EXPORTS=$(sed -n 's/.*"exports": \[\(.*\)\].*/\1/p' "$INFO" |
+            tr -d ' "' | tr ',' '\n' | sort)
+          diff -u <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$MANIFEST_EXPORTS") || {
+            echo "::error::the manifest export list is not the public header's"
+            exit 1
+          }
+          echo "manifest: os/arch/pointerBits/abi and 13 exports agree with the header"
 
           case "${{ matrix.platform }}" in
             windows-aarch64)
@@ -582,7 +651,7 @@ jobs:
                 echo "::error::mangled C++ symbol in the export table"
                 exit 1
               fi
-              pwsh -NoProfile -File veltis-native/tools/check-pe-imports.ps1 \
+              pwsh -NoProfile -File native/tools/check-pe-imports.ps1 \
                 -Path "$ART" -ExpectMachine aarch64
               ;;
             linux-aarch64)
@@ -654,7 +723,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: veltis-native-cross-${{ matrix.platform }}
-          path: veltis-native/build/native/${{ matrix.platform }}
+          path: native/build/native/${{ matrix.platform }}
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -723,7 +792,7 @@ jobs:
           prepare: pkg install -y cmake ninja
           run: |
             set -eu
-            cd veltis-native
+            cd native
             cmake -S . -B build/native/cmake/freebsd-x86_64 -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DVELTIS_NATIVE_OUTPUT_DIR="$PWD/build/native/freebsd-x86_64" \

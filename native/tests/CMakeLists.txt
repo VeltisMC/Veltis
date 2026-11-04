@@ -1,6 +1,10 @@
 add_executable(native_tests native_tests.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(native_tests PRIVATE veltis_native Threads::Threads)
+# The buffer predicates are header-only and tested directly, so the unit needs
+# the library's private internal include directory. It is PRIVATE here as well:
+# nothing outside this module may include src/cpp headers.
+target_include_directories(native_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/cpp)
 veltis_enable_warnings(native_tests)
 veltis_configure_runtime(native_tests)
 
@@ -21,6 +25,41 @@ veltis_configure_runtime(native_export_check C_ONLY)
 veltis_set_output_directory(native_export_check "${VELTIS_NATIVE_OUTPUT_DIR}")
 add_test(NAME veltis_native_exports
     COMMAND native_export_check $<TARGET_FILE:veltis_native>)
+
+# The ABI contract, exercised from both languages against the same header. The C
+# unit is the only consumer of veltis_native.h that is compiled as pure C, so a
+# C++-only construct in the header fails here instead of in an operator's build.
+# Both units pin every exported signature as a function-pointer type: a changed
+# parameter, a dropped const or a different return type is a compile error, which
+# is the one ABI test that can run before a library exists.
+add_executable(native_abi_contract_c abi_contract_c.c)
+target_link_libraries(native_abi_contract_c PRIVATE veltis_native)
+veltis_enable_warnings(native_abi_contract_c)
+veltis_configure_runtime(native_abi_contract_c C_ONLY)
+veltis_set_output_directory(native_abi_contract_c "${VELTIS_NATIVE_OUTPUT_DIR}")
+add_test(NAME veltis_native_abi_contract_c COMMAND native_abi_contract_c)
+
+add_executable(native_abi_contract_cxx abi_contract_cxx.cpp)
+target_link_libraries(native_abi_contract_cxx PRIVATE veltis_native)
+veltis_enable_warnings(native_abi_contract_cxx)
+veltis_configure_runtime(native_abi_contract_cxx)
+veltis_set_output_directory(native_abi_contract_cxx "${VELTIS_NATIVE_OUTPUT_DIR}")
+add_test(NAME veltis_native_abi_contract_cxx COMMAND native_abi_contract_cxx)
+
+# Seeded, bounded fuzzing of the ABI argument surface. It is a normal CTest case
+# with a small round count, so the lane always runs it, and the same binary takes
+# VELTIS_FUZZ_ROUNDS/VELTIS_FUZZ_SEED for a long developer run. Under a sanitizer
+# build this is the case that turns a wrong validation order into a report.
+add_executable(native_fuzz_abi_inputs fuzz_abi_inputs.cpp)
+target_link_libraries(native_fuzz_abi_inputs PRIVATE veltis_native)
+veltis_enable_warnings(native_fuzz_abi_inputs)
+veltis_configure_runtime(native_fuzz_abi_inputs)
+veltis_set_output_directory(native_fuzz_abi_inputs "${VELTIS_NATIVE_OUTPUT_DIR}")
+add_test(NAME veltis_native_fuzz_abi_inputs
+    COMMAND native_fuzz_abi_inputs)
+set_tests_properties(veltis_native_fuzz_abi_inputs PROPERTIES
+    ENVIRONMENT "VELTIS_FUZZ_ROUNDS=4000"
+    LABELS "fuzz")
 
 # Incompatible libraries used by the Java integration tests. Each one exports
 # real version symbols (or deliberately omits one), so the loader exercises a

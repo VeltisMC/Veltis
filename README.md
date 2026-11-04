@@ -50,16 +50,19 @@ If the build succeeds, check the repository's configured distribution and artifa
 VeltisMC can use an optional C/C++ engine through a stable C ABI and the Java
 Foreign Function & Memory API. It is not required: the normal build and server
 startup use the Java fallback unless a compatible library is installed. Building
-the library needs CMake 3.20+ and a C11/C++20 compiler, and is a separate task:
+the library needs CMake 3.21+ and a C11/C++20 compiler, and is a separate task:
 
 ```bash
 ./gradlew :veltis-native:buildNative
 ./gradlew :veltis-native:testNative
 ```
 
-Supported and tested platforms are Windows x86-64 and Linux x86-64. See
-[`veltis-native/README.md`](veltis-native/README.md) for the ABI, installation
-layout and `veltis.native.*` configuration.
+One target has actually been built, executed and integration-tested so far:
+Windows x86-64. Linux x86-64/AArch64, macOS (both architectures) and Windows
+ARM64 are recognized by the loader and have CI jobs defined, but they are listed
+as unverified until those jobs run green on a real runner. See
+[`native/README.md`](native/README.md) for the support table, the ABI,
+installation layout, packaging and release verification.
 
 ### Run
 
