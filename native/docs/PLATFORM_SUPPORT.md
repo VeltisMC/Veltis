@@ -28,9 +28,9 @@ definition, a preset, or the fact that a compiler accepts the source.
 
 "Host" means the machine this repository was last verified on: Windows 11 x86-64,
 GCC 16.2 (MinGW-w64 winlibs) and Clang 23.1.4 (LLVM-MinGW), no Visual Studio, no
-WSL, no containers. Everything else is CI-only, and **no CI run of these
-definitions has ever happened**: the branch has not been pushed, so the jobs in
-`.github/workflows/gradle.yml` are configuration, not evidence.
+WSL, no containers. Everything else is CI-only. CI runs are tracked separately
+in [CI_SUPPORT_MATRIX.md](./CI_SUPPORT_MATRIX.md); a workflow definition alone
+does not count as evidence that a platform works.
 
 | Target | Toolchain | Label | Evidence |
 | --- | --- | --- | --- |
@@ -39,7 +39,7 @@ definitions has ever happened**: the branch has not been pushed, so the jobs in
 | `windows-aarch64` | LLVM-MinGW Clang, cross from x86-64 | **Cross-compiled and artifact verified** | machine `0xAA64`, no compiler runtime imported, 13 exports; never executed |
 | `windows-x86_64` | MSVC (`cl`) | **Not tested** | preset `windows-x86_64-msvc` exists; this host has no Visual Studio |
 | `windows-x86_64` | clang-cl | **Not tested** | preset `windows-x86_64-clang-cl` exists; clang-cl needs the MSVC headers/SDK |
-| `windows-aarch64` | MSVC ARM64 | **Not tested** | CI lane `Windows ARM64 MSVC`; no local toolchain |
+| `windows-aarch64` | LLVM-MinGW on native Windows ARM64 | **Not tested locally** | Blocking CI lane builds and executes the ARM64 DLL on `windows-11-arm`; no local ARM64 host |
 | `linux-x86_64` | GCC, Clang | **Not tested** (locally) | CI lanes exist and have never run; no WSL/Docker on this host |
 | `linux-aarch64` | GCC | **Not tested** | CI `ubuntu-24.04-arm`; local preset `linux-aarch64-cross` needs `aarch64-linux-gnu-gcc`, absent |
 | `macos-aarch64` | Apple clang | **Not tested** | CI `macos-15`; no macOS host reachable (the lane's original `macos-14` label was retired platform-wide on 2026-11-02) |
@@ -196,8 +196,8 @@ Two distinct configurations, never to be conflated:
   which names no compiler and reads like a toolchain bug.
   `VELTIS_NATIVE_BUILD_TESTS` is forced OFF for a cross build, so nothing tries to
   run the target binary.
-- **Native ARM64 Windows** (CI `Windows ARM64 MSVC` on `windows-11-arm`, no
-  generator override, `staticRuntime: "true"`). Not tested locally. It is not
+- **Native ARM64 Windows** (CI `Windows ARM64 LLVM-MinGW` on `windows-11-arm`,
+  Ninja generator, `staticRuntime: "true"`). Not tested locally. It is not
   `continue-on-error`: an ARM64 regression is expected to fail CI, per the
   comment in the matrix.
 

@@ -67,7 +67,7 @@ archive and rebuild it from scratch), and the Java integration suite — plus a
 | 1 | Windows x86-64 MSVC (177) | `windows-latest` | `windows-x86_64` | MSVC (NMake default generator) | forced `true` (a DLL beside a JAR must not import `vcruntime140.dll`) | **Not tested** — no Visual Studio on this host |
 | 2 | Windows x86-64 clang-cl (188) | `windows-latest` | `windows-x86_64` | clang-cl + Ninja (MSVC env via `ilammy/msvc-dev-cmd`) | forced `true` | **Not tested** — no clang-cl here |
 | 3 | Windows x86-64 LLVM-MinGW (197) | `windows-latest` | `windows-x86_64` | LLVM-MinGW (latest release zip, downloaded at run time) + Ninja | left empty **on purpose**: proves the Windows static-by-default rather than a flag | **Executed locally** (same toolchain family: LLVM-MinGW Clang 23, 2026-11-03 round) |
-| 4 | Windows ARM64 MSVC (208) | `windows-11-arm` | `windows-aarch64` | MSVC ARM64; JDK **Zulu 25** (no vendor ships a win-aarch64 Temurin 26/25, so this lane overrides the distribution and the Gradle toolchain version) | forced `true` | **Not tested** — no ARM64 Windows host. No `continue-on-error`: an ARM64 regression must fail CI |
+| 4 | Windows ARM64 LLVM-MinGW (208) | `windows-11-arm` | `windows-aarch64` | Native ARM64-hosted LLVM-MinGW + Ninja; JDK **Zulu 25** (no vendor ships a win-aarch64 Temurin 26/25, so this lane overrides the distribution and the Gradle toolchain version) | forced `true` | **Not tested locally** — the blocking CI lane runs native build, CTest and Java FFM integration tests |
 | 5 | Linux x86-64 GCC (226) | `ubuntu-latest` | `linux-x86_64` | apt `gcc`/`g++` + Ninja | — | **Not tested** — no Linux host, no WSL, no container runtime |
 | 6 | Linux x86-64 Clang (234) | `ubuntu-latest` | `linux-x86_64` | apt `clang` + Ninja | — | **Not tested** |
 | 7 | Linux AArch64 GCC (242) | `ubuntu-24.04-arm` | `linux-aarch64` | native apt `gcc` + Ninja | — | **Not tested** — native ARM64 Linux lane, not a cross build |
@@ -192,7 +192,7 @@ All labels in use, verified against GitHub's hosted-runner reference on
 | `ubuntu-latest` | `build`, Linux x86-64 lanes, `native-debug`, FreeBSD VM host, `publish` | GA |
 | `ubuntu-24.04-arm` | Linux AArch64 native lane | GA (ARM64 Linux hosted runners) |
 | `windows-latest` | three Windows x86-64 lanes, two cross lanes, `native-debug` | GA |
-| `windows-11-arm` | Windows ARM64 MSVC lane | GA (hosted ARM64 Windows) |
+| `windows-11-arm` | Windows ARM64 LLVM-MinGW lane | GA (hosted ARM64 Windows) |
 | `macos-15` | macOS Apple Silicon lane | GA arm64 label |
 | `macos-15-intel` | macOS Intel lane | GA Intel label |
 | `macos-14` | *(removed)* | **Retired platform-wide on 2026-11-02** — every macOS 14 image was removed from GitHub-hosted Actions two days before this document's date, so the label no longer schedules. The lane was changed to `macos-15` with an in-file comment recording why, and `PLATFORM_SUPPORT.md` was updated to match |

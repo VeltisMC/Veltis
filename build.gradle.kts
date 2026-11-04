@@ -369,6 +369,10 @@ subprojects {
     }
 
     repositories {
+        maven {
+            url = uri("https://repo1.maven.org/maven2/")
+            content { includeGroup("org.vineflower") }
+        }
         mavenCentral()
         maven("https://libraries.minecraft.net/")
         maven("https://maven.fabricmc.net/")
@@ -384,6 +388,10 @@ subprojects {
 }
 
 repositories {
+    maven {
+        url = uri("https://repo1.maven.org/maven2/")
+        content { includeGroup("org.vineflower") }
+    }
     mavenCentral()
     maven("https://libraries.minecraft.net/")
     maven("https://maven.fabricmc.net/")

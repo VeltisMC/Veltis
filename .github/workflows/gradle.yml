@@ -205,16 +205,16 @@ jobs:
             # Left empty on purpose: a Windows build is already static by the
             # CMake default, and this lane proves the default rather than a flag.
             staticRuntime: ""
-          - name: Windows ARM64 MSVC
-            # `windows-11-arm` is a generally available hosted label. There is no
-            # continue-on-error here: an ARM64 Windows regression must fail CI.
+          - name: Windows ARM64 LLVM-MinGW
+            # The hosted ARM64 image has clang-cl but no Visual Studio/MSVC
+            # installation. LLVM-MinGW's ARM64-hosted compiler still builds a
+            # native DLL that this runner can execute and test.
             os: windows-11-arm
             platform: windows-aarch64
-            toolchain: msvc
-            generator: "Visual Studio 17 2022"
-            generatorPlatform: ARM64
-            cc: ""
-            cxx: ""
+            toolchain: llvm-mingw-arm64
+            generator: Ninja
+            cc: clang
+            cxx: clang++
             osxArch: ""
             staticRuntime: "true"
             # No vendor ships a Windows ARM64 JDK 26 (or 25) for Temurin — the
@@ -348,6 +348,24 @@ jobs:
             Select-Object -First 1
           if (-not $asset) { throw 'no LLVM-MinGW x86_64 UCRT asset in the latest release' }
           $zip = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
+          $root = Get-ChildItem $env:RUNNER_TEMP -Directory -Filter 'llvm-mingw-*' |
+            Select-Object -First 1
+          (Join-Path $root.FullName 'bin') | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install LLVM-MinGW (ARM64 host)
+        if: matrix.toolchain == 'llvm-mingw-arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Invoke-RestMethod -Headers @{ 'User-Agent' = 'veltis-ci' } `
+            -Uri 'https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest'
+          $asset = $release.assets |
+            Where-Object { $_.name -match '^llvm-mingw-.*-ucrt-aarch64\.zip$' } |
+            Select-Object -First 1
+          if (-not $asset) { throw 'no LLVM-MinGW ARM64-hosted UCRT asset in the latest release' }
+          $zip = Join-Path $env:RUNNER_TEMP 'llvm-mingw-arm64.zip'
           Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip
           Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
           $root = Get-ChildItem $env:RUNNER_TEMP -Directory -Filter 'llvm-mingw-*' |
