@@ -211,7 +211,8 @@ jobs:
             os: windows-11-arm
             platform: windows-aarch64
             toolchain: msvc
-            generator: ""
+            generator: "Visual Studio 17 2022"
+            generatorPlatform: ARM64
             cc: ""
             cxx: ""
             osxArch: ""
@@ -387,6 +388,9 @@ jobs:
           if [ -n "${{ matrix.generator }}" ]; then
             args+=("-PveltisNativeGenerator=${{ matrix.generator }}")
           fi
+          if [ -n "${{ matrix.generatorPlatform }}" ]; then
+            args+=("-PveltisNativeGeneratorPlatform=${{ matrix.generatorPlatform }}")
+          fi
           if [ -n "${{ matrix.osxArch }}" ]; then
             args+=("-PveltisNativeOsxArchitectures=${{ matrix.osxArch }}")
           fi
@@ -503,7 +507,10 @@ jobs:
           echo "linked dependencies:"
           otool -L "$LIB" | sed 's/^/  /'
 
-          mapfile -t DEPS < <(otool -L "$LIB" | awk 'NR > 2 {print $1}')
+          DEPS=()
+          while IFS= read -r dep; do
+            DEPS+=("$dep")
+          done < <(otool -L "$LIB" | awk 'NR > 2 {print $1}')
           UNEXPECTED=()
           for dep in "${DEPS[@]}"; do
             if [ "$dep" = "$INSTALL_NAME" ]; then

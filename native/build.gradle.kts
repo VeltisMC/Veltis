@@ -33,6 +33,7 @@
  *   -PveltisNativeToolchainFile=cmake/toolchains/windows-arm64-mingw.cmake
  *   -PveltisNativeGenerator=Ninja             build tool (Windows defaults to Ninja
  *                                             when it is on PATH; see effectiveNativeGenerator)
+ *   -PveltisNativeGeneratorPlatform=ARM64      CMake generator target platform
  *   -PveltisNativeOsxArchitectures=arm64      macOS multi-arch selection
  *   -PveltisNativeOsxDeploymentTarget=11.0    macOS minimum version (default: 11.0)
  *   -PveltisNativeStaticRuntime=true|false    override the per-toolchain default
@@ -227,6 +228,7 @@ fun effectiveNativeGenerator(): String {
 }
 
 val nativeGenerator = providers.provider { effectiveNativeGenerator() }
+val nativeGeneratorPlatform = providers.gradleProperty("veltisNativeGeneratorPlatform").orElse("")
 
 /**
  * Resolves a native tool at execution time, never at configuration time.
@@ -406,6 +408,7 @@ val configureNative by tasks.registering(Exec::class) {
     inputs.property("platform", nativePlatform)
     inputs.property("buildType", nativeBuildType)
     inputs.property("generator", nativeGenerator)
+    inputs.property("generatorPlatform", nativeGeneratorPlatform)
     inputs.property("crossCompiling", nativeCrossCompiling)
     inputs.property("toolchainFile", nativeToolchainPath)
     inputs.property("osxArchitectures", nativeOsxArchitectures)
@@ -448,6 +451,9 @@ val configureNative by tasks.registering(Exec::class) {
         )
         nativeGenerator.get().takeIf { it.isNotBlank() }?.let { generator ->
             args += listOf("-G", generator)
+        }
+        nativeGeneratorPlatform.orNull?.takeIf { it.isNotBlank() }?.let { platform ->
+            args += listOf("-A", platform)
         }
         nativeToolchainPath.orNull?.takeIf { it.isNotEmpty() }?.let { toolchain ->
             args += "-DCMAKE_TOOLCHAIN_FILE=$toolchain"
