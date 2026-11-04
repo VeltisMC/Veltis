@@ -455,8 +455,13 @@ jobs:
             echo "::error::unexpected architecture slices (no universal binary is published)"
             exit 1
           fi
-          DEPS=$(otool -L "$LIB" | tail -n +2 | awk '{print $1}')
-          printf 'dependencies:\n'; printf '%s\n' "$DEPS" | sed 's/^/  /'
+          DINSTALL_NAME=$(otool -D "$LIB" | sed -n '2p' | xargs)
+          test -n "$INSTALL_NAME" || {
+            echo "::error::could not read dylib install name"
+            exit 1
+          }
+          DEPS=$(otool -L "$LIB" | tail -n +2 | awk '{print $1}' |
+            grep -Fvx "$INSTALL_NAME" || true)
           UNEXPECTED=$(printf '%s\n' "$DEPS" | grep -Ev '^(/usr/lib/|/System/Library/)' || true)
           if [ -n "$UNEXPECTED" ]; then
             echo "::error::unexpected dylib dependency: $UNEXPECTED"
