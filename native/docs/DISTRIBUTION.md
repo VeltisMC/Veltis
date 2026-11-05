@@ -204,7 +204,9 @@ Three places catch a mismatch, because every one of them is a way to ship a
 manifest no server will accept:
 
 1. this pairing check, run in CI before packaging
-   ([`gradle.yml:1039`](../../.github/workflows/gradle.yml#L1039));
+   ([`gradle.yml:1049`](../../.github/workflows/gradle.yml#L1049)) — it is gated on
+   `env.VELTIS_NATIVE_MANIFEST_KEY != ''`, because the `secrets` context is not
+   available in a step `if:`;
 2. [`packageNativeDistribution`](../build.gradle.kts#L2079) signs the manifest it
    just wrote and then **reads it back through `NativeManifest` itself**, which
    verifies against the embedded key;

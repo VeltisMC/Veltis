@@ -460,10 +460,10 @@ report an explicit "unsupported platform" status and keep the Java fallback.
   (Cppcheck 2.22.0, `--error-exitcode=2`) and
   `gcc -fanalyzer: clean over 3 translation units` (every library TU, not one
   file). The task still fails loudly when cppcheck is absent rather than
-  reporting a silence as a pass. `.github/workflows/gradle.yml` last passed
-  `actionlint` 1.7.12 (exit 0) on 2026-11-04; **no `actionlint` binary is
-  available on this host**, so the steps added on 2026-11-05 have been read but
-  not machine-checked.
+  reporting a silence as a pass. `.github/workflows/gradle.yml` passes
+  `actionlint` 1.7.12 with **exit 0** on 2026-11-05, after that linter caught a
+  `secrets`-in-step-`if:` expression the 2026-11-04 workflow did not contain; the
+  steps added on 2026-11-05 are therefore machine-checked as well as read.
 - **Benchmark re-run:** `benchmarkNative` executed; the harness's own verdict
   line reads `threshold: native-engine did not beat the allocation-free Java
   baseline at any measured batch size`. Numbers: BENCHMARKING.md.
@@ -618,16 +618,17 @@ is a required check. Failures are never hidden behind an optional matrix value.
 
 The jobs have been written but **have not yet run on the commit in question** —
 no push or PR has been made from this work, so no hosted runner has executed
-them. Lint status is two different things now: the workflow passed
-`actionlint` 1.7.12 with exit 0 on 2026-11-04, but **no `actionlint` binary is
-available on this host**, so the `native-package` / `native-release` wiring and
-the key-pairing step added on 2026-11-05 are unlinted as well as unrun.
-Lint-clean is not run-clean, and neither is review-clean: treat every row above
-without a ✅ as unverified until its job is green. Two currency notes live in
-`CI_SUPPORT_MATRIX.md`: the Apple Silicon lane's `macos-14` label was retired
-platform-wide on 2026-11-02 (the lane now uses `macos-15`), and actionlint does
-not validate runner-label existence — that fix came from reading GitHub's runner
-reference, not from the linter.
+them. Lint status: the workflow passes `actionlint` 1.7.12 with exit 0 on
+**2026-11-05**, including the `native-package` / `native-release` wiring and the
+key-pairing step added this round — that second pass is what found the
+`secrets`-context error in the pairing step's `if:`. Lint-clean is not run-clean,
+and neither is review-clean: treat every row above without a ✅ as unverified
+until its job is green. Two currency notes live in `CI_SUPPORT_MATRIX.md`: the
+Apple Silicon lane's `macos-14` label was retired platform-wide on 2026-11-02 (the
+lane now uses `macos-15`), and `actionlint` does check runner labels against its
+bundled image list — 1.7.7 rejects `windows-11-arm` and `macos-15-intel` as
+unknown while 1.7.12 accepts both, so a label finding is a statement about the
+linter's age as much as about the workflow.
 
 ## Packaging a native artifact
 

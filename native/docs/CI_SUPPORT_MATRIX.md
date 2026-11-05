@@ -22,7 +22,7 @@ workflow holds only `contents: read` until the publish job.
 
 | Check | Result |
 | --- | --- |
-| `actionlint` 1.7.12 over `gradle.yml` | **exit 0** — no syntax, shellcheck, shell-without-bash, or expression errors |
+| `actionlint` 1.7.12 over `gradle.yml` | **exit 0** on 2026-11-04 and **exit 0** on 2026-11-05 (§10 records the expression error the second run found and fixed) |
 | Runner labels checked against GitHub's hosted-runner reference (docs.github.com) | All labels used are current GA labels (§10) |
 | Every Gradle/CMake command the jobs run, executed locally where a toolchain exists | See §12 — most lanes executed locally, mapped step by step |
 | Any actual run on GitHub-hosted runners | **Never.** No push or PR was made from this work, and no runner is reachable from this host |
@@ -200,15 +200,27 @@ All labels in use, verified against GitHub's hosted-runner reference on
 Two deliberate choices in that change: `macos-26`/`macos-latest` were **not**
 used, because they would silently move the lane to a newer OS than the
 deployment target the job records; and the retirement was found by reading
-GitHub's documentation, not by any linter — actionlint does not validate that
-a runner label still exists (§10).
+GitHub's documentation rather than by the linter that was on the host at the time.
+That distinction is now narrower than it was: `actionlint` 1.7.7, run on this host
+on 2026-11-05, **does** report `runner-label` findings for labels outside its
+bundled image list — it flagged `windows-11-arm` and `macos-15-intel`, both of
+which are current GA images. A label finding is therefore evidence about the
+linter's age as much as about the workflow, and 1.7.12 accepts both labels (§10).
 
 ## 10. Lint status, and what lint cannot catch
 
 - `actionlint` 1.7.12, `-no-color` over `.github/workflows/gradle.yml`:
-  **exit 0** on 2026-11-04 (after the `macos-15` fix; before it the file was
-  also lint-clean — actionlint checks syntax, shell fragments and expressions,
-  not label existence).
+  **exit 0** on 2026-11-04, and **exit 0 again on 2026-11-05** after the
+  distribution steps and the `env`-gated key-pairing fix. The 2026-11-05 run
+  earned its keep: before the fix it reported, at the key-pairing step,
+  `context "secrets" is not allowed here. available contexts are "env", "github",
+  "inputs", "job", "matrix", "needs", "runner", "steps", "strategy", "vars"` —
+  i.e. the `secrets` context is unavailable in a step `if:` (and in a job `if:`),
+  which is a runtime workflow-creation error, not a style opinion.
+  actionlint checks syntax, shell fragments, expressions **and** action inputs;
+  its runner-label check exists but validates against the image list bundled with
+  the version in hand, so an unknown-label finding must be read against the
+  linter's release date (§9).
 - **What no linter here catches:** the build script itself. During this
   foundation round a KDoc comment containing a slash-then-star glob opened a
   *nested* Kotlin block comment (Kotlin block comments nest), which silently

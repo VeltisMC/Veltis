@@ -1149,14 +1149,18 @@ Two things did close:
   Linux AArch64 are blocking; only the Tier 2 RISC-V investigation may fail.
 - **Runner labels are current.** The Apple Silicon lane moved off `macos-14`,
   retired platform-wide on 2026-11-02, to `macos-15`. That fix came from reading
-  GitHub's runner reference, **not** from the linter — `actionlint` does not
-  validate that a label exists, and the CI matrix is documented as the authority
-  on labels rather than any README.
+  GitHub's runner reference rather than from the linter available at the time;
+  `actionlint` *does* check labels, but against the image list bundled with its
+  own release — 1.7.7 rejects `windows-11-arm` and `macos-15-intel`, 1.7.12
+  accepts them — so the CI matrix, not a linter version, stays the authority on
+  labels.
 
 **The release chain added for the selective distribution** is the substantive
 Phase 10 change, and it is built so that an unsigned or incomplete release is
-the *impossible* state rather than the easy one. `native-host` marks exactly one
-lane (`Windows x86-64 LLVM-MinGW`) with `release: true` and uploads its artifact;
+the *impossible* state rather than the easy one. `native-host` marks one release
+lane per platform with `release: true` — six of the nine entries, `windows-x86_64`
+(LLVM-MinGW), `windows-aarch64`, `linux-x86_64` (GCC), `linux-aarch64`,
+`macos-aarch64` and `macos-x86_64` — and uploads that lane's artifact;
 `native-package` downloads those release-flagged artifacts, verifies the signing
 key pairs with the embedded anchor when the secret is present, assembles the
 distribution through `packageNativeDistribution` (which refuses unless all three
@@ -1180,8 +1184,12 @@ is missing… linux-aarch64 is missing`), `verifyNativeManifestKeyPairing`
 executed and passed against the rotated anchor, and the Windows runtime-policy
 gate executed. **No CI job has ever run on this branch** — R9 is untouched, and
 nothing in this section may be described as a passing run. `actionlint` 1.7.12
-validated the workflow with exit 0 on 2026-11-04; it is **not available on this
-host**, so the steps added on 2026-11-05 are unlinted as well as unrun.
+validated the workflow with exit 0 on 2026-11-04 and again on 2026-11-05; the
+second run found and, after the fix, cleared a real error in the key-pairing
+step — `if: ${{ secrets.VELTIS_NATIVE_MANIFEST_KEY != '' }}`, which GitHub
+rejects because the `secrets` context is not available in an `if:`. The value is
+now projected into a job-scoped `env` and the condition tests `env.`, per
+CI_SUPPORT_MATRIX.md §10.
 
 ### Phase 11 — documentation and developer experience
 

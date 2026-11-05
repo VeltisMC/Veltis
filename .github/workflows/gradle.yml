@@ -1014,6 +1014,14 @@ jobs:
     needs: [build, native-host]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    # Declared at job scope, not step scope, on purpose: a step's own `env` is
+    # not guaranteed to be resolved when that same step's `if` is evaluated, and
+    # an `if` that reads an empty variable silently skips a verification gate.
+    # The `secrets` context itself is not available in a step `if` at all, which
+    # is why the value is projected into `env` here and the condition below tests
+    # `env`. No step echoes this variable; the key never reaches a log.
+    env:
+      VELTIS_NATIVE_MANIFEST_KEY: ${{ secrets.VELTIS_NATIVE_MANIFEST_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -1037,14 +1045,10 @@ jobs:
       # here names the pair in one line, before the artifacts have been
       # assembled into a release that then fails at publish time.
       - name: Verify the manifest key pairs with the embedded anchor
-        if: ${{ secrets.VELTIS_NATIVE_MANIFEST_KEY != '' }}
-        env:
-          VELTIS_NATIVE_MANIFEST_KEY: ${{ secrets.VELTIS_NATIVE_MANIFEST_KEY }}
+        if: ${{ env.VELTIS_NATIVE_MANIFEST_KEY != '' }}
         run: ./gradlew :veltis-native:verifyNativeManifestKeyPairing --stacktrace --no-daemon
 
       - name: Assemble and sign the distribution manifest
-        env:
-          VELTIS_NATIVE_MANIFEST_KEY: ${{ secrets.VELTIS_NATIVE_MANIFEST_KEY }}
         run: ./gradlew :veltis-native:packageNativeDistribution --stacktrace --no-daemon
 
       - name: Report the signing state

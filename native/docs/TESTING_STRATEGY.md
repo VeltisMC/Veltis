@@ -211,9 +211,19 @@ the test instead of being logged and survived.
     when the compiler on PATH is not GCC, because one tool should not presume
     another's flags.
 - **Workflow lint.** `.github/workflows/gradle.yml` was validated with
-  `actionlint` 1.7.12, **exit 0**, on 2026-11-04. The native distribution steps
-  added on 2026-11-05 are **not lint-verified**: no `actionlint` binary is
-  available on this host, so that change has been read but not machine-checked.
+  `actionlint` 1.7.12, **exit 0**, on 2026-11-04 and again on **2026-11-05 after
+  the distribution steps landed**. That second pass caught a real defect the
+  first could not: `if: ${{ secrets.VELTIS_NATIVE_MANIFEST_KEY != '' }}` on the
+  key-pairing step, which GitHub rejects because the `secrets` context is not
+  available in a step `if:` (the validator names the allowed set: `env`,
+  `github`, `inputs`, `job`, `matrix`, `needs`, `runner`, `steps`, `strategy`,
+  `vars`). The secret is now projected into a job-scoped `env` and the condition
+  tests `env.`, at job rather than step scope because a step's own `env` is not
+  guaranteed to be resolved when its own `if:` is evaluated — and an `if:` that
+  reads an empty variable would silently skip the gate instead of failing it.
+  `actionlint` 1.7.7, an older binary also on this host, additionally reports two
+  `runner-label` findings for `windows-11-arm` and `macos-15-intel`; those are its
+  own stale image list, not a workflow problem, and 1.7.12 accepts both labels.
   Lint-clean is not run-clean; see [CI_SUPPORT_MATRIX.md](CI_SUPPORT_MATRIX.md).
 
 ## 5. Build-configuration coverage
@@ -321,7 +331,7 @@ would need JCStress, which is not wired in.
 ./gradlew :veltis-native:analyzeNativeStatic          # needs cppcheck on PATH
 gcc -fanalyzer -fsyntax-only -std=c11 -DVELTIS_NATIVE_EXPORTS \
   -I native/include -I native/src/c native/src/c/native_utils.c   # one unit; the task globs all of them
-actionlint -no-color .github/workflows/gradle.yml     # not available on this host since 2026-11-05
+actionlint -no-color .github/workflows/gradle.yml     # 1.7.12, fetched to a temp dir on 2026-11-05; not installed on PATH
 
 # Distribution lanes — no compiler, no network: every test uses a loopback HttpServer
 ./gradlew :veltis-native:test -PveltisNativeTest=true \
