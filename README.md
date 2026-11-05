@@ -60,9 +60,26 @@ the library needs CMake 3.21+ and a C11/C++20 compiler, and is a separate task:
 One target has actually been built, executed and integration-tested so far:
 Windows x86-64. Linux x86-64/AArch64, macOS (both architectures) and Windows
 ARM64 are recognized by the loader and have CI jobs defined, but they are listed
-as unverified until those jobs run green on a real runner. See
-[`native/README.md`](native/README.md) for the support table, the ABI,
-installation layout, packaging and release verification.
+as unverified until those jobs run green on a real runner.
+
+The server can also fetch that library for you. `veltis.native.autoDownload`
+defaults to `true`, so a start-up with no verified installation for this
+operating system and JVM architecture reads the signed release manifest,
+downloads **exactly one** artifact — the one for its own platform — installs it
+atomically under `<server root>/native/<platform>/`, and hands it to the same
+loader validation a manually installed library goes through. It never downloads
+every platform's binary, refuses plain HTTP outside loopback, re-checks the host
+allowlist on every redirect hop, and refuses a manifest that does not verify
+against the public key embedded in this build. A platform the release skipped,
+or one it only cross-compiled, reports a skip. Every failure path in this flow
+ends the same way: the server continues on its Java implementation. Set
+`veltis.native.autoDownload=false` (or `veltis.native.offline=true`) and the
+server makes zero network requests.
+
+See [`native/README.md`](native/README.md) for the support table, the ABI,
+installation layout, packaging and release verification, and
+[`native/docs/DISTRIBUTION.md`](native/docs/DISTRIBUTION.md) for the download
+path: its manifest schema, signature mechanism, cache policy and configuration.
 
 ### Run
 

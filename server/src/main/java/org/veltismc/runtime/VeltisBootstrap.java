@@ -3,6 +3,8 @@ package org.veltismc.runtime;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.veltismc.nativeengine.NativeConfig;
+import org.veltismc.nativeengine.NativeDistributionConfig;
+import org.veltismc.nativeengine.NativeDistributionManager;
 import org.veltismc.nativeengine.NativeEngine;
 import org.veltismc.nativeengine.NativeStatus;
 
@@ -49,6 +51,15 @@ public final class VeltisBootstrap {
         var home = detectHomeDirectory(args);
         org.veltismc.runtime.config.LegacyConfig.warnIfPresent(home, LOG);
 
+        // The loader's first search location is <veltismc.home>/native/<platform>,
+        // but nothing sets that property: an installation started with --home
+        // would download into `home` while the loader searched the working
+        // directory. Aligning them here is what makes a downloaded library
+        // findable by the same home everything else writes to.
+        if (System.getProperty("veltismc.home") == null) {
+            System.setProperty("veltismc.home", home.toAbsolutePath().normalize().toString());
+        }
+
         // Native support is optional and never fatal. The configuration is read
         // from the same server.properties file the rest of the server uses, with
         // -Dveltis.native.* taking precedence for a single run.
@@ -89,10 +100,17 @@ public final class VeltisBootstrap {
     /**
      * Attempts native initialization once, logging the outcome. A missing or
      * incompatible library is reported and leaves the server on Java fallbacks.
+     *
+     * <p>The selective distribution runs first so a verified library is in
+     * place before the loader looks for one; it is equally non-fatal, and a
+     * platform this release skipped is reported as the informational
+     * "continuing with Java fallback" line rather than as an error.
      */
     private static void initializeNative(Path home) {
         try {
             var config = NativeConfig.load(home);
+            reportDistribution(NativeDistributionManager.ensureInstalled(
+                    home, config, NativeDistributionConfig.load(home)));
             var status = NativeEngine.shared().initialize(config);
             if (status.available()) {
                 LOG.info("Native support enabled: {}", status.summary());
@@ -104,6 +122,24 @@ public final class VeltisBootstrap {
             }
         } catch (Throwable t) {
             LOG.warn("Failed to initialize native support; Java fallback remains active", t);
+        }
+    }
+
+    /**
+     * Says out loud what the distribution decided. The skip line is the one an
+     * operator reads when a platform has no published artifact — an optional
+     * CI lane that never ran, a runner GitHub retired — and it must always end
+     * with the same reassurance: the server is already running on Java.
+     */
+    private static void reportDistribution(NativeDistributionManager.Result result) {
+        if (result.shouldReportSkip()) {
+            LOG.info("Native acceleration unavailable for {}; continuing with Java fallback. {}",
+                    result.platform(), result.detail());
+        } else if (result.installed()) {
+            LOG.info("Native library installed for {}: {}", result.platform(), result.detail());
+        } else if (result.outcome() == NativeDistributionManager.Outcome.REUSED) {
+            LOG.debug("Native library for {} already in place: {}",
+                    result.platform(), result.detail());
         }
     }
 

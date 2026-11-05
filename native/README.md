@@ -10,6 +10,12 @@ classes, and the server starts and runs on the Java fallback when no compatible
 library is installed. CMake and a C/C++ compiler are needed only for the
 `native` tasks below.
 
+An operator can install a library by hand, or let the server fetch the one
+artifact for its own platform from a signed release — see
+[Automatic distribution](#automatic-distribution) and
+[`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md). Neither route is required, and
+neither one changes the Java fallback's authority.
+
 ## Layout
 
 | Path | Role |
@@ -23,7 +29,7 @@ library is installed. CMake and a C/C++ compiler are needed only for the
 | `src/main/java/org/veltismc/nativeengine/` | FFM loader, configuration, status, lifecycle, Java fallback. |
 | `src/test/java/` | Java unit tests and the real-library end-to-end test. |
 | `tests/` | Native C++ tests, the incompatible-library fixtures and `export_check.c`. |
-| `docs/` | The 15-document foundation set (see Documentation below). |
+| `docs/` | The 16-document foundation and distribution set (see Documentation below). |
 | `tools/` | `check-pe-imports.ps1` — the single authority for the Windows runtime policy, used by both CI and `verifyNativeRuntimePolicy`. |
 | `cmake/toolchains/` | Cross-compilation toolchain files for Windows ARM64, Linux AArch64 and Linux RISC-V 64. |
 | `CMakePresets.json` | Host and cross presets; preset names are listed below. |
@@ -51,6 +57,7 @@ point of the set:
 | `SECURITY_MODEL.md` | Threat model, validation order, explicit non-protections |
 | `BENCHMARKING.md` | Method, current numbers, the optimization acceptance bar |
 | `CI_SUPPORT_MATRIX.md` | CI jobs, runner labels, and the fact that no CI run has executed yet |
+| `DISTRIBUTION.md` | Selective download of one published artifact: manifest schema, signature, cache policy, configuration |
 
 ## Architecture
 
@@ -184,6 +191,12 @@ not, so a Java-only build never asks for a compiler.
 # Compare the Java fallback, an allocation-free Java baseline and the native
 # engine across batch sizes (measurement tool, not a test)
 ./gradlew :veltis-native:benchmarkNative
+
+# The distribution lanes: key-pairing self-check runs anywhere; assembling and
+# signing the manifest needs every mandatory platform lane, so it completes in
+# CI (see "Publishing the distribution")
+./gradlew :veltis-native:verifyNativeManifestKeyPairing
+./gradlew :veltis-native:packageNativeDistribution
 
 # Remove this module's native build tree
 ./gradlew :veltis-native:cleanNative
@@ -338,7 +351,7 @@ claim.
 | Target | Toolchain | Configured | Compiled | Linked | Executed | Integration | Status |
 | --- | --- | :---: | :---: | :---: | :---: | :---: | --- |
 | Windows x86-64 | LLVM-MinGW Clang 23.1.4, Ninja | ✅ | ✅ | ✅ | ✅ | ✅ | **Verified** (2026-11-03; ASan+UBSan lane also passed 2026-11-04) |
-| Windows x86-64 | MinGW-w64 GCC 16.2.0 (winlibs, msvcrt), Ninja | ✅ | ✅ | ✅ | ✅ | ✅ | **Verified** (2026-11-04) |
+| Windows x86-64 | MinGW-w64 GCC 16.2.0 (winlibs, msvcrt), Ninja | ✅ | ✅ | ✅ | ✅ | ✅ | **Verified** (2026-11-04, re-verified 2026-11-05) |
 | Windows x86-64 | MSVC, clang-cl | — | — | — | — | — | **Not tested**; no MSVC toolchain on the verification host |
 | Windows ARM64 | LLVM-MinGW cross | ✅ | ✅ | ✅ | — | — | **Cross-compiled only** |
 | Windows ARM64 | MSVC (native `windows-11-arm` runner) | — | — | — | — | — | CI defined, blocking |
@@ -350,15 +363,19 @@ claim.
 | FreeBSD x86-64/ARM64 | — | — | — | — | — | — | **Not supported**; investigation job only |
 | Linux RISC-V 64 | GNU cross | — | — | — | — | — | **Not supported**; compile-only preset |
 
-Both verified rows were produced on Windows 11 x86-64 with JDK 25.0.5.0.3 and
-CMake 4.4.5. The GCC row was re-verified on **2026-11-04**: the Release, Debug
+Both verified rows were produced on Windows 11 x86-64 with JDK 25.0.5.0.3. The
+GCC row was re-verified on **2026-11-05** with CMake 4.4.4 and Ninja 1.13.2
+(`CMAKE_COMMAND` in `build/native/cmake/windows-x86_64/CMakeCache.txt`); the
+earlier rounds recorded CMake 4.4.5, which is also installed on this host: the
+Release, Debug
 and `-Werror` configurations each passed CTest 5/5, and `verifyNativeRelease`
 completed its full checklist in one run — configure, Release build, CTest (5
 tests: unit contract, export/binary-format check, the C and C++ ABI contract
-units and the seeded fuzz target), the Java FFM suite (**81 tests, 0 failures,
-1 tolerated skip**), packaging, manifest-vs-artifact, the Windows runtime policy
+units and the seeded fuzz target), the Java FFM suite (**131 tests, 0 failures,
+1 tolerated skip**, reported by the task itself as "131, 1, 0, 0 tests across 10
+classes"), packaging, manifest-vs-artifact, the Windows runtime policy
 (imports only `KERNEL32.dll` and `msvcrt.dll`, no compiler runtime), and the
-source archive (**54 tracked files**) extracted and rebuilt from scratch
+source archive (**64 tracked files**) extracted and rebuilt from scratch
 outside the working tree. The Clang lane was verified 2026-11-03 (Release and
 Debug) and additionally ran the AddressSanitizer + UBSan configuration on
 2026-11-04 (CTest 5/5 under instrumentation). An earlier round cross-compiled
@@ -371,7 +388,7 @@ The loader recognizes the six Tier 1 keys independently of this table so a
 future build can ship without a Java change. FreeBSD, the other BSDs and RISC-V
 report an explicit "unsupported platform" status and keep the Java fallback.
 
-## What the verified Windows x86-64 run covers (2026-11-04)
+## What the verified Windows x86-64 run covers (2026-11-05)
 
 - **CTest, 5/5 passed** in Release: `veltis_native_tests` (unit and contract
   behaviour), `veltis_native_exports` (host binary format + exactly the 13
@@ -387,39 +404,66 @@ report an explicit "unsupported platform" status and keep the Java fallback.
   MemorySanitizer are **refused at configure time** on this toolchain, by
   design, with a compile-and-link probe message; TESTING_STRATEGY.md §3 holds
   the full executed/refused/not-tested table.
-- **Java module suite, 81 tests with 0 failures and 1 skipped** against the
-  real DLL (`:veltis-native:check -PveltisNativeTest=true`). The single skip is
+- **Java module suite, 131 tests with 0 failures and 1 skipped** against the
+  real DLL (`:veltis-native:test -PveltisNativeTest=true`). The single skip is
   `javaOnlySuiteHasNoNativeFixtureConfigured`, which only asserts in the
-  Java-only configuration.
-- **Java-only suite, 81 tests with 25 skipped and 0 failures**
+  Java-only configuration. Ten suites: the six that existed before
+  (`NativeLoaderTest` 36, `NativeEngineTest` 18, `NativeEndToEndTest` 11,
+  `NativeConfigTest` 5, `NativeCapabilitiesTest` 4, `FailureLogThrottleTest` 7)
+  plus four covering the distribution path
+  (`NativeDistributionManagerTest` 26, `NativeManifestTest` 13,
+  `NativeDistributionConfigTest` 9, `NativeDistributionRealArtifactTest` 2).
+- **Java-only suite, 131 tests with 27 skipped and 0 failures**
   (`:veltis-native:test -Dveltis.native.test.expectJavaOnly=true`). The flag
   makes Gradle detach every fixture path *and* makes the suite assert that no
   fixture leaked into the JVM, so "Java-only" is checked rather than assumed.
-- **Server suite, 160 tests with 0 failures and 8 skipped** (`:server:test`),
-  including `NativeBootstrapTest` **1/1 passed with the library** (asserts
-  native availability and release on stop) and **1/1 passed without it**
-  (asserts the Java fallback and post-stop state). `:patcher:test`: 236 tests,
-  0 failures. `buildVeltisMC`: BUILD SUCCESSFUL.
+  All 48 manager/manifest/config distribution tests still run in that mode — the
+  download path is verifiable on a host that compiles nothing — and only the two
+  real-artifact cases skip.
+- **Server suite, 161 tests with 0 failures and 8 skipped** (`:server:test`),
+  including `NativeBootstrapTest` (13 tests, 4 skipped) in both configurations
+  CI uses: with `-Dveltis.native.path=<library>` it asserts native availability
+  and release on stop, with an empty path it asserts the Java fallback and
+  post-stop state. `:patcher:test`: 236 tests, 0 failures. `buildVeltisMC`:
+  BUILD SUCCESSFUL.
 - **Binary inspection:** PE x86-64, 295,661 bytes, exactly 13 exported names
   and no internal exports, built by GNU 16.2.0; imports are limited to
   `KERNEL32.dll` and `msvcrt.dll` with no compiler runtime
   (`tools/check-pe-imports.ps1` — the same script CI calls, so the two cannot
   disagree).
-- **Source archive:** `packageNativeSourceArchive` zipped **54 tracked files**
+- **Source archive:** `packageNativeSourceArchive` zipped **64 tracked files**
   into `build/native/dist/veltis-native-source.zip`, and
   `verifyNativeSourceArchive` extracted it and built `veltis_native.dll` from
   scratch outside the working tree. The task prints the archive's sha256; this
   file deliberately quotes no hash for it, because `README.md` is itself one of
-  the 54 files — naming the hash here would change it.
+  the 64 files — naming the hash here would change it.
 - **Release verification report:** `verification-report-windows-x86_64.json`
-  records the commit, the tree state (honestly `tree dirty` — this checkout is
-  not clean), the toolchain, and the distribution archive hash
-  `88365923c9dbb3c027e7fe99c86bc9f75c57449b8e4efd5db2f1174ebbd910bd`.
-- **Static analysis and lint:** `gcc -fanalyzer` on `native_utils.c` is clean
-  (GCC 16.2.0, exit 0). `cppcheck` is not installed here, so
-  `analyzeNativeStatic` fails loudly rather than skipping — install it (or pass
-  `-PveltisNativeCppcheck=<path>`) to run that half. `.github/workflows/gradle.yml`
-  passes `actionlint` 1.7.12 (exit 0).
+  records the commit (`f8df34d9…`), the tree state (honestly `dirty` — this
+  checkout is not clean), the toolchain, and the release archive hash
+  `d17dfa37a2a739f9842203f3bce4e11df7b2dd7bf5bff61bdb3f2aa5ed81cabf`.
+- **Distribution path, executed:** the security and policy behaviour runs
+  against a loopback `HttpServer` (`NativeDistributionManagerTest`), the
+  signature rules against a per-run Ed25519 key (`NativeManifestTest`), and one
+  test packages the **real** DLL, publishes a signed two-platform manifest,
+  installs after exactly three requests and loads it through FFM
+  (`NativeDistributionRealArtifactTest`). What has *not* executed here: a
+  download from a real GitHub Release, and `packageNativeDistribution` to
+  completion — it correctly refuses on this host because `linux-x86_64` and
+  `linux-aarch64` cannot be built here.
+- **Manifest key provenance:** `generateNativeManifestKey` produced the pair,
+  and `verifyNativeManifestKeyPairing` was observed failing against the old
+  embedded anchor and passing against the rotated one. The private key lives in
+  the `VELTIS_NATIVE_MANIFEST_KEY` repository secret (to be set by whoever
+  administers the repository) and **must never be committed**.
+- **Static analysis and lint:** `analyzeNativeStatic` executed both halves
+  clean on 2026-11-05 — `Cppcheck: no findings in native/src, native/tests`
+  (Cppcheck 2.22.0, `--error-exitcode=2`) and
+  `gcc -fanalyzer: clean over 3 translation units` (every library TU, not one
+  file). The task still fails loudly when cppcheck is absent rather than
+  reporting a silence as a pass. `.github/workflows/gradle.yml` last passed
+  `actionlint` 1.7.12 (exit 0) on 2026-11-04; **no `actionlint` binary is
+  available on this host**, so the steps added on 2026-11-05 have been read but
+  not machine-checked.
 - **Benchmark re-run:** `benchmarkNative` executed; the harness's own verdict
   line reads `threshold: native-engine did not beat the allocation-free Java
   baseline at any measured batch size`. Numbers: BENCHMARKING.md.
@@ -476,43 +520,48 @@ the difference between "install the library" and "install it *here*".
 ### Where the suite stands today
 
 The same module, on the same Windows x86-64 host, with the current sources
-(all runs 2026-11-04):
+(all runs 2026-11-05):
 
 | Run | Command | Result |
 | --- | --- | --- |
-| native-enabled | `./gradlew :veltis-native:test --rerun-tasks` | 81 tests, 1 skipped, 0 failures |
-| Java-only | `./gradlew :veltis-native:test -Dveltis.native.test.expectJavaOnly=true --rerun-tasks` | 81 tests, 25 skipped, 0 failures |
-| server | `./gradlew :server:test` | 160 tests, 0 failures, 8 skipped; `NativeBootstrapTest` green with and without the library |
-| patcher | `./gradlew :patcher:test` | 236 tests, 0 failures |
-| whole repository | `./gradlew build` | BUILD SUCCESSFUL |
+| native-enabled | `./gradlew :veltis-native:test -PveltisNativeTest=true --rerun-tasks` | 131 tests, 1 skipped, 0 failures |
+| Java-only | `./gradlew :veltis-native:test -Dveltis.native.test.expectJavaOnly=true --rerun-tasks` | 131 tests, 27 skipped, 0 failures |
+| server | `./gradlew :server:test --rerun-tasks` | 161 tests, 0 failures, 8 skipped; `NativeBootstrapTest` green with and without the library |
+| patcher | `./gradlew :patcher:test --rerun-tasks` | 236 tests, 0 failures |
+| whole repository | `./gradlew buildVeltisMC` | BUILD SUCCESSFUL |
 
 The single skip in the native-enabled run is
 `javaOnlySuiteHasNoNativeFixtureConfigured`, which only asserts in the Java-only
-configuration; the 25 skips there are the tests that need a library or a fixture.
-The suite grew from 72 to 81 tests in this foundation round: the new
-`FailureLogThrottle` suite (7 tests) plus two further loader/engine cases.
-Among the loader cases are a library from another operating system and one for
-another architecture, both rejected *before* the OS loader is asked to map
-them, and a configured path the filesystem cannot name (a NUL byte) coming back
-as a reported failure rather than an exception. The Java-only run is what proves
-the "the server never requires native availability" rule on a machine that has
-built nothing.
+configuration; the 27 skips there are the tests that need a library or a fixture
+— 11 end-to-end, 9 loader, 5 engine and the 2 real-artifact distribution cases.
+The suite grew from 72 to 81 tests in the foundation round (the
+`FailureLogThrottle` suite plus two loader/engine cases) and from 81 to 131 with
+the selective distribution: 26 manager, 13 manifest, 9 distribution-config and 2
+real-artifact tests. Among the loader cases are a library from another operating
+system and one for another architecture, both rejected *before* the OS loader is
+asked to map them, and a configured path the filesystem cannot name (a NUL byte)
+coming back as a reported failure rather than an exception. The Java-only run is
+what proves both "the server never requires native availability" and "the
+download path is testable without a compiler" on a machine that has built
+nothing.
 
-These numbers were produced on 2026-11-04 against a library rebuilt from the
+These numbers were produced on 2026-11-05 against a library rebuilt from the
 current C/C++ sources (Release, GNU 16.2.0) — they cover the code as it stands,
-not a stale artifact. Earlier rounds' numbers (61, then 72 tests) are superseded.
+not a stale artifact. Earlier rounds' numbers (61, then 72, then 81 tests) are
+superseded.
 
 ## CI coverage
 
-`.github/workflows/gradle.yml` has four native jobs. The full matrix — every
+`.github/workflows/gradle.yml` has six native jobs. The full matrix — every
 runner label, every step, what each job proves, and what CI deliberately does
-*not* run (sanitizers, `cppcheck`, benchmarks, `-Werror`) — is documented in
+*not* run (benchmarks, sanitizers, `-Werror`) — is documented in
 [`docs/CI_SUPPORT_MATRIX.md`](docs/CI_SUPPORT_MATRIX.md); this section is the
 summary:
 
 - `native-host` — a matrix of Windows x86-64 (MSVC, clang-cl, LLVM-MinGW),
-  Windows ARM64 (MSVC), Linux x86-64 (GCC and Clang), Linux AArch64 (GCC) and
-  macOS (Apple Silicon and Intel). Each entry runs
+  Windows ARM64 (LLVM-MinGW on the hosted ARM64 image), Linux x86-64 (GCC and
+  Clang), Linux AArch64 (GCC) and macOS (Apple Silicon and Intel). Each entry
+  runs
   `:veltis-native:verifyNativeRelease -PveltisNativeTest=true`, which configures,
   builds, runs CTest and the export check, runs the Java FFM suite, packages the
   artifact, validates the manifest against the bytes it describes, rebuilds the
@@ -531,6 +580,9 @@ summary:
   `minimumOsVersion`; and `verifyNativeRelease` fails when any Java integration
   test other than `javaOnlySuiteHasNoNativeFixtureConfigured` reported a skip.
   A skipped native test is treated as a missing native test, not as a pass.
+  Exactly one lane carries `release: true` — Windows x86-64 LLVM-MinGW — and only
+  release-flagged lanes feed the distribution below. A platform may be verified
+  without publishing, which is how MSVC and clang-cl prove the same ABI twice.
 - `native-cross` — compile-only jobs for Windows ARM64, Linux AArch64 and Linux
   RISC-V. Each verifies binary format, machine, the exact 13 exports against the
   public header, the recorded manifest fields (`os`, `architecture`, `platform`,
@@ -538,24 +590,44 @@ summary:
   actually is, and dependencies, then proves the artifact is never executed:
   no CTest tests are registered, and Gradle's `testNative` guard must refuse to
   run. Windows ARM64 and Linux AArch64 are **blocking**; only the Tier 2 RISC-V
-  investigation is allowed to fail.
+  investigation is allowed to fail. A cross artifact is published as
+  `verification: "cross"`, which the runtime can read but will never install.
 - `native-debug` — Windows x86-64 MSVC and Linux x86-64 GCC in the Debug
   configuration, because Release alone can hide assertion-sensitive defects.
 - `native-freebsd-investigation` — non-blocking FreeBSD VM build used to find
   portability defects. It is not a support claim.
+- `native-package` — collects the release-flagged artifacts, and if
+  `VELTIS_NATIVE_MANIFEST_KEY` is configured first runs
+  `verifyNativeManifestKeyPairing` to prove the deployed secret and the public
+  key embedded in `NativeManifest` are one pair. It then runs
+  `packageNativeDistribution`, which refuses to assemble unless every mandatory
+  platform is present, signs the manifest, and writes a descriptor saying
+  whether the result is signed. The signed distribution and its signature are
+  uploaded as separate artifacts, so "unsigned" cannot travel disguised as a
+  release.
+- `native-release` — push and `workflow_dispatch` only, never a pull request. It
+  **refuses to publish an unsigned manifest**, refuses a missing or empty
+  `.sig`, checks that every platform named in the descriptor has a real zip,
+  deletes assets an earlier run uploaded that the current manifest no longer
+  lists, creates or edits the versioned `veltis-native-v<version>` tag with
+  `--latest=false`, and finally asks the releases API what the tag *actually*
+  holds and compares it by name — because an upload is not proof of an asset.
 
 There is no job-level `continue-on-error` on `native-host`; every Tier 1 entry
 is a required check. Failures are never hidden behind an optional matrix value.
 
-The jobs have been written and lint-clean (`actionlint` 1.7.12, exit 0,
-2026-11-04) but **have not yet run on the commit in question** — no push or PR
-has been made from this work, so no hosted runner has executed them.
-Lint-clean is not run-clean: treat every row above without a ✅ as unverified
-until its job is green. Two currency notes live in `CI_SUPPORT_MATRIX.md`: the
-Apple Silicon lane's `macos-14` label was retired platform-wide on 2026-11-02
-(the lane now uses `macos-15`), and actionlint does not validate runner-label
-existence — that fix came from reading GitHub's runner reference, not from the
-linter.
+The jobs have been written but **have not yet run on the commit in question** —
+no push or PR has been made from this work, so no hosted runner has executed
+them. Lint status is two different things now: the workflow passed
+`actionlint` 1.7.12 with exit 0 on 2026-11-04, but **no `actionlint` binary is
+available on this host**, so the `native-package` / `native-release` wiring and
+the key-pairing step added on 2026-11-05 are unlinted as well as unrun.
+Lint-clean is not run-clean, and neither is review-clean: treat every row above
+without a ✅ as unverified until its job is green. Two currency notes live in
+`CI_SUPPORT_MATRIX.md`: the Apple Silicon lane's `macos-14` label was retired
+platform-wide on 2026-11-02 (the lane now uses `macos-15`), and actionlint does
+not validate runner-label existence — that fix came from reading GitHub's runner
+reference, not from the linter.
 
 ## Packaging a native artifact
 
@@ -610,6 +682,44 @@ targets: the 2026-11-04 MinGW-w64 GCC artifact imports `KERNEL32.dll` and
 imports `KERNEL32.dll` plus `api-ms-win-crt-*`. Both are Windows system
 components, but neither shape was executed here on a down-level install: a
 Windows host missing the UCRT update is outside what this module has tested.
+
+### Publishing the distribution
+
+The per-platform zip above is what a *release* is made of. One more task turns
+those platform artifacts into the thing a server can discover and verify:
+
+```bash
+# once, by whoever administers the repository — outside this checkout, never in it
+./gradlew :veltis-native:generateNativeManifestKey \
+  "-PveltisNativeManifestKeyOut=$HOME/.veltis-native/manifest-signing-key.pem"
+
+# proves VELTIS_NATIVE_MANIFEST_KEY is the private half of the embedded anchor
+./gradlew :veltis-native:verifyNativeManifestKeyPairing
+
+# assemble every platform's zip into one signed cross-platform manifest
+./gradlew :veltis-native:packageNativeDistribution
+```
+
+`packageNativeDistribution` refuses to write anything unless the three mandatory
+platforms (`windows-x86_64`, `linux-x86_64`, `linux-aarch64`) each have a
+verified artifact, and it treats `macos-x86_64`, `macos-aarch64` and
+`windows-aarch64` as optional — a runner GitHub retired is a missing platform in
+the manifest, not a failed release. Every digest is required to agree three ways
+(library, inner manifest, archive), and after signing it **reads its own output
+back through `NativeManifest`**, the runtime's parser. That is what turns a
+rotated secret against a stale embedded anchor into a packaging failure instead
+of a fleet of servers that all reject the release. On this host the task
+correctly refuses for the two Linux lanes, so a complete signed publication has
+never been produced locally — only CI can assemble it.
+
+The manifest `packageNativeDistribution` writes is the file a runtime downloads.
+The public constant is printed by `generateNativeManifestKey` (and echoed by
+`verifyNativeManifestKeyPairing`, which prints the anchor currently in the
+source): that base64 is what goes into
+`NativeManifest.TRUSTED_PUBLIC_KEY_BASE64`, and the PEM goes into the
+`VELTIS_NATIVE_MANIFEST_KEY` repository secret and nowhere else — never
+committed, never copied into the tree. Full rotation procedure, schema and cache
+policy: [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md).
 
 ### Verifying a packaged artifact
 
@@ -700,26 +810,41 @@ The full release procedure, in order, on a **clean checkout**:
 9. Confirm `SHA256SUMS` against the produced files.
 10. Confirm `verification-report-<platform>.json`: `commit`, `treeState=clean`,
     `librarySha256`, `archiveSha256`.
-11. On every release target, run steps 3–8 on that target's runner (or confirm
+11. Distribution manifest. `./gradlew :veltis-native:verifyNativeManifestKeyPairing`
+    checks the signing secret against the public key embedded in
+    `NativeManifest` — a rotated secret with a stale anchor is the one mistake
+    that produces a manifest every server rejects.
+    `./gradlew :veltis-native:packageNativeDistribution` then assembles and signs it,
+    but it requires every mandatory lane (`windows-x86_64`, `linux-x86_64`,
+    `linux-aarch64`) to be present and **refuses** on a single-OS host; the
+    `native-package` CI job runs it after collecting the
+    `veltis-native-release-*` artifacts, and `native-release` refuses to publish an
+    unsigned manifest. See [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) §12.
+12. On every release target, run steps 3–8 on that target's runner (or confirm
     the corresponding `native-host` CI run is green for the same commit).
-12. Do **not** tag or publish without explicit authorization; the report is the
+13. Do **not** tag or publish without explicit authorization; the report is the
     evidence, not the release.
 
-Toolchain versions used by the current run (2026-11-04): CMake 4.4.5, Ninja,
-MinGW-w64 GCC 16.2.0 as the primary host lane and LLVM-MinGW Clang 23.1.4 for
-the sanitizer lane, JDK 25.0.5.0.3 locally and JDK 26 in CI.
+Toolchain versions used by the current run (2026-11-05, Windows x86-64 host):
+CMake 4.4.4 (the MinGW-w64 toolchain's own `bin/cmake.exe`; 4.4.5 is also
+installed and is what the earlier round recorded), Ninja 1.13.2, MinGW-w64 GCC
+16.2.0 (`x86_64-msvcrt-posix-seh`, r3) as the primary host lane, LLVM-MinGW
+Clang 23.1.4 for the ABI-check and sanitizer lanes (sanitizer run 2026-11-04),
+cppcheck 2.22.0, JDK 25.0.5.0.3 locally and JDK 26 in CI.
 
-**Currency.** These numbers describe 2026-11-04, not a stale session: the C and
+**Currency.** These numbers describe 2026-11-05, not a stale session: the C and
 C++ sources were rebuilt from the current tree in Release, Debug and `-Werror`
-configurations (CTest 5/5 each), under AddressSanitizer + UBSan (CTest 5/5),
-and `verifyNativeRelease` completed end to end — including the from-scratch
-source-archive rebuild — against that freshly built library. The Java suites
-(81 + 160 + 236 tests) ran against it as well. Evidence from earlier rounds
-that still stands, labeled as such above: the 2026-11-03 LLVM-MinGW
-verification, the three-build byte-reproducibility check, and the local
-Windows ARM64 cross-compilation (compiled, never executed). No number in this
-file should be read as coverage of a platform whose support-table row says
-**Not tested**.
+configurations (CTest 5/5 each) and `verifyNativeRelease` completed end to end
+— including the from-scratch source-archive rebuild and the runtime-policy gate —
+against that freshly built library. The Java suites (131 native-enabled, 131
+Java-only, 161 server, 236 patcher) ran against it the same day, as did
+`analyzeNativeStatic` and the distribution tests. Evidence from 2026-11-04 that
+still stands, labelled as such above: the AddressSanitizer + UBSan lane (CTest
+5/5 under instrumentation — not re-run on 2026-11-05), the benchmark table, and
+the earlier MinGW-w64 GCC verification. Evidence from 2026-11-03: the LLVM-MinGW
+verification, the three-build byte-reproducibility check, and the local Windows
+ARM64 cross-compilation (compiled, never executed). No number in this file should
+be read as coverage of a platform whose support-table row says **Not tested**.
 
 ## Implementation status
 
@@ -737,8 +862,11 @@ Deliberately **not** implemented:
 
 - any operation other than the bulk `transform_i32` primitive;
 - compression, chunk encoding, lighting, entity or scheduler acceleration;
-- automatic installation or download of a native library by the launcher;
 - a JNI compatibility layer (the integration is FFM-only, JDK 22+).
+
+The launcher jar still bundles no library. Fetching one is the server's own
+[Automatic distribution](#automatic-distribution) path, not something baked into
+the artifact you download.
 
 ## Installing a library
 
@@ -766,6 +894,71 @@ The launcher jar does **not** package a native library. An operator chooses
 whether to install one, and the version/ABI check in the loader is what decides
 whether it can be used.
 
+## Automatic distribution
+
+Instead of installing by hand, a server can fetch the published library for the
+platform it is running on. `NativeDistributionManager` does this during startup,
+before `NativeLoader` is asked to find anything.
+
+The rule that shapes the whole path: **one artifact per server**. A runtime that
+detects `linux-x86_64` never requests `veltis-native-windows-x86_64.zip`, and a
+release that publishes no entry for this platform produces a reported skip and
+zero requests — not an error, not a fallback guess at a neighbouring
+architecture.
+
+What has to agree before a file is installed:
+
+1. the request goes over **HTTPS** to an allowlisted host (this repository's
+   GitHub hosts, plus the host of an explicitly configured mirror), and every
+   redirect hop is re-checked against the same rule;
+2. the release **manifest verifies against the Ed25519 public key embedded in
+   this build** — a manifest signed by any other key, or with one byte changed,
+   is refused before anything is downloaded;
+3. the archive's SHA-256 and size equal the signed manifest's, recomputed while
+   streaming rather than assumed from a header;
+4. the zip contains exactly the three entries this platform expects, so a
+   `../../somewhere` member is refused by shape rather than by path
+   normalisation, and an oversized body is refused while it is still arriving;
+5. the manifest inside the archive agrees with the signed one outside it, and
+   `SHA256SUMS` signs both files it shipped with;
+6. the extracted library passes `NativeLoader.checkBinary` — the same
+   container/architecture gate the loader applies — **before** it is moved into
+   place, so a wrong-architecture binary never becomes the installed one.
+
+The move is atomic, guarded by an exclusive lock file so two servers sharing a
+home cannot install over each other, and recorded in
+`veltis-native-install.json` so a later start can verify what is on disk with no
+network at all. A verified installation is *reused*, not re-downloaded; an
+installed newer version is never downgraded; and nothing is hot-replaced — a new
+library is used by the next start, not the running one.
+
+```properties
+veltis.native.autoDownload=true    # the default; false means nothing is ever fetched
+veltis.native.offline=false        # hard "no network" for this run
+veltis.native.updatePolicy=if-missing   # never | if-missing | always
+veltis.native.downloadTimeout=30   # seconds, per request
+veltis.native.repository=          # empty means the official native release line
+```
+
+`if-missing` is what makes a restart cheap: the manifest is consulted only when
+this platform has nothing verified, so a warm installation performs zero
+requests. `always` re-reads the manifest every start and re-installs if the
+published version differs. A value that cannot be parsed is warned about and
+replaced by the default, because a typo must not stop a server from starting —
+and a repository override can never steer the *manifest* to a new host.
+
+**What this path has been shown to do here, and what it has not.** Executed on
+this host: the security and policy behaviour, against a loopback `HttpServer`
+serving manifests signed with a per-run test key (48 tests across
+`NativeDistributionManagerTest`, `NativeManifestTest` and
+`NativeDistributionConfigTest` — all of which run on a machine with no compiler
+at all), plus two more that package the **real** Windows library, publish it
+in a two-platform signed manifest, installs it after exactly three requests and
+then runs it through FFM. **Not executed:** a download from a real GitHub
+Release. That needs the signed multi-platform publication, which needs the two
+mandatory Linux lanes, which this host cannot produce — and no CI run has
+happened yet. See `docs/DISTRIBUTION.md` §13–§14.
+
 ## Configuration
 
 Settings are read from `<home>/server.properties` and overlaid with
@@ -784,6 +977,15 @@ veltis.native.stats=false
 # Optional file or directory. Empty means use the search order above.
 veltis.native.path=
 ```
+
+The five distribution knobs above (`autoDownload`, `offline`, `updatePolicy`,
+`downloadTimeout`, `repository`) are read the same way — file first, `-D` on top
+— and are listed with their defaults in [Automatic distribution](#automatic-distribution)
+and in `docs/DISTRIBUTION.md` §10. Two loader settings also silence the
+downloader, both deliberately: `enabled=false` means the server is not looking
+for native acceleration at all, and a non-empty `veltis.native.path` means an
+operator pinned a specific file, so the distribution leaves it alone rather than
+installing something that would be ignored.
 
 On Linux, `-D` overrides look like:
 
@@ -987,8 +1189,17 @@ acceleration again; do not add native code merely because the module exists.
   else's failure. The Java integration keeps each failure and its `lastError()`
   read on one thread; a future consumer has to do the same.
 - Only FFM (JDK 22+) is supported. There is no JNI fallback for older JDKs.
-- The launcher never packages or downloads a library. An operator installs one
-  and is responsible for matching the ABI and platform.
+- The launcher jar never packages a library, and the download path is opt-out
+  rather than opt-in: `autoDownload` defaults to `true` because the artifact is
+  verified against a signed manifest before it is installed, and because a
+  server with nothing installed is simply a server running on Java. An operator
+  who wants no network at all sets `autoDownload=false` or `offline=true`; one
+  who installs by hand and pins `veltis.native.path` is responsible for matching
+  the ABI and platform, and that path is trusted from the filesystem rather than
+  verified by signature (see `docs/SECURITY_MODEL.md` §7).
+- The distribution path has never contacted a real GitHub Release. Its security
+  behaviour is executed against a loopback repository with per-run test keys;
+  the published-signature half is gated on a CI run that has not happened.
 - The benchmark is not JMH and does not control CPU frequency, JIT compilation
   per implementation or the operating system scheduler. Use it to compare
   shapes of integration, not to publish a speed-up claim.

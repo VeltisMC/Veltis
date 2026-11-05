@@ -31,8 +31,8 @@ each layer is supposed to execute, [ABI_CONTRACT.md](ABI_CONTRACT.md) and
 ## 2. The layers
 
 ```
-Layer 4  Server            :server:test  (NativeBootstrapTest, 160 tests total)
-Layer 3  Java integration  :veltis-native:test  (81 tests, real DLL + fixtures)
+Layer 4  Server            :server:test  (NativeBootstrapTest, 161 tests total)
+Layer 3  Java integration  :veltis-native:test  (131 tests, real DLL + fixtures + loopback repository)
 Layer 2  ABI contract      native_abi_contract_c / _cxx  (compile-time + runtime)
 Layer 1  Native unit/CTEST native_tests, native_export_check, fuzz target
 Layer 0  Static            cppcheck, gcc -fanalyzer, compiler warnings, actionlint
@@ -70,25 +70,37 @@ full rule set (struct layout, alignment, boolean representation, error codes).
 
 ### Layer 3 — Java integration (`:veltis-native:test`)
 
-81 tests in six suites, executed against the freshly built DLL:
+131 tests in ten suites, executed against the freshly built DLL:
 
 | Suite | Tests | Focus |
 | --- | ---: | --- |
 | `NativeLoaderTest` | 36 | OS/arch normalization, filename selection, PE/ELF/Mach-O and fat-header probing, wrong-architecture and wrong-format rejection *before* the OS loader maps the file, a configured path the filesystem cannot name, unsupported-platform diagnostics, search order |
+| `NativeDistributionManagerTest` | 26 | The whole distribution decision tree against a loopback `HttpServer`: per-platform selective download, cache reuse, every policy/switch combination that must produce zero requests, signature and digest refusals, redirect-host refusal, zip-slip refusal, oversized-body refusal, lock contention, no-downgrade, adoption, corrupted-install replacement, outcome reporting |
 | `NativeEngineTest` | 18 | init/shutdown idempotence, post-shutdown fallback, 1 MiB batches, 8 concurrent callers, `close()` during active calls, native/Java equivalence |
+| `NativeManifestTest` | 13 | Manifest schema acceptance and the signature: the embedded anchor decodes as an Ed25519 public key, a signature over the exact bytes verifies, one changed byte invalidates it, another key is refused, malformed/empty/oversized documents are refused before parsing, every steering field (asset name, repository URL, verification mode, ABI) is refused when wrong, missing fields are named |
 | `NativeEndToEndTest` | 11 | The real library through the FFM bindings: load, ABI/version negotiation, transform equality over boundary values, self-test, capability bits, release on stop |
+| `NativeDistributionConfigTest` | 9 | The five distribution knobs: default-on download, policy recognition, invalid values falling back with a warning rather than failing the server, `-D` over `server.properties`, unreadable-file behaviour |
 | `NativeConfigTest` | 5 | Property overlay precedence (`server.properties` vs `-Dveltis.native.*`) |
 | `NativeCapabilitiesTest` | 4 | Capability bits are read from the library, never assumed |
+| `NativeDistributionRealArtifactTest` | 2 | The one test that uses a **real compiled library** in the distribution path: package it, publish a signed **two-platform** manifest over loopback HTTP, run the manager, assert exactly three requests (manifest, signature, this platform's archive), assert the installed bytes equal the artifact, then load it through `NativeLoader` and compare `transform` against `NativeEngine.javaTransform` — plus the simulated restart that re-loads from disk |
 | `FailureLogThrottleTest` | 7 | The burst/interval suppression schedule and its suppressed-count reporting |
 
-Current results (2026-11-04):
+Current results (2026-11-05):
 
-- native-enabled: **81 tests, 0 failures, 1 skipped**
+- native-enabled: **131 tests, 0 failures, 1 skipped**
   (`javaOnlySuiteHasNoNativeFixtureConfigured`, which only asserts in the
   Java-only configuration);
-- Java-only (`-Dveltis.native.test.expectJavaOnly=true`): **81 tests, 0
-  failures, 25 skipped** — and the flag makes the suite assert that no fixture
+- Java-only (`-Dveltis.native.test.expectJavaOnly=true`): **131 tests, 0
+  failures, 27 skipped** — and the flag makes the suite assert that no fixture
   leaked into the JVM, so "Java-only works" is checked rather than assumed.
+  The distribution suites are almost entirely *inside* that Java-only run: all
+  26 `NativeDistributionManagerTest`, all 13 `NativeManifestTest` and all 9
+  `NativeDistributionConfigTest` tests execute with no compiler and no library,
+  because their repository is a loopback `HttpServer` and their signatures come
+  from a per-run test key. Only the 2 `NativeDistributionRealArtifactTest` cases
+  skip, since packaging a real library is the one thing a toolchain-less host
+  cannot do. That split is the point: a distribution path can be
+  security-tested on a machine that builds nothing.
 
 The deliberately incompatible fixtures (wrong ABI `999`, newer major, failing
 init, failing transform, missing export, version-less minimal library) are real
@@ -97,11 +109,15 @@ exercises a genuine `LoadLibrary`/`dlopen` failure instead of a mock.
 
 ### Layer 4 — Server (`:server:test`)
 
-160 tests, 0 failures, 8 skipped (2026-11-04), including
-`NativeBootstrapTest` in both configurations CI uses: once with
-`-Dveltis.native.path=<library>` (asserts native availability and release on
+161 tests, 0 failures, 8 skipped (2026-11-05), including
+`NativeBootstrapTest` (13 tests, 4 skipped) in both configurations CI uses: once
+with `-Dveltis.native.path=<library>` (asserts native availability and release on
 stop) and once with an empty path (asserts the Java fallback and post-stop
-state). This is the layer that proves "native failure never prevents server
+state). The bootstrap suite also pins every `veltis.native.*` property it may
+touch and restores it afterwards, and forces `autoDownload=false` for its own
+duration — downloading is on by default now, and a server-startup test that
+inherited that default would quietly contact the official release line. This is
+the layer that proves "native failure never prevents server
 startup" as an executed fact rather than a design claim.
 
 ## 3. Sanitizers
@@ -109,10 +125,21 @@ startup" as an executed fact rather than a design claim.
 CMake accepts `-DVELTIS_NATIVE_SANITIZERS=address,undefined,thread,memory`
 (Gradle: `-PveltisNativeSanitizers=...`), puts each sanitizer lane in its own
 build tree, and validates each requested sanitizer against a **compile-and-link
-probe** (`cmake/sanitizer-probe.cpp`) before any target exists. The probe exists
+probe** before any target exists: `check_cxx_source_compiles` with the flag in
+`CMAKE_REQUIRED_FLAGS` and an inlined `malloc`/`free` body — enough to pull in
+the runtime's interception symbols on every supported toolchain — whose cache
+entry is `unset()` at configure so a toolchain switch re-asks instead of
+trusting the previous answer. The probe exists
 because a toolchain that accepts `-fsanitize=X` but ships no runtime fails at
 link time — and a build that quietly produced an uninstrumented binary would
 later be read as a sanitizer run.
+
+> **Stale file, kept and named.** `native/cmake/sanitizer-probe.cpp` is the
+> earlier spelling of this same probe. It is **not referenced by any build
+> script** — `CMakeLists.txt` inlines the equivalent source so the probe cannot
+> drift from the flag it is testing — and it is left in place here because
+> removing a file this round did not create is outside its remit. A future
+> cleanup should delete it; nothing breaks if it goes.
 
 Verified status of each combination, all of it produced on this host on
 2026-11-04 with LLVM-MinGW (Clang 23) unless stated:
@@ -153,21 +180,41 @@ the test instead of being logged and survived.
   -Wredundant-decls` (MSVC: `/W4`). `-PveltisNativeWerror=true` promotes them to
   errors — **executed clean on this host, 2026-11-04** (full `check` with
   `VELTIS_NATIVE_WERROR=ON`, GCC 16.2 lane).
-- **`analyzeNativeStatic`** runs `cppcheck --inline-suppr --std=c++20` over the
-  C++ sources and `gcc -fanalyzer` over `src/c/native_utils.c` (the translation
-  unit that owns the thread-local error slot, and the one GCC's analyzer
-  understands best). It is deliberately **not** attached to `build`: it is a
-  review tool, and a third-party checker's opinion must not decide whether a
-  release artifact exists.
-  - `cppcheck`: **not executed here** — the binary is not on PATH, and the task
-    fails with an explicit message rather than skipping. Install cppcheck (or
-    pass `-PveltisNativeCppcheck=<path>`) to run it.
-  - `gcc -fanalyzer`: **executed clean** against `native_utils.c` with MinGW-w64
-    GCC 16.2.0 on 2026-11-04 (exit 0, no findings), run directly because the
-    task fails earlier at the missing `cppcheck`.
-- **Workflow lint.** `.github/workflows/gradle.yml` is validated with
-  `actionlint` 1.7.12, **exit 0**, on 2026-11-04. Lint-clean is not
-  run-clean; see [CI_SUPPORT_MATRIX.md](CI_SUPPORT_MATRIX.md).
+- **`analyzeNativeStatic`** runs two checkers. `cppcheck` gets
+  `--inline-suppr --std=c++20 --language=c++ --enable=warning,performance,portability
+  --error-exitcode=2` over **`src/` and `tests/`** — the C units and the test
+  harness included, not just the C++ engine — with `unusedFunction` suppressed
+  because it misreports a function reached only from a translation unit Cppcheck
+  parses separately, and `missingIncludeSystem` because the system headers are
+  not this project's to fix. `gcc -fanalyzer -fsyntax-only` then runs over
+  **every library translation unit**: `src/c/*.c` and `src/cpp/*.cpp`, globbed
+  so this cannot become a second source list that quietly falls behind
+  `CMakeLists.txt`, each with `-DVELTIS_NATIVE_EXPORTS` — without it the public
+  header marks every export `dllimport` and the analyzer stops at a compile
+  error before doing any analysis. C++ units go through `g++ -std=c++20`, C
+  units through `gcc -std=c11`. The task is deliberately **not** attached to
+  `build`: it is a review tool, and a third-party checker's opinion must not
+  decide whether a release artifact exists. Its output is merged, printed and
+  inspectable rather than captured into a buffer nobody reads, so a finding
+  arrives with a file and a line instead of as a bare exit code.
+  - `cppcheck` 2.22.0: **executed clean on 2026-11-05** — the task prints
+    `Cppcheck: no findings in <src>, <tests>` and exits 0. When the binary is
+    absent it **fails loudly rather than skipping**, because a skipped check
+    reported as a clean one is the same failure mode this module already refuses
+    for sanitizers; install it or pass `-PveltisNativeCppcheck=<path>`.
+  - `gcc -fanalyzer`: **executed clean on 2026-11-05 over 3 translation units**
+    (`src/c/native_utils.c`, `src/cpp/algorithms.cpp`,
+    `src/cpp/native_engine.cpp`) with MinGW-w64 GCC 16.2.0. This is the whole
+    library, not the one file an earlier round analysed.
+  - `clang --analyze` is the Clang-side equivalent of the second half. It is
+    **not executed here**; the task skips the analyzer half (it does not fail)
+    when the compiler on PATH is not GCC, because one tool should not presume
+    another's flags.
+- **Workflow lint.** `.github/workflows/gradle.yml` was validated with
+  `actionlint` 1.7.12, **exit 0**, on 2026-11-04. The native distribution steps
+  added on 2026-11-05 are **not lint-verified**: no `actionlint` binary is
+  available on this host, so that change has been read but not machine-checked.
+  Lint-clean is not run-clean; see [CI_SUPPORT_MATRIX.md](CI_SUPPORT_MATRIX.md).
 
 ## 5. Build-configuration coverage
 
@@ -242,7 +289,9 @@ would need JCStress, which is not wired in.
 | Cross-compiled artifacts (Windows ARM64, Linux AArch64, RISC-V) | The producing host cannot execute them. CTest is configured **off** in every cross preset, no `CTestTestfile.cmake` is registered, and Gradle's `testNative` refuses with `cannot run a cross-compiled build`. CI asserts both refusals as part of the cross job |
 | Linux, macOS, MSVC, clang-cl, FreeBSD | No toolchain, runner or emulator on this host. Lanes exist in CI and are **never executed** — see CI_SUPPORT_MATRIX |
 | Coverage-guided fuzzing | Needs sanitizer runtimes this host lacks (§6) |
-| `cppcheck` | Not installed; the task fails loudly (§4) |
+| `cppcheck` | **No longer in this column** — Cppcheck 2.22.0 is on this host and `analyzeNativeStatic` runs it clean (§4). It stays *not tested* on lanes whose host has no cppcheck, where the task fails loudly instead of skipping |
+| A real published release, downloaded by a real server over the real network | `NativeDistributionRealArtifactTest` signs a two-platform manifest with a **per-run test key** and serves it over loopback HTTP; the embedded trust anchor is deliberately not involved, and GitHub Releases has never been contacted. That end-to-end path — CI publishes, the anchor in the shipped jar verifies, an operator's server downloads — is **not tested here**; see DISTRIBUTION.md §14 |
+| A signed `packageNativeDistribution` release | Cannot complete on this host: the three mandatory platforms include two Linux lanes this machine cannot produce. The signature path itself is executed (`verifyNativeManifestKeyPairing`), the multi-platform publication is not |
 | Mutation testing, property-based Java testing, JCStress | No demonstrated defect class that they would catch here; adding them would be instrumentation without a question to answer |
 | Benchmarks as gates | Benchmarks measure; they do not pass or fail. See BENCHMARKING |
 
@@ -269,9 +318,18 @@ would need JCStress, which is not wired in.
 ./gradlew :server:test
 
 # Layer 0
-./gradlew :veltis-native:analyzeNativeStatic          # needs cppcheck
-gcc -fanalyzer -c native/src/c/native_utils.c -I native/include -o /dev/null
-actionlint -no-color .github/workflows/gradle.yml
+./gradlew :veltis-native:analyzeNativeStatic          # needs cppcheck on PATH
+gcc -fanalyzer -fsyntax-only -std=c11 -DVELTIS_NATIVE_EXPORTS \
+  -I native/include -I native/src/c native/src/c/native_utils.c   # one unit; the task globs all of them
+actionlint -no-color .github/workflows/gradle.yml     # not available on this host since 2026-11-05
+
+# Distribution lanes — no compiler, no network: every test uses a loopback HttpServer
+./gradlew :veltis-native:test -PveltisNativeTest=true \
+  --tests "*NativeDistribution*" --tests "*NativeManifest*"
+./gradlew :veltis-native:packageNativeDistribution       # needs every mandatory platform + the signing key
+./gradlew :veltis-native:verifyNativeManifestKeyPairing  # needs VELTIS_NATIVE_MANIFEST_KEY
+./gradlew :veltis-native:generateNativeManifestKey \
+  "-PveltisNativeManifestKeyOut=<path outside this repository>"
 
 # Long fuzz run
 VELTIS_FUZZ_SEED=0x1234 VELTIS_FUZZ_ROUNDS=10000000 \

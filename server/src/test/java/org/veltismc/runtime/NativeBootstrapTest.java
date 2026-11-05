@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.veltismc.nativeengine.NativeConfig;
+import org.veltismc.nativeengine.NativeDistributionConfig;
 import org.veltismc.nativeengine.NativeEngine;
 import org.veltismc.nativeengine.NativeLoader;
 import org.veltismc.nativeengine.NativeStatus;
@@ -60,6 +61,11 @@ class NativeBootstrapTest {
             NativeConfig.AUTOLOAD_PROPERTY,
             NativeConfig.FALLBACK_PROPERTY,
             NativeConfig.STATS_PROPERTY,
+            NativeDistributionConfig.AUTO_DOWNLOAD_PROPERTY,
+            NativeDistributionConfig.OFFLINE_PROPERTY,
+            NativeDistributionConfig.UPDATE_POLICY_PROPERTY,
+            NativeDistributionConfig.DOWNLOAD_TIMEOUT_PROPERTY,
+            NativeDistributionConfig.REPOSITORY_PROPERTY,
             "veltismc.home",
             "os.arch",
     };
@@ -81,6 +87,11 @@ class NativeBootstrapTest {
         // every scenario starts from "not booted, nothing loaded" and the suite
         // stays independent of the order JUnit happens to pick.
         resetBootstrapFlag();
+        // Downloading is on by default, and a bootstrap test has no business
+        // contacting the official release line. Scenarios that exercise the
+        // distribution point it at a closed loopback port and say so; the rest
+        // start from the switch already off.
+        System.setProperty(NativeDistributionConfig.AUTO_DOWNLOAD_PROPERTY, "false");
     }
 
     @AfterEach
@@ -251,6 +262,41 @@ class NativeBootstrapTest {
                 "the host architecture is already unrecognised: " + host);
         System.setProperty("os.arch", host.contains("-x86_64") ? "sparc64" : "riscv64");
         startAndCheck(library, false, "unsupported platform");
+    }
+
+    /**
+     * The download is a convenience, never a precondition: an operator who
+     * enables it against a repository that refuses to answer must still get a
+     * server that starts, on Java, with the failure reported rather than
+     * thrown. This is the outage case — nothing is listening on that port, so
+     * the connection fails for real rather than being mocked.
+     */
+    @Test
+    void aFailingNativeDistributionNeverBlocksStartup() {
+        System.clearProperty(PATH_PROPERTY);
+        System.setProperty(NativeDistributionConfig.AUTO_DOWNLOAD_PROPERTY, "true");
+        // Loopback is the one plain-HTTP host the transport accepts, and port 1
+        // on it is reliably closed, so this fails as a refused connection and
+        // never as a policy surprise.
+        System.setProperty(NativeDistributionConfig.REPOSITORY_PROPERTY, "http://127.0.0.1:1/");
+        System.setProperty(NativeDistributionConfig.DOWNLOAD_TIMEOUT_PROPERTY, "2");
+
+        VeltisBootstrap.boot(new String[] {"--home", home.toString()});
+        var engine = VeltisBootstrap.nativeEngine();
+        try {
+            var status = engine.status();
+            assertFalse(status.available(),
+                    "a failed download must not claim native support: " + status.summary());
+            assertTrue(status.fallbackActive(), status.summary());
+
+            var input = sampleInput();
+            assertArrayEquals(NativeEngine.javaTransform(input, 42), engine.transform(input, 42),
+                    "the server must answer in Java after a failed download");
+        } finally {
+            VeltisBootstrap.onServerStopping();
+        }
+        assertArrayEquals(NativeEngine.javaTransform(sampleInput(), 7),
+                engine.transform(sampleInput(), 7));
     }
 
     // ------------------------------------------------------------------

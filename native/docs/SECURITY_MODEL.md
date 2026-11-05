@@ -7,7 +7,8 @@ Companion documents: [TESTING_STRATEGY.md](TESTING_STRATEGY.md) for the checks
 that back each claim, [MEMORY_MODEL.md](MEMORY_MODEL.md) for the ownership rule
 that removes whole bug classes, [ABI_CONTRACT.md](ABI_CONTRACT.md) for the
 boundary contract, [JAVA_FFM_INTEGRATION.md](JAVA_FFM_INTEGRATION.md) for the
-Java side of the boundary.
+Java side of the boundary, [DISTRIBUTION.md](DISTRIBUTION.md) for the network
+path §1(d) describes.
 
 ## 1. Threat model in one paragraph
 
@@ -22,7 +23,13 @@ code instead of undefined behaviour; (b) **supply-chain shape** — a shipped
 artifact must be exactly what its manifest and the public header say, or a
 release check fails; (c) **availability** — a broken, missing or maliciously
 misbehaving library must never take the server down with it, and repeated
-failures must never become a log or CPU denial of service. Minecraft gameplay
+failures must never become a log or CPU denial of service; (d) **the one
+network-arrival path** — the optional distribution downloader is the only part
+of this module that accepts bytes from a remote host, and it treats them as
+hostile until the signed manifest, the archive's SHA-256, the archive's shape
+and the loader's own binary probe all agree, over HTTPS to an allowlisted host
+with every redirect hop re-checked ([DISTRIBUTION.md](DISTRIBUTION.md) §8).
+Minecraft gameplay
 data (chunk contents, block NBT, player names) is *not* currently passed to
 native code: the only export is a bulk integer transform, and nothing in the
 server calls it in production. That is the honest scope.
@@ -79,7 +86,7 @@ defined for every input, so no hostile element value can cause overflow UB.
 | --- | --- | --- |
 | Element values, lengths, salts passed to the ABI | **Untrusted** (any Java caller can pass anything) | §3 validation; differential equality with the Java reference |
 | Candidate library file the loader is told to open | **Untrusted bytes, trusted origin decision** | ≤4 KiB header probe before mapping; format + machine must match platform and pointer width; ABI/version/capability negotiation after load; every mismatch is a clean rejection with `loaded=true, reason=…` and Java fallback |
-| The library file's *provenance* | Trusted if it came from the operator's own install locations or an explicit `veltis.native.path` | **Not verified.** No signature, hash pin or publisher check — see §7 |
+| The library file's *provenance* | Trusted if it came from the operator's own install locations or an explicit `veltis.native.path`; **cryptographically verified** if the distribution path installed it | Manual install: no publisher check — see §7. Distribution install: the archive must match the signed release manifest's SHA-256, the manifest must verify against the embedded Ed25519 anchor, and both are checked again inside the archive before the file is moved into place ([DISTRIBUTION.md](DISTRIBUTION.md) §7). Either way, once a file is on the trusted path the loader's own probe is the last gate — see §7 item 1 |
 | `server.properties` / `-Dveltis.native.*` | Operator-trusted | Type/parse validation (`NativeConfigTest`); a malformed value is rejected and logged, not thrown |
 | Chunk/block/gameplay data | **Untrusted from the network, but never reaches native code today** | The chunk codec is untouched Java; no FFM call exists for it |
 
@@ -146,19 +153,36 @@ that is a machine check rather than a review habit:
   dylib a consumer links against, so macOS bytes are not claimed identical
   between builds;
 - `verification-report-<platform>.json` records `commit` and `treeState`
-  honestly (`tree dirty` when the checkout is dirty, never a cleaned-up claim).
+  honestly (`tree dirty` when the checkout is dirty, never a cleaned-up claim);
+- the release manifest that the runtime downloads is **signed**: `packageNativeDistribution`
+  writes an Ed25519 signature over the exact manifest bytes, the server carries
+  one embedded public key (`NativeManifest.TRUSTED_PUBLIC_KEY_BASE64`), and
+  verification is over the bytes that were parsed rather than a re-serialisation
+  of them. The pairing of the deployed secret to that anchor is itself a CI
+  check (`verifyNativeManifestKeyPairing`), and
+  `packageNativeDistribution` reads its own output back through the runtime
+  parser, so an anchor/key drift fails at packaging time instead of on someone's
+  server. Key generation and rotation are documented in
+  [DISTRIBUTION.md](DISTRIBUTION.md) §7.
 
-Not present, and stated so nobody assumes them: signing (no code-signing of
-the DLL/dylib/so), SBOM, publisher/origin verification at load time, provenance
-attestation of CI artifacts.
+Not present, and stated so nobody assumes them: code-signing of the
+DLL/dylib/so itself (the manifest signature covers the *archive*, not an OS
+publisher signature), SBOM, provenance attestation of CI artifacts in the
+in-toto/SLSA sense, and any publisher verification for a library an operator
+copies in by hand — that path is still filesystem-trust, see §7.
 
 ## 7. What this model explicitly does **not** protect against
 
 1. **A hostile library file placed where the loader looks.** Loading a
    `veltis_native.dll` from `<server home>/native/…` runs that code with the
-   server's full privileges. There is no signature check. The operator's
-   filesystem is trusted; this is the standard position for a self-hosted
-   server, and it is a *choice*, not an oversight.
+   server's full privileges. The manifest signature authenticates the
+   **download**, not the file at load time: the install record beside it
+   (`veltis-native-install.json`) is unsigned, so anyone who can already write
+   into the install directory can write a library and a record that agree, and
+   the loader will then judge that pair only by its own ABI/architecture probe.
+   The operator's filesystem is therefore still the trust boundary. This is the
+   standard position for a self-hosted server, and it is a *choice*, not an
+   oversight.
 2. **Denial of service by legitimate calls.** A caller may pass a
    100-million-element batch and the library will happily process it; there is
    no quota. Java-side callers own that decision. (The library allocates
@@ -202,6 +226,16 @@ attestation of CI artifacts.
 | Failure logging is bounded | `FailureLogThrottleTest` (7 tests) |
 | Lifecycle cannot race an in-flight call | `NativeEngineTest` close-during-calls + CTest concurrent/shutdown-while-running stress |
 | Release bytes match the paperwork | `verifyNativeArtifact`, `verifyNativeRuntimePolicy`, `verifyNativeSourceArchive` |
+| A downloaded manifest is authentic, not merely well-formed | `NativeManifestTest` (`oneChangedByteInvalidatesTheSignature`, `aSignatureFromAnotherKeyIsRefused`, `anEmptyOrMalformedSignatureFileIsRefused`, `theTrustedKeyOfTheRepositoryWouldRefuseAnUnsignedAttempt`), `NativeDistributionManagerTest` (`aTamperedManifestIsRefusedBeforeAnyDownload`, `aManifestSignedByAnotherKeyIsRefused`) |
+| The archive that reaches disk is the archive the signature described | `anArchiveWhoseDigestDisagreesWithTheManifestIsRefused`, `anArchiveOfTheWrongSizeIsRefusedDuringDownload`, `aMissingArchiveIsAFailedDownloadNotAnInstall` |
+| A hostile archive path cannot write outside the install directory | `aZipSlipEntryIsRefusedByTheAllowlistBeforeAnythingIsWritten` (refused by the three-entry allowlist, not by path normalisation) |
+| The downloader cannot be steered to a new host | `anInvalidRepositoryIsRefusedBeforeAnyRequest`, `aRedirectToANonOfficialHostIsRefusedMidFlight`, `anArtifactThatWasNotVerifiedOnItsHostIsNeverInstalled` |
+| Unbounded bodies are refused while streaming | `anOversizedManifestIsRefusedWhileItIsBeingRead`, `anEmptyOrOversizedManifestIsRefusedBeforeParsing`, `anArchiveOfTheWrongSizeIsRefusedDuringDownload` |
+| Selective download is the only download | `eachOfTheSixPlatformsDownloadsExactlyItsOwnArchive` (per-platform request capture) and `NativeDistributionRealArtifactTest`, which publishes a **two-platform** signed manifest over loopback HTTP and asserts the runtime makes exactly three requests — manifest, signature, its own archive — then installs a library byte-identical to the artifact and runs it through FFM |
+| Opting out means zero packets | `everyDisabledSwitchMakesZeroRequests`, `neverAndOfflinePerformZeroRequestsInEveryCombination`, `aPlatformOutsideTheSixIsNeverGivenARequest`, `aReleaseThatSkippedThisPlatformIsReportedNotDownloaded` |
+| Two servers cannot install over each other | `aHeldLockIsReportedInsteadOfDownloadingAlongsideTheHolder` |
+| An existing installation is never silently degraded | `anInstalledNewerVersionIsNeverDowngraded`, `aCorruptedInstallationIsReplacedByThePublishedArchive`, `aPublishedIdenticalLibraryIsAdoptedAndRecordedWithoutDownloading` |
+| The signing secret matches the embedded anchor | `verifyNativeManifestKeyPairing` (CI step, executes only when the secret is configured) and `packageNativeDistribution`'s read-back through `NativeManifest` |
 
 ## 9. Rules for a future capability
 

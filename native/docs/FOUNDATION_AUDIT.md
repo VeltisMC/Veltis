@@ -317,6 +317,11 @@ audit's evidence trail.
 
 ### 5.8 Testing, sanitizers, fuzzing (Phase 8)
 
+**Resolved 2026-11-05 — see §11 "Phase 8".** Every gap below except the
+allocation-failure case (which stays impossible while the library allocates
+nothing) and zero-CI-evidence (which stays open) is closed; the evidence is in
+`TESTING_STRATEGY.md` §3–§6.
+
 - 18 native test functions, ~30 loader tests, 11 end-to-end tests, 7 throttle
   tests — a genuinely good base. Gaps:
   - **No sanitizer build has ever run here.** ASan/UBSan on the Windows library
@@ -335,6 +340,14 @@ audit's evidence trail.
 
 ### 5.9 Benchmarks (Phase 9)
 
+**Resolved 2026-11-05 — see §11 "Phase 9".** The stale table was re-run, not
+re-quoted. The harness now reports p50/p95/p99, M elements/s, K calls/s and heap
+bytes per call for all four implementations (`BENCHMARKING.md` §2). Two asks were
+consciously **not** taken: a recorded baseline file for regression diffing
+(deferred with its reason in §4/§8 — no claim currently depends on the third
+digit) and a native-only, no-FFM row (the four implementations are all
+*integration* shapes, which is what the integration decision needed).
+
 - `NativeBenchmark` is a real harness (4 implementations, 11 sizes, 3 rounds,
   warmup, percentile reporting, `ThreadMXBean` allocation bytes, an explicit
   timer-overhead sample, and correctness assertion before timing). It is not JMH
@@ -347,6 +360,12 @@ audit's evidence trail.
   p95/p99 consistently across all four implementations.
 
 ### 5.10 Documentation and CI (Phases 10–11)
+
+**Partly resolved 2026-11-05 — see §11 "Phase 10" and "Phase 11".** The
+document set exists, the README's two false statements are corrected, and the
+cross jobs are labelled compile-only in both their names and their output. Two
+gaps in this list are **still open**: there is still no MinGW-w64 GCC host lane
+in CI, and the branch has still never produced a CI run.
 
 - `native/docs/` did not exist until this audit. 14 of the 15 required documents
   are still missing.
@@ -937,3 +956,314 @@ Linux/macOS loader branches, MSVC/clang-cl lanes, Windows ARM64 at runtime and
 JDKs other than 25 stay **unverified**: `NativeLoaderTest`'s synthetic PE/ELF/
 Mach-O headers prove the parsing, not that a real foreign library loads.
 R6 and R7 remain as documented; R9 (zero CI runs) is untouched.
+
+### Phase 8 — testing, sanitizers, fuzzing and security
+
+§5.8 opened with one sentence that was doing a lot of work: *"No sanitizer build
+has ever run here."* It no longer does, and the way it stopped being true is the
+most useful thing this phase produced. The lane was not configured and assumed;
+it was configured, refused, diagnosed and then run.
+
+**Sanitizers.** CMake now validates each requested sanitizer with a
+**compile-and-link probe** — `check_cxx_source_compiles` with the flag in
+`CMAKE_REQUIRED_FLAGS` and an inlined `malloc`/`free` body, its result cache
+entry `unset()` on every configure so a re-configuration re-asks instead of
+trusting a stale answer — **before any target
+exists**. That ordering is the point: a toolchain that accepts `-fsanitize=X`
+but ships no runtime fails at *link*, and a build that quietly produced an
+uninstrumented binary would later be read as a sanitizer run.
+(`native/cmake/sanitizer-probe.cpp` is the superseded standalone spelling of the
+same probe; no build script references it any more, and `TESTING_STRATEGY.md` §3
+records it as a cleanup rather than pretending it is load-bearing.)
+
+| Combination | Outcome on this host |
+| --- | --- |
+| AddressSanitizer + UBSan, LLVM-MinGW Clang 23.1.4 | **Executed**, own build tree `windows-x86_64-san-address-undefined`, CTest **5/5 under instrumentation** (2026-11-04) — the first sanitizer execution in this repository's history |
+| ThreadSanitizer, LLVM-MinGW and MinGW-w64 GCC | **Refused at configure, by design**: `this toolchain cannot compile and link -fsanitize=thread` — no TSan runtime is shipped |
+| MemorySanitizer, LLVM-MinGW | Same refusal path, for `-fsanitize=memory` |
+| AddressSanitizer, MinGW-w64 GCC 16.2 | Probe path exists; **not run** |
+| Any sanitizer on Linux/macOS | CI lanes exist, **never executed** |
+
+The refusal is a *configure-time failure with a message*, not a skip, and it is
+documented that way in `TESTING_STRATEGY.md` §3 because a skipped sanitizer lane
+is exactly the kind of silence this module refuses elsewhere. Consequence,
+stated where it matters: races in the Java lock hierarchy and uninitialized
+reads visible only to MSan are **unmeasured**, not proven absent
+(`SECURITY_MODEL.md` §7 item 5).
+
+**Fuzzing.** §5.8's "no fuzzing at all" is closed by
+`native/tests/fuzz_abi_inputs.cpp`: seeded, bounded, **differential**, and a
+normal CTest case (label `fuzz`, `VELTIS_FUZZ_ROUNDS=4000`) so *every* lane runs
+it rather than it being a nightly extra. Two design decisions are worth keeping
+in mind for anyone extending it. First, every pointer is constrained to one of
+three real over-aligned buffers, so the harness can construct misalignment and
+overlap without ever being able to fault — a fuzz target that segfaults on its
+own inputs tests nothing. Second, it exercises the argument-validation axes **in
+combination** (null × zero-length × mismatch × extent-overflow × alignment ×
+overlap), which is where the real ordering bugs live; the single-axis cases were
+already in `native_tests`. Coverage-guided fuzzing stays out of scope with a
+reason: libFuzzer needs sanitizer runtimes this host does not have
+(`TESTING_STRATEGY.md` §8).
+
+**The last §5.8 gap that was never a gap.** "No test for a library that returns
+a status code outside the documented enum" — `native_tests.cpp:63` asserts
+`status_string(12345)` is exactly `"unknown status"`,
+`abi_contract_cxx.cpp:119` pins that a documented code is *not* named that, and
+`fuzz_abi_inputs.cpp:420` uses the string as the discriminator for
+out-of-enum codes it feeds in. Three places, one behaviour, already executed.
+
+**Static analysis.** `analyzeNativeStatic` was extended from "one file, one
+checker, both absent" to two checkers over the whole library. `cppcheck` 2.22.0
+is now present on the host and runs over `src/` **and** `tests/` with
+`--enable=warning,performance,portability --error-exitcode=2`; `gcc -fanalyzer`
+now globs every library translation unit (`src/c/*.c`, `src/cpp/*.cpp` — 3 in
+total, not the single `native_utils.c` of the earlier round) with
+`-DVELTIS_NATIVE_EXPORTS`, which is what lets the analyzer reach its own work
+instead of stopping at a `dllimport` compile error. Both halves executed clean
+on 2026-11-05. The task still **fails loudly when cppcheck is missing** rather
+than skipping, and its child output is merged and streamed rather than buffered,
+so a finding arrives with a file and a line. `clang --analyze` is the Clang
+equivalent of the second half and has **not** been run.
+
+**The Java and server layers grew where the risk was.** The module suite went
+from 81 tests in six suites to **131 in ten**, the four new suites all covering
+the selective-distribution path (`NativeDistributionManagerTest` 26,
+`NativeManifestTest` 13, `NativeDistributionConfigTest` 9,
+`NativeDistributionRealArtifactTest` 2). `:server:test` is **161 tests,
+0 failures, 8 skipped**, with `NativeBootstrapTest` at 13 tests / 4 skipped. The
+security half of the phase is documentary as well as mechanical:
+`SECURITY_MODEL.md` now carries a fourth defended surface (§1(d), the
+network-arrival path), a signed-manifest line in §6, and — the part a
+cheerful document would have dropped — a rewritten §7 item 1 saying plainly that
+the signature authenticates the **download**, not the installed file, because
+the install record beside it is unsigned.
+
+**Guard discipline, because an assertion nobody watched fail is a rumour.**
+Every refusal added this round was shown able to fire. `MAX_STRING_BYTES=3`
+produced 8 contract failures and an inverted capability comparison produced 1
+(both reverted, lane re-run green). The selective-download proof was tested by
+temporarily making the manager fetch **every** artifact in the manifest: 4
+failures across 28 completed tests, then an exact revert confirmed by an empty
+`git diff`. The stale-trust-anchor case was produced for real —
+`verifyNativeManifestKeyPairing` failed against the pre-rotation anchor and
+passed after it, which is how the provenance gap in
+*Selective native distribution* below was found at all.
+
+**Executed evidence** (2026-11-04/05, Windows 11 x86-64, MinGW-w64 GCC 16.2.0
+plus the LLVM-MinGW Clang 23.1.4 sanitizer lane, JDK 25.0.5)
+
+| Lane | Result |
+| --- | --- |
+| Release / Debug / `-Werror` CTest | 5/5 each |
+| ASan + UBSan CTest | 5/5 under instrumentation |
+| `analyzeNativeStatic` | `Cppcheck: no findings in …\native\src, …\native\tests` + `gcc -fanalyzer: clean over 3 translation units` |
+| `:veltis-native:test -PveltisNativeTest=true` | 131 tests, 0 failures, 1 skipped |
+| `:veltis-native:test -Dveltis.native.test.expectJavaOnly=true` | 131 tests, 0 failures, 27 skipped |
+| `:server:test` | 161 tests, 0 failures, 8 skipped |
+
+**What Phase 8 did not do.** No sanitizer runs on Linux or macOS; no TSan or
+MSan anywhere; no coverage-guided fuzzing; no allocation-failure tests — and
+none are meaningful while `MEMORY_MODEL.md` §1 holds, since a library that
+allocates nothing has no allocation to fail. No CI lane executed (R9).
+
+### Phase 9 — benchmarking, profiling and the decision not to integrate
+
+§5.9's sharpest line was *"The README's reference table is stale… Any refresh
+must re-run, not re-quote."* It was re-run. `NativeBenchmark` executed against a
+library built from the current sources in the `verifyNativeRelease` lane
+(Windows 11 x86-64, 20 logical processors, JDK 25.0.5.0.3, MinGW-w64 GCC 16.2.0,
+Release, **2026-11-04**), and the harness prints the context a number needs to
+mean anything: JVM, OS, logical processors, library ABI and capabilities, and
+its own timer overhead — **36.2 ns per `System.nanoTime`**, two per sample, which
+is why every p50 below ~100 ns in the table is timer quantization and is
+labelled as such rather than admired.
+
+The headline is a negative result the harness states in its own words:
+
+> `threshold: native-engine did not beat the allocation-free Java baseline at
+> any measured batch size`
+
+At 1 MiB the production path is ~2.9× slower than plain `java` and ~5× slower
+than `java-optimized`. The FFM transition is *not* the reason — a trivial
+downcall (`veltis_native_capabilities`) measured **76.4 ns** in the same round —
+the two mandatory copies and 8 bytes/element of per-call segment allocation are.
+The only shape that wins is `native-reusable` (caller-owned, reused segments),
+and it wins in a band: roughly 256 → 262,144 elements, within 5 % of
+`java-optimized` at the top of that band, a clear ~1.4–2× at 1,024–65,536, and
+losing again at 1 MiB where a tight Java loop streams better than a copy-heavy
+call. That band, and the fact that the shape is **not wired into the server**,
+are recorded together in `BENCHMARKING.md` §2 so nobody reads the win without
+the caveat.
+
+Cross-toolchain variance was measured rather than assumed: between the
+LLVM-MinGW and GCC runs the *reusable* rows moved up to 29 % while the Java rows
+moved under 10 % — which is precisely why no claim in this file rests on a
+single native row, and why the acceptance bar (§5) demands reproduction across
+at least two runs.
+
+**The profiling finding that outranks every benchmark row.** Before adding a
+native call, the real workload was measured: `EngineResourceBenchmark` (64
+chunks, two workers, one-CPU JVM) at **278.5 chunks/s, 201 MiB peak, 98 MiB
+retained**, then a JFR capture of 163 execution samples of which **77 (~47 %) sat
+in `ChunkDataCodecImpl.encode`**. The hotspot is a Java byte-serialization loop,
+and reaching it natively would mean one FFM call per block — the exact shape the
+integration rules forbid. A temporary harness proved the fix is Java-side: an
+equivalent `ByteBuffer` implementation of the same format was **~25× faster in
+both directions and byte-identical**. **Decision: no native workload was
+integrated**, the codec stays untouched Java (also an explicit constraint of the
+distribution order), and the rule written into `BENCHMARKING.md` §6 is that the
+profile must be re-taken before native acceleration is reconsidered — native code
+is not added because the module exists.
+
+**What Phase 9 did not do.** No JMH, no regression baseline file, no multi-host
+or Linux/macOS/ARM64 numbers (CI builds and tests there but never benchmarks),
+no object-level allocation profile, and no native-only/no-FFM row. Each is
+recorded as deliberately absent with its reason in `BENCHMARKING.md` §8, not
+quietly missing.
+
+### Phase 10 — CI and release foundation
+
+The matrix this round started from had one blind spot named in §5.10 and it is
+**still there**: `.github/workflows/gradle.yml` has no MinGW-w64 GCC host lane.
+`native-host` covers MSVC, clang-cl and LLVM-MinGW on Windows x86-64, LLVM-MinGW
+on Windows ARM64, GCC and Clang on Linux x86-64, GCC on Linux AArch64 and Apple
+Clang on both macOS arches — but the bug that cost this project the most time,
+`libwinpthread-1.dll` silently reappearing under a `staticRuntime: true`
+manifest, is a MinGW-w64 GCC-only failure mode that no CI job can currently
+catch. What mitigates it is not CI: `verifyNativeRuntimePolicy` and CI's Windows
+dependency step call the **same** script,
+`native/tools/check-pe-imports.ps1`, so the local GCC lane and a CI lane cannot
+disagree about the import table — and that policy executed clean on the
+2026-11-04/05 GCC artifact (`KERNEL32.dll` + `msvcrt.dll`, no compiler runtime).
+The gap is recorded as open, not papered over.
+
+Two things did close:
+
+- **Cross jobs now say what they are.** `native-cross` is named
+  `Native cross-compile (…)` and its steps print
+  `compile-only: the x86-64 runner cannot execute an ARM64 DLL` and
+  `compile-only: no target binary was executed`. The job also *asserts* the
+  refusals it depends on — no CTest tests registered in a cross preset, no
+  `CTestTestfile.cmake`, and Gradle's `testNative` guard must refuse — so a
+  compile-only lane cannot drift into looking like a test run. Windows ARM64 and
+  Linux AArch64 are blocking; only the Tier 2 RISC-V investigation may fail.
+- **Runner labels are current.** The Apple Silicon lane moved off `macos-14`,
+  retired platform-wide on 2026-11-02, to `macos-15`. That fix came from reading
+  GitHub's runner reference, **not** from the linter — `actionlint` does not
+  validate that a label exists, and the CI matrix is documented as the authority
+  on labels rather than any README.
+
+**The release chain added for the selective distribution** is the substantive
+Phase 10 change, and it is built so that an unsigned or incomplete release is
+the *impossible* state rather than the easy one. `native-host` marks exactly one
+lane (`Windows x86-64 LLVM-MinGW`) with `release: true` and uploads its artifact;
+`native-package` downloads those release-flagged artifacts, verifies the signing
+key pairs with the embedded anchor when the secret is present, assembles the
+distribution through `packageNativeDistribution` (which refuses unless all three
+mandatory platforms — `windows-x86_64`, `linux-x86_64`, `linux-aarch64` — are
+present, with `macos-x86_64`, `macos-aarch64` and `windows-aarch64` optional),
+and writes a JSON descriptor saying whether the manifest was signed.
+`native-release` then refuses to publish anything whose descriptor says
+`signed != true`, refuses a missing or empty `.sig`, cross-checks every platform
+in the descriptor against a real zip, deletes stale assets that an earlier run
+uploaded but the current manifest no longer lists, uploads, and finally asks the
+GitHub API what the release *actually holds* and compares it exactly — so a
+partially failed upload fails the job instead of being announced as a
+publication. The tag is versioned (`veltis-native-v<version>`) and created with
+`--latest=false`, because this repository also publishes the server
+distribution and `releases/latest` would resolve to whichever came last.
+
+**Executed evidence, and its honest ceiling.** Everything above was **read and
+locally exercised**, not observed in a runner: `packageNativeDistribution`
+executed and *correctly refused* on this host (`mandatory platform linux-x86_64
+is missing… linux-aarch64 is missing`), `verifyNativeManifestKeyPairing`
+executed and passed against the rotated anchor, and the Windows runtime-policy
+gate executed. **No CI job has ever run on this branch** — R9 is untouched, and
+nothing in this section may be described as a passing run. `actionlint` 1.7.12
+validated the workflow with exit 0 on 2026-11-04; it is **not available on this
+host**, so the steps added on 2026-11-05 are unlinted as well as unrun.
+
+### Phase 11 — documentation and developer experience
+
+`native/docs/` did not exist when §5.10 was written. It is now **sixteen
+documents** — the fifteen the foundation order required plus
+`DISTRIBUTION.md`, added when the selective distribution landed — and they are
+written to one rule that survives contact with a reader: **every claim carries
+its execution status**, so "configured", "compiled", "linked", "executed" and
+"integration-tested" are never blurred into "supported". `PLATFORM_SUPPORT.md`
+is the declared authority for any support claim, which is what makes a preset or
+a CI job unable to masquerade as one.
+
+Structural choices worth stating because they are load-bearing:
+
+- **Companion links in every document**, and one dependency-free checker
+  (`linkcheck.js`) that verifies every relative link *and* `#anchor`, recomputed
+  by comparing the content at the range against the sentence citing it. Latest
+  run 2026-11-05: **186 links checked, 0 problems**. This caught real drift —
+  header and loader edits in Phase 7 moved line numbers under 18 anchors.
+- **A named place for what is not protected.** `SECURITY_MODEL.md` §7 and
+  `TESTING_STRATEGY.md` §8 are lists of failures-that-are-not-checks with
+  reasons, because a document that only records successes is how a reader
+  invents a risk they were never told about.
+- **The five-label evidence system** in `PLATFORM_SUPPORT.md` §1, used
+  consistently by README, the docs and the CI matrix, so a reader comparing two
+  documents is comparing the same vocabulary.
+
+Developer experience got the same treatment as the architecture. The loader's
+"not found" report prints the exact absolute paths it searched — the difference
+between "install the library" and "install it *here*" — and `loaded=false`
+versus `loaded=true` with a reason is the difference between two different
+operator problems rather than one message. `DISTRIBUTION.md` §15 and
+`BUILD_SYSTEM.md` carry troubleshooting tables; `native/README.md` documents the
+config knobs, the search order, the cross-compilation switches and the release
+procedure in the order an operator actually needs them.
+
+**The two README statements §5.10 called now-false are corrected**, along with
+the counts around them: the suite is 131 (native-enabled) / 131 with 27 skips
+(Java-only), the server suite 161, the source archive 64 tracked files, cppcheck
+present and clean instead of "not installed", and — the statement most likely to
+be re-broken — `veltis-native` no longer lists "automatic download of a native
+library" among the things it deliberately does not do.
+
+**What Phase 11 did not do.** No document claims a platform the support table
+marks **Not tested**. No CI run is cited, because there is none. `TESTING_STRATEGY.md`
+and `FOUNDATION_AUDIT.md` were corrected against the state of the tree rather
+than rewritten from memory, which is why their 2026-11-05 entries name the exact
+commands that produced each number.
+
+### Selective native distribution (after Phase 11, 2026-11-05)
+
+Recorded here because it changed the module more than any single foundation
+phase and because it surfaced a security defect the foundation work had missed.
+
+Five classes added (`NativeDistributionManager`, `…Transport`, `…Installer`,
+`NativeManifest`, `NativeDistributionConfig`) plus three Gradle tasks
+(`packageNativeDistribution`, `generateNativeManifestKey`,
+`verifyNativeManifestKeyPairing`) and two CI jobs. The rule that shapes them:
+**a server downloads exactly one artifact** — the one for its detected
+OS/JVM-architecture pair, over HTTPS to an allowlisted host, verified against a
+signed manifest and its SHA-256, probed by the loader's own container/arch gate
+*before* it is moved into place, and never over an existing newer installation.
+A platform the release skipped, or one that exists only as a cross-compiled
+entry, reports a skip and continues on Java.
+
+**The defect found: the embedded trust anchor had no discoverable private half.**
+`NativeManifest.TRUSTED_PUBLIC_KEY_BASE64` shipped a key whose signing half was
+not held anywhere this work could see, so "the manifest is signed" was a
+statement about a code path rather than about a working release process. Fixed
+by making key production a build task with provenance rules — generate outside
+the repository, refuse to overwrite, print the constant to paste into the
+source, and a CI step that proves the deployed secret and the embedded anchor are
+one pair. That step is what turns an anchor rotation into a packaging failure
+instead of a fleet of servers that cannot install anything. The anchor was
+rotated, and the rotation was verified in both directions: the pairing task
+**failed** against the old anchor and **passed** against the new one.
+
+**The gap this closed and the one it left.** `NativeDistributionRealArtifactTest`
+now runs the real library through package → signed two-platform manifest →
+loopback HTTP → install → `NativeLoader` → FFM `transform`, and asserts exactly
+three requests were made. What it cannot prove, and says so in its own KDoc, is
+the production trust relationship: it signs with a **per-run test key**, and no
+GitHub Release has ever been contacted. The full CI → release → runtime chain is
+**not executed**, for two independent reasons: this host cannot produce the two
+mandatory Linux lanes, and no CI run has ever happened (R9).
