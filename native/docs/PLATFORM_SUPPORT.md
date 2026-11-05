@@ -1,8 +1,10 @@
 # veltis-native Platform Support
 
 Which target this library is claimed to run on, what evidence backs each claim,
-and — the part that matters most — which claims are only *configured* and have
-never been executed.
+and — the part that matters most — which claims are only *configured*. Since
+2026-11-05 the file has two kinds of executed evidence to keep apart: what ran on
+the host described in §2, and what ran on a GitHub runner, and a runner result is
+labelled as the runner's.
 
 Companion documents: [CPU_DISPATCH.md](CPU_DISPATCH.md) for the ISA question,
 `BUILD_SYSTEM.md` (Phase 6) for the presets and Gradle wiring,
@@ -28,28 +30,30 @@ definition, a preset, or the fact that a compiler accepts the source.
 
 "Host" means the machine this repository was last verified on: Windows 11 x86-64,
 GCC 16.2 (MinGW-w64 winlibs) and Clang 23.1.4 (LLVM-MinGW), no Visual Studio, no
-WSL, no containers. Everything else is CI-only. CI runs are tracked separately
-in [CI_SUPPORT_MATRIX.md](./CI_SUPPORT_MATRIX.md); a workflow definition alone
-does not count as evidence that a platform works.
+WSL, no containers. Everything else is CI-only — and since [run 90](https://github.com/VeltisMC/Veltis/actions/runs/42006900852)
+that is a source of evidence rather than a placeholder, because the workflows
+have now executed. They are tracked in
+[CI_SUPPORT_MATRIX.md](./CI_SUPPORT_MATRIX.md); a workflow *definition* alone does
+not count as evidence that a platform works, so every runner-backed row below
+names the job and the run.
 
 | Target | Toolchain | Label | Evidence |
 | --- | --- | --- | --- |
-| `windows-x86_64` | MinGW-w64 GCC 16.2 | **Native build and runtime tested** | CTest 4/4, `:veltis-native:test -PveltisNativeTest=true` 81 tests / 0 failures, `verifyNativeRuntimePolicy` passed (§9) |
-| `windows-x86_64` | LLVM-MinGW Clang 23.1.4 | **Native build and runtime tested** | same suite re-run with the Clang-built DLL, plus its import table inspected (§9) |
-| `windows-aarch64` | LLVM-MinGW Clang, cross from x86-64 | **Cross-compiled and artifact verified** | machine `0xAA64`, no compiler runtime imported, 13 exports; never executed |
-| `windows-x86_64` | MSVC (`cl`) | **Not tested** | preset `windows-x86_64-msvc` exists; this host has no Visual Studio |
-| `windows-x86_64` | clang-cl | **Not tested** | preset `windows-x86_64-clang-cl` exists; clang-cl needs the MSVC headers/SDK |
-| `windows-aarch64` | LLVM-MinGW on native Windows ARM64 | **Not tested locally** | Blocking CI lane builds and executes the ARM64 DLL on `windows-11-arm`; no local ARM64 host |
-| `linux-x86_64` | GCC, Clang | **Not tested** (locally) | CI lanes exist and have never run; no WSL/Docker on this host |
-| `linux-aarch64` | GCC | **Not tested** | CI `ubuntu-24.04-arm`; local preset `linux-aarch64-cross` needs `aarch64-linux-gnu-gcc`, absent |
-| `macos-aarch64` | Apple clang | **Not tested** | CI `macos-15`; no macOS host reachable (the lane's original `macos-14` label was retired platform-wide on 2026-11-02) |
-| `macos-x86_64` | Apple clang | **Not tested** | CI `macos-15-intel`; no macOS host reachable |
-| `linux-riscv64` | GNU cross | **Not tested** | preset + CI cross lane (marked optional) only |
-| FreeBSD, other BSDs, 32-bit x86, any other arch | — | **Unsupported** | [NativeLoader.java:57-63](../src/main/java/org/veltismc/nativeengine/NativeLoader.java#L57-L63) recognises six keys; anything else gets an explicit "unsupported platform" diagnostic and the Java fallback |
+| `windows-x86_64` | MinGW-w64 GCC 16.2 | **Native build and runtime tested** | CTest 5/5, `:veltis-native:test -PveltisNativeTest=true` 131 tests / 0 failures, `verifyNativeRuntimePolicy` passed (§9) — host, 2026-11-05 |
+| `windows-x86_64` | LLVM-MinGW Clang 23.1.4 | **Native build and runtime tested** | same suite re-run with the Clang-built DLL, plus its import table inspected (§9); green as CI lane `Native host (Windows x86-64 LLVM-MinGW)` in run 90 |
+| `windows-x86_64` | MSVC (`cl`) | **Executed and integration-tested in CI** (run 90) | `Native host (Windows x86-64 MSVC)` and `Native debug (Windows x86-64 MSVC)` both green; still not testable on this host, which has no Visual Studio |
+| `windows-x86_64` | clang-cl | **Executed and integration-tested in CI** (run 90) | `Native host (Windows x86-64 clang-cl)` green |
+| `windows-aarch64` | LLVM-MinGW on native Windows ARM64 | **Executed and integration-tested in CI** (run 90) | `Native host (Windows ARM64 LLVM-MinGW)` green on a `windows-11-arm` runner with Zulu 25 — the DLL was built **and run** there; no local ARM64 host |
+| `windows-aarch64` | LLVM-MinGW Clang, cross from x86-64 | **Cross-compiled and artifact verified** | `Native cross-compile (Windows ARM64 LLVM-MinGW)` green; locally: machine `0xAA64`, no compiler runtime imported, 13 exports, never executed on this host |
+| `linux-x86_64` | GCC, Clang | **Executed and integration-tested in CI** (run 90) | `Native host (Linux x86-64 GCC)` and `(Linux x86-64 Clang)` green — CTest, the Java suite, ELF dependency inspection, and both native-enabled and Java-only server startup |
+| `linux-aarch64` | GCC | **Executed and integration-tested in CI** (run 90) | `Native host (Linux AArch64 GCC)` green on `ubuntu-24.04-arm`; `Native cross-compile (Linux AArch64 GNU)` green from x86-64 |
+| `macos-aarch64` | Apple clang | **Executed and integration-tested in CI** (run 90) | `Native host (macOS Apple Silicon)` green on `macos-15` (the lane's original `macos-14` label was retired platform-wide on 2026-11-02) |
+| `macos-x86_64` | Apple clang | **Executed and integration-tested in CI** (run 90) | `Native host (macOS Intel x86-64)` green on `macos-15-intel` |
+| `linux-riscv64` | GNU cross | **Cross-compiled and artifact verified** | `Native cross-compile (Linux RISC-V 64 GNU)` green in run 90; still a compile-only target, never executed anywhere |
+| FreeBSD, other BSDs, 32-bit x86, any other arch | — | **Unsupported** | [NativeLoader.java:57-63](../src/main/java/org/veltismc/nativeengine/NativeLoader.java#L57-L63) recognises six keys; anything else gets an explicit "unsupported platform" diagnostic and the Java fallback. `Native engine (FreeBSD investigation, non-blocking)` ran green in run 90 and reported, it does not change this row |
 
-`windows-x86_64` and `windows-aarch64` are the only rows this repository can move
-upward by itself today. The others need a runner, and the honest report is that
-the runner is not here.
+**Run 90** is [`.github/workflows/gradle.yml` on commit `873028c`](https://github.com/VeltisMC/Veltis/actions/runs/42006900852), a `pull_request` run started 2026-11-05T09:59:16Z: 15 native jobs green, `Package native distribution` green, `Publish native release` skipped (push/dispatch only), and one red job — `Build & verify`, which failed on the pre-existing `SchedulerTest.cancelledJobDoesNotRunBody` race and is unrelated to native code. CI evidence is a runner's word, not this host's: the rows above say which lane produced them so a reviewer can re-read the job. The host rows are the ones this machine reproduced itself.
+
 
 ### 2.1 Platform-conditional code, exhaustively
 
@@ -211,11 +215,13 @@ Two distinct configurations, never to be conflated:
   pretending to check something.
 - **Unresolved symbols fail at link, not at `dlopen`:**
   `LINKER:--no-undefined` ([CMakeLists.txt:329-331](../CMakeLists.txt#L329-L331)).
-- **Dependencies:** the CI Linux step ([gradle.yml:399-437](../../.github/workflows/gradle.yml#L399-L437))
+- **Dependencies:** the CI Linux step ([gradle.yml:518-556](../../.github/workflows/gradle.yml#L518-L556))
   reads `NEEDED` with `readelf -d`, rejects anything outside
   `libc|libm|libstdc++|libgcc_s|libpthread|libdl|librt|ld-linux*`, and rejects an embedded
   `RPATH`/`RUNPATH` because Java passes an absolute path to the OS loader and an
-  RPATH could only ever be a build-machine path.
+  RPATH could only ever be a build-machine path. **Executed green on both Linux
+  host lanes and the cross lanes' own inspection step in run 90** — the first time
+  any of these assertions ran against a real `.so`.
 - **GLIBC / GLIBCXX floors are measured, never invented.** The same step records
   `readelf --version-info` output (`GLIBC_*`, `GLIBCXX_*`, `CXXABI_*`) into the
   job summary, and that is the only legitimate source for a Linux floor. This
@@ -223,7 +229,10 @@ Two distinct configurations, never to be conflated:
   anywhere in this repository**, the manifest keeps `minimumOsVersion` empty for
   Linux, and `verifyNativeArtifact` treats a non-empty value there as an error
   ([build.gradle.kts](../build.gradle.kts), "runtime.minimumOsVersion must stay
-  empty"). The first real CI run is what turns that into a documented policy.
+  empty"). Run 90 is the first real CI run, so the measuring half of that policy
+  is now demonstrated; the claiming half stays closed by design — a floor is
+  recorded in a job summary, and no document here transcribes a number it cannot
+  read without authenticated access to those logs.
 
 ## 5. macOS
 
@@ -283,12 +292,12 @@ OS loader with a message that names the operating system but not the reason.
 
 | Gap | Status |
 | --- | --- |
-| No Linux, macOS, MSVC or clang-cl execution on this host | Host limitation, stated rather than worked around; CI definitions exist but have never run |
-| No glibc/libstdc++ floor | Correct state until a CI run measures it (§4) |
+| No Linux, macOS, MSVC or clang-cl execution on **this host** | Host limitation, stated rather than worked around. Those lanes have since run on GitHub runners (run 90, 2026-11-05), which is a different kind of evidence: real, but not reproducible from this machine |
+| No glibc/libstdc++ floor recorded **here** | The CI step records it from the built artifact (`readelf --version-info`, written to the job summary, not asserted), and that step ran green on both Linux lanes in run 90. The values are in [the run's summaries](https://github.com/VeltisMC/Veltis/actions/runs/42006900852), not copied here: this host has no authenticated access to action logs, and a floor quoted from memory is a claim, not a measurement |
 | No Windows version floor / UCRT claim | Correct state; nothing was verified (§3.3) |
-| No macOS < 11 execution | The floor is a build-time claim only (§5) |
-| Cross artifacts never executed | By design; `testNative` and `verifyNativeRelease` refuse a cross build instead of reporting a false failure |
-| FreeBSD | Investigation job only, `continue-on-error: true`, and the loader treats it as unsupported |
+| No macOS < 11 execution | The floor is a build-time claim only (§5). Run 90 ran the macOS lanes on current runner images, i.e. systems *newer* than 11.0, which cannot test the floor — it can only fail to contradict it |
+| Cross artifacts never executed | By design; `testNative` and `verifyNativeRelease` refuse a cross build instead of reporting a false failure. Run 90 is the first execution of the two CI guards that assert this (§4) |
+| FreeBSD | Investigation job only, `continue-on-error: true`, and the loader treats it as unsupported. Green in run 90; still **Unsupported** — see `CI_SUPPORT_MATRIX.md` §12 rule 5 |
 | 32-bit Windows | Not a release target; the FFM layer maps `size_t` to `JAVA_LONG`, so a 32-bit artifact would corrupt lengths instead of failing cleanly — `verifyNativeArtifact` rejects `pointerBits != 64` |
 
 ## 9. Verification index
@@ -310,6 +319,15 @@ The `--no-daemon` and the deleted cache are part of the method, not decoration: 
 Gradle daemon keeps the environment of whoever started it, so a `CC`/`CXX` change
 only reaches CMake in a fresh JVM, and a populated `CMakeCache.txt` pins the
 compiler for that build directory.
+
+Those rows are 2026-11-03 history and their counts are of that date; the current
+host numbers are CTest 5/5 and 131 Java tests (§1, and `TESTING_STRATEGY.md` §2).
+The platform evidence that supersedes "no runner has ever run this" is
+[CI run 90](https://github.com/VeltisMC/Veltis/actions/runs/42006900852)
+(`873028c`, 2026-11-05): fifteen native jobs green — every Tier 1 platform built,
+tested and packaged on its own runner — plus `Package native distribution` green,
+`Publish native release` skipped because the run was a pull request, and
+`Build & verify` red on an unrelated Java scheduler race.
 
 `FOUNDATION_AUDIT.md` §11 remains the log of phase-by-phase executed verification;
 this table is the platform-specific slice of it.

@@ -157,8 +157,11 @@ Building for: NMake Makefiles
 'nmake' '-?' failed with: no such file or directory
 ```
 
-—a message naming no compiler that reads like a toolchain bug. Every CI lane
-already names its generator, so this only changes what a manual local run does:
+—a message naming no compiler that reads like a toolchain bug. Eight of the nine
+`native-host` lanes name `Ninja` in their matrix entry; the MSVC lane names none
+*on purpose*, because CMake's own Windows default is the Visual Studio generator
+and that is the one MSVC lanes want; the cross lanes never reach this rule, they
+go through `cmake --preset`. So this only changes what a manual local run does:
 from confusing failure to build. An MSVC host without Ninja keeps CMake's choice.
 
 Gradle never invokes Ninja; it asks CMake to, which is why Ninja has no
@@ -347,22 +350,29 @@ implementation of that rule).
 ## 12. Build matrix, as it stands today
 
 Configurations exist for all ten targets the order names. Status is what has been
-*executed*, not what is configured:
+*executed*, not what is configured — and since 2026-11-05 there are two places
+something can have been executed, so the table says which:
 
-| Target | Compiler | Configuration | Status here |
-| --- | --- | --- | --- |
-| Windows x86-64 | MSVC | preset `windows-x86_64-msvc` | not tested (no Visual Studio on this host) |
-| Windows x86-64 | clang-cl | preset `windows-x86_64-clang-cl` | not tested |
-| Windows x86-64 | LLVM-MinGW Clang 23.1.4 | Gradle lane + preset | **native build and runtime tested** |
-| Windows x86-64 | MinGW-w64 GCC 16.2.0 | Gradle lane | **native build and runtime tested** (Release and Debug) |
-| Windows ARM64 | MSVC | — | not configured (needs an MSVC ARM64 toolchain) |
-| Windows ARM64 | LLVM-MinGW cross | `cmake/toolchains/windows-arm64-mingw.cmake` | cross-compiled and artifact verified; never executed |
-| Linux x86-64 | GCC / Clang | presets | not tested (no Linux host) |
-| Linux ARM64 | GCC | preset + cross toolchain | not tested here; cross lane configured |
-| macOS ARM64 / x86-64 | Apple Clang | presets | not tested (no macOS host) |
+| Target | Compiler | Configuration | On this host | On a GitHub runner (run 90) |
+| --- | --- | --- | --- | --- |
+| Windows x86-64 | MSVC | preset `windows-x86_64-msvc` | not tested (no Visual Studio on this host) | **build and runtime tested** — configure, build, CTest, Java suite |
+| Windows x86-64 | clang-cl | preset `windows-x86_64-clang-cl` | not tested | **build and runtime tested** |
+| Windows x86-64 | LLVM-MinGW Clang 23.1.4 | Gradle lane + preset | **native build and runtime tested** | **build and runtime tested** |
+| Windows x86-64 | MinGW-w64 GCC 16.2.0 | Gradle lane | **native build and runtime tested** (Release and Debug) | no lane (risk R1 in `FOUNDATION_AUDIT.md` §7) |
+| Windows ARM64 | MSVC | — | not configured (needs an MSVC ARM64 toolchain) | not configured |
+| Windows ARM64 | LLVM-MinGW cross | `cmake/toolchains/windows-arm64-mingw.cmake` | cross-compiled and artifact verified; never executed | **cross lane**: compiled + inspected, never executed, by design. **Host lane** on an ARM64 runner: build and runtime tested with Zulu JDK 25 |
+| Linux x86-64 | GCC / Clang | presets | not tested (no Linux host) | **build and runtime tested** on both compilers |
+| Linux ARM64 | GCC | preset + cross toolchain | not tested here; cross lane configured | **cross lane** compiled + inspected; **host lane** build and runtime tested |
+| macOS ARM64 / x86-64 | Apple Clang | presets | not tested (no macOS host) | **build and runtime tested** on both architectures |
 
-No CI run of these definitions has ever executed; that limitation is recorded in
-`CI_SUPPORT_MATRIX.md` (Phase 10) rather than inferred from YAML.
+Run 90 is what closed the "no CI run has ever executed these definitions"
+sentence this table used to end with; the runner column is cited from
+[the run's job list](https://github.com/VeltisMC/Veltis/actions/runs/42006900852),
+not inferred from YAML, and `CI_SUPPORT_MATRIX.md` §1 keeps the job-by-job
+detail. Two distinctions survive the update and are the reason the table still
+has two columns: a runner's "runtime tested" is not this host's (nothing here can
+reproduce a Linux or macOS build), and a cross lane is *not* runtime tested even
+though the same platform key now has a host lane that is.
 
 ---
 

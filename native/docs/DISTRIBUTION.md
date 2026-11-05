@@ -204,7 +204,7 @@ Three places catch a mismatch, because every one of them is a way to ship a
 manifest no server will accept:
 
 1. this pairing check, run in CI before packaging
-   ([`gradle.yml:1049`](../../.github/workflows/gradle.yml#L1049)) — it is gated on
+   ([`gradle.yml:1050`](../../.github/workflows/gradle.yml#L1050)) — it is gated on
    `env.VELTIS_NATIVE_MANIFEST_KEY != ''`, because the `secrets` context is not
    available in a step `if:`;
 2. [`packageNativeDistribution`](../build.gradle.kts#L2079) signs the manifest it
@@ -310,6 +310,7 @@ source -> native-host matrix (9 lanes)
        -> native-package (downloads only verified lanes' artifacts,
           assembles native-manifest.json, signs, reads it back through the runtime parser)
        -> native-release (refuses unsigned; publishes zips + manifest + .sig as release assets)
+          ^ push/dispatch only — this hop has never executed, see §13.1
        -> server startup: NativeDistributionManager -> NativeLoader -> NativeEngine
 ```
 
@@ -328,18 +329,62 @@ download. A lane that built but could not execute its tests produces a
 | Selective download, six platforms | [`NativeDistributionManagerTest`](../src/test/java/org/veltismc/nativeengine/NativeDistributionManagerTest.java) asserts the full request log per platform; a deliberate "download every artifact" mutation makes it and the real-artifact test fail, which is how the assertion was shown to be load-bearing |
 | Key pairing | `generateNativeManifestKey` → `verifyNativeManifestKeyPairing` executed: fails against a stale anchor, succeeds against the current one; three guard failures (no path, path inside repo, missing secret) executed |
 | `:veltis-native:verifyNativeRelease -PveltisNativeTest=true` | passed; report at `build/native/dist/verification-report-windows-x86_64.json` |
-| `:veltis-native:packageNativeDistribution` | **fails here, correctly**: `linux-x86_64` and `linux-aarch64` are mandatory and no Windows host can produce them. Manifest assembly has therefore never run end to end locally |
-| GitHub Actions | no workflow run has been executed by this session; every CI claim above is local |
+| `:veltis-native:packageNativeDistribution` | **fails here, correctly**: `linux-x86_64` and `linux-aarch64` are mandatory and no Windows host can produce them. Manifest assembly has therefore never run end to end locally — it has now run on a runner, see §13.1 |
+| GitHub Actions | **Executed on 2026-11-05** — [run 90](https://github.com/VeltisMC/Veltis/actions/runs/42006900852) ran `Package native distribution` to success on `ubuntu-latest`. Nothing in the rows above this one was executed by that job; the split is §13 versus §13.1, and this host's evidence stays this host's. |
+
+### 13.1 What run 90 executed (GitHub runners, 2026-11-05)
+
+The distribution feature's CI half ran for the first time. Six release-flagged
+lanes built on their own platform runners, `native-package` downloaded those
+verified artifacts, and the packaging step assembled and uploaded the
+distribution under its release names — the first real `native-manifest.json` and
+`native-release.json` produced from real per-platform artifacts rather than from
+this host's single platform. Also proven, in that order and only in that order:
+
+- **the `env` gate works**: the key-pairing step skipped while the rest of the job
+  ran, so the condition neither failed the job nor silently disabled the steps
+  after it. The reason it skipped is specific and worth stating exactly: the
+  private half is still only on this host, so `VELTIS_NATIVE_MANIFEST_KEY` is
+  **not configured in the repository yet**. Once it is, a same-repository pull
+  request will run the pairing check (a fork's pull request still will not —
+  GitHub does not pass secrets to those), which is the intended behavior; the
+  skip in run 90 is an unconfigured secret, not a policy that pull requests are
+  forever unsigned.
+- **unsigned is recorded as unsigned**: the signing step emitted
+  `signed=false` with a warning and the descriptor said so, instead of producing
+  a manifest that looks publishable;
+- **the release-lane set is host-only**: `native-package` needs `native-host`
+  and collects `veltis-native-release-*`, while the cross lanes upload
+  `veltis-native-cross-*`. Packaging therefore never saw a cross artifact in
+  run 90, which matches the task itself — it writes `"verification" to "host"`
+  ([build.gradle.kts:2251](../build.gradle.kts#L2251)) and has no path that
+  writes `"cross"`. The `verification: "cross"` rule on the runtime side is a
+  *rejection* rule, exercised by unit tests, for a manifest a hand-built or
+  future release could carry; run 90 is not evidence that a cross entry survives
+  packaging, because no cross entry was ever packaged.
+
+Not proven there, and not to be quoted as if it were: `Publish native release` is
+push/dispatch-only, so its conclusion in run 90 is *skipped* and the step that
+refuses to publish an unsigned manifest (gradle.yml:1138) has still never
+executed anywhere — not on a runner, and not on this host, because its input is
+the packaging job's artifact. No GitHub Release was created, and no server has
+downloaded from one. See `CI_SUPPORT_MATRIX.md` §1.
 
 ## 14. Honest limits
 
 - The local key pair was generated by the new task on 2026-11-05 and the private
   half exists only on this host at `~/.veltis-native/manifest-signing-key.pem`.
   Until the repository owner puts it in `VELTIS_NATIVE_MANIFEST_KEY`, releases
-  stay unsigned and `native-release` refuses to publish, which means the runtime
-  path has never fetched from a real GitHub release.
-- Only `windows-x86_64` artifacts exist on this host; the Linux lanes that make
-  packaging succeed are CI's job and have never run here.
+  stay unsigned. Run 90 showed that state from the inside: the packaging job ran
+  without the secret, wrote an unsigned manifest and said so — the design holds,
+  and the *enforcement* half (the `native-release` refusal) has still never
+  executed, because that job is push/dispatch-only. Consequence for this
+  document's other claims: the runtime path has never fetched from a real GitHub
+  release, and nothing in §13.1 should be read as if it had.
+- Only `windows-x86_64` artifacts exist on this host. The Linux lanes that make
+  packaging succeed have never run *here*, and since run 90 they have run on
+  GitHub runners — that is what let the packaging job complete. This host is
+  still, structurally, unable to produce a distribution on its own.
 - Signature verification in the tests uses a per-run key passed to the
   package-private overload — the embedded anchor's own pairing is proven by the
   Gradle tasks and the packaging read-back, not by the test suite.

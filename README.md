@@ -57,10 +57,17 @@ the library needs CMake 3.21+ and a C11/C++20 compiler, and is a separate task:
 ./gradlew :veltis-native:testNative
 ```
 
-One target has actually been built, executed and integration-tested so far:
-Windows x86-64. Linux x86-64/AArch64, macOS (both architectures) and Windows
-ARM64 are recognized by the loader and have CI jobs defined, but they are listed
-as unverified until those jobs run green on a real runner.
+Windows x86-64 is the target built, executed and integration-tested **on the
+development host**. The other Tier 1 targets — Linux x86-64 (GCC and Clang),
+Linux AArch64, macOS on both architectures, Windows ARM64, and Windows x86-64
+under MSVC and clang-cl — were built, tested and packaged green on their own
+GitHub-hosted runners in
+[CI run 90](https://github.com/VeltisMC/Veltis/actions/runs/42006900852)
+(commit `873028c`, 2026-11-05), so they are executed-and-tested evidence of a
+different kind: the runner's, not a local one's. No benchmark, sanitizer or
+profile has been produced on any of them. See
+[`native/README.md`](native/README.md) for the support table that keeps the two
+apart.
 
 The server can also fetch that library for you. `veltis.native.autoDownload`
 defaults to `true`, so a start-up with no verified installation for this

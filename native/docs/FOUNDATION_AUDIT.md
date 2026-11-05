@@ -260,10 +260,13 @@ workload ever arrives.
   intrinsics now would be pure ceremony and the order forbids it.
   **Phase 5 outcome:** kept, and written up as a decision with measurements and a
   nine-condition gate in `CPU_DISPATCH.md` — see §11 "Phase 5".
-- `windows-x86_64-msvc` and `-clang-cl` presets exist and are **unrunnable on
-  this host** (no Visual Studio installed). They are source-verified only.
+- `windows-x86_64-msvc` and `-clang-cl` presets are **unrunnable on this host**
+  (no Visual Studio installed), so here they stay source-verified. They are no
+  longer unexecuted everywhere: run 90 ran both presets — configure, build, CTest
+  and the Java suite — on `windows-latest` runners.
 - Linux glibc/libstdc++ floors are recorded by CI from the built artifact, not
-  invented — the CI step exists and has never run here.
+  invented — the CI step existed but had never run when this was written; run 90
+  executed it green on the Linux lanes (§11).
 - `VELTIS_NATIVE_MINIMUM_OS` is empty for Windows and Linux at configure time
   ([CMakeLists.txt:516-518](../CMakeLists.txt#L516-L518)); the comment already
   calls that the honest answer. Keep it.
@@ -319,24 +322,32 @@ audit's evidence trail.
 
 **Resolved 2026-11-05 — see §11 "Phase 8".** Every gap below except the
 allocation-failure case (which stays impossible while the library allocates
-nothing) and zero-CI-evidence (which stays open) is closed; the evidence is in
-`TESTING_STRATEGY.md` §3–§6.
+nothing) and sanitizers off Windows is closed; the evidence is in
+`TESTING_STRATEGY.md` §3–§6. The "zero CI evidence" gap in this section closed
+on 2026-11-05 — see the run-90 entry at the end of §11.
 
 - 18 native test functions, ~30 loader tests, 11 end-to-end tests, 7 throttle
   tests — a genuinely good base. Gaps:
-  - **No sanitizer build has ever run here.** ASan/UBSan on the Windows library
-    and TSan on the concurrent cases are unexecuted. Linux ASan/UBSan/TSan via
-    CI is defined but this branch has zero CI runs.
+  - **No sanitizer build had ever run here** when this was written; ASan+UBSan on
+    the Windows library has since executed (§11 "Phase 8"). TSan on the
+    concurrent cases remains unexecuted, and **no sanitizer lane is defined in CI
+    at all** — `grep -i sanitiz .github/workflows/gradle.yml` returns nothing, so
+    Linux ASan/UBSan/TSan is not a lane that has merely not run; it does not
+    exist. That is a deliberate cost decision recorded in `CI_SUPPORT_MATRIX.md`
+    §7, not an oversight to quote as pending coverage.
   - **No fuzzing at all.** `transform_i32` with attacker-controlled length and
     pointers is a legitimate target for a bounded harness; there is none.
   - **No allocation-failure tests** — and none are meaningful while the native
     side allocates nothing. Record that as an explicit unavailable case.
   - The `SIZE_MAX`/overflow cases are covered, but there is no test for a
     library that returns a status code outside the documented enum.
-- **Zero CI evidence.** The branch has never been pushed, so every `.github/
-  workflows/gradle.yml` job — `native-host`, `native-cross`, `native-debug`,
-  `native-freebsd-investigation` — is source-verified and nothing more. No run
-  may be described as passing.
+- **Zero CI evidence** at audit time. The branch had never been pushed, so every
+  `.github/workflows/gradle.yml` job — `native-host`, `native-cross`,
+  `native-debug`, `native-freebsd-investigation` — was source-verified and nothing
+  more, and no run could be described as passing. **Closed 2026-11-05**: run 90
+  executed fifteen native jobs plus packaging green on GitHub-hosted runners; the
+  one red job was the Java scheduler flake, not a native lane. See the run-90
+  entry in §11 and `CI_SUPPORT_MATRIX.md` §1.
 
 ### 5.9 Benchmarks (Phase 9)
 
@@ -363,23 +374,33 @@ digit) and a native-only, no-FFM row (the four implementations are all
 
 **Partly resolved 2026-11-05 — see §11 "Phase 10" and "Phase 11".** The
 document set exists, the README's two false statements are corrected, and the
-cross jobs are labelled compile-only in both their names and their output. Two
-gaps in this list are **still open**: there is still no MinGW-w64 GCC host lane
-in CI, and the branch has still never produced a CI run.
+cross jobs are labelled compile-only in both their names and their output. One
+gap in this list is **still open**: there is still no Windows MinGW-w64 GCC host
+lane in CI. The other — "the branch has still never produced a CI run" — closed
+later on 2026-11-05 when run 90 executed the workflow for real; the paragraph
+below is kept as the audit-time statement it was.
 
-- `native/docs/` did not exist until this audit. 14 of the 15 required documents
-  are still missing.
+- `native/docs/` did not exist until this audit. It exists now — see §11
+  "Phase 11" for the inventory.
 - README carries **two now-false statements**: the "stale 2026-10-31 library"
   caveat at [README.md:423-425](../README.md#L423-L425) and the "Currency of that
   run" paragraph at [README.md:617-624](../README.md#L617-L624), both of which
   assert that nothing has been recompiled. Fresh LLVM-MinGW and MinGW-w64 GCC
   builds now exist and pass. Correct them.
-- **CI has no MinGW-w64 GCC host lane.** The matrix covers MSVC, clang-cl and
-  LLVM-MinGW on Windows. The exact bug that cost the most time this project —
-  `libwinpthread-1.dll` silently reappearing under a `staticRuntime: true`
-  manifest — is a MinGW-w64 GCC-only failure mode and no CI job can catch it.
-  Adding that lane, with the import-policy assertion, is the highest-value CI
-  change available.
+- **CI has no Windows MinGW-w64 GCC host lane.** The matrix covers MSVC,
+  clang-cl and LLVM-MinGW on Windows. The exact bug that cost the most time this
+  project — `libwinpthread-1.dll` silently reappearing under a `staticRuntime:
+  true` manifest — is a MinGW-w64 GCC failure mode. The audit's original wording,
+  "no CI job can catch it", overstated the gap and run 90 disproved it: every
+  Windows lane runs `verifyNativeRuntimePolicy`, whose
+  `native/tools/check-pe-imports.ps1` rejects any `libwinpthread`/`libgcc`/
+  `libstdc++`-style dynamic import in the produced PE, so the *symptom* is caught
+  whatever compiler built the artifact. What CI cannot do is exercise the
+  *cause* — a MinGW-w64 GCC-only change to the link flags never gets compiled
+  there, so the regression would reach the import assertion as a missing-lane
+  blind spot rather than a failing build. Adding that lane is still the
+  highest-value CI change available; the reason is coverage of the compiler, not
+  absence of the check.
 - Cross-compile jobs must be labeled as compile-only. They already assert a
   local-execution guard, but the job names do not tell a reader that nothing ran.
 
@@ -398,6 +419,16 @@ in CI, and the branch has still never produced a CI run.
 Each must be labeled in the final report with one of: build and runtime tested,
 cross-compiled and artifact verified, build tested only, not tested, unsupported.
 
+**Status 2026-11-05, after run 90.** Items 1–3 are no longer assumptions. The
+Linux glibc/libstdc++ floors are read from artifacts built on Linux runners with
+the `readelf` dependency check green; the macOS 11.0 floor has `vtool`/`otool`
+evidence *and* executed test suites on both Apple Silicon and Intel runners; the
+`windows-x86_64-msvc` and `-clang-cl` presets configured, built and ran CTest on
+Visual Studio and clang-cl runners. That is runner evidence, not this host's, and
+`PLATFORM_SUPPORT.md` labels it as such. Items 4 and 5 are untouched — CI runs no
+benchmark, so every performance number in this repository is still a single
+Windows x86-64 sample.
+
 ## 7. Risk register
 
 | # | Risk | Likelihood today | Impact | Mitigation path |
@@ -411,6 +442,17 @@ cross-compiled and artifact verified, build tested only, not tested, unsupported
 | R7 | Native `shutdown` does not wait for in-flight calls | Low (transform is stateless) | A future stateful capability becomes a UAF | Phase 4: lifecycle document + guard before adding state |
 | R8 | Docs describe infrastructure that does not exist (rollback, allocators, struct ABI) | High if written carelessly | Reviewers trust a false contract | Phases 2–5: state vacuity explicitly |
 | R9 | Zero CI runs for an entire feature branch | Certain | No platform claim is defensible | Report honestly; label every non-host result unverified |
+
+**Re-scored 2026-11-05, after run 90.** "Likelihood today" above is the audit-time
+reading and is kept for the record; two rows changed. R9 is closed — run 90
+pushed the branch and the workflow executed on GitHub-hosted runners, so the
+platform claims in `PLATFORM_SUPPORT.md` now rest on runs rather than on labels,
+and the fallback rule "label every non-host result unverified" became "label it
+*runner-verified*, which is a different and narrower claim". R1 improved but did
+not close: the import assertion that catches the symptom now runs green on every
+Windows lane, while the MinGW-w64 GCC compiler that produces the bug still has no
+Windows lane of its own (§5.10). The other rows are unchanged — R5 in particular
+is a property of this host's build tree, which no runner shares.
 
 ## 8. Phase mapping
 
@@ -455,6 +497,10 @@ cross-compiled and artifact verified, build tested only, not tested, unsupported
 
 Not executed anywhere in this audit: any Linux, macOS, MSVC, clang-cl, FreeBSD,
 RISC-V or AArch64-native run; any sanitizer; any fuzzer; any CI workflow.
+That sentence is scoped to the audit, and the last item of it stopped being true
+on 2026-11-05 — see the run-90 entry at the end of §11, which is also what the
+"Executed on GitHub runners" columns in `BUILD_SYSTEM.md` §12 and
+`TESTING_STRATEGY.md` §5 refer to.
 
 ## 11. Post-audit changes (appended as later phases land)
 
@@ -730,7 +776,9 @@ the library, and all fixed.
 - Still unmeasurable here, and recorded as such rather than worked around: Linux
   and macOS artifacts (no WSL, no containers, no macOS host), MSVC and clang-cl
   lanes (no Visual Studio), and therefore **any** GLIBC/GLIBCXX or Windows-version
-  floor. No CI run has ever executed these workflow definitions.
+  floor. No CI run had executed these workflow definitions when this was written;
+  run 90 did on 2026-11-05 (§11, and the runner column of `BUILD_SYSTEM.md` §12),
+  which is what turned "recorded by CI" from a promise into a measurement.
 
 CPU dispatch is documented as a deliberate absence with a gate, per the audit's
 own §5.5 finding; no `architecture/` directory was created, and the trigger rule
@@ -955,7 +1003,8 @@ they belong to Phase 9. Sanitizers, fuzzing and `-Werror` belong to Phase 8.
 Linux/macOS loader branches, MSVC/clang-cl lanes, Windows ARM64 at runtime and
 JDKs other than 25 stay **unverified**: `NativeLoaderTest`'s synthetic PE/ELF/
 Mach-O headers prove the parsing, not that a real foreign library loads.
-R6 and R7 remain as documented; R9 (zero CI runs) is untouched.
+R6 and R7 remain as documented; R9 (zero CI runs) was untouched at that point and
+closed later the same day by run 90.
 
 ### Phase 8 — testing, sanitizers, fuzzing and security
 
@@ -982,7 +1031,7 @@ records it as a cleanup rather than pretending it is load-bearing.)
 | ThreadSanitizer, LLVM-MinGW and MinGW-w64 GCC | **Refused at configure, by design**: `this toolchain cannot compile and link -fsanitize=thread` — no TSan runtime is shipped |
 | MemorySanitizer, LLVM-MinGW | Same refusal path, for `-fsanitize=memory` |
 | AddressSanitizer, MinGW-w64 GCC 16.2 | Probe path exists; **not run** |
-| Any sanitizer on Linux/macOS | CI lanes exist, **never executed** |
+| Any sanitizer on Linux/macOS | **No CI lane exists at all** — `gradle.yml` has no sanitizer job (grep for `sanitiz` returns nothing), and no such host is available here either. Not "a lane that has not run"; a check that is not defined |
 
 The refusal is a *configure-time failure with a message*, not a skip, and it is
 documented that way in `TESTING_STRATEGY.md` §3 because a skipped sanitizer lane
@@ -1064,7 +1113,10 @@ plus the LLVM-MinGW Clang 23.1.4 sanitizer lane, JDK 25.0.5)
 **What Phase 8 did not do.** No sanitizer runs on Linux or macOS; no TSan or
 MSan anywhere; no coverage-guided fuzzing; no allocation-failure tests — and
 none are meaningful while `MEMORY_MODEL.md` §1 holds, since a library that
-allocates nothing has no allocation to fail. No CI lane executed (R9).
+allocates nothing has no allocation to fail. No CI sanitizer lane exists to
+execute one (the workflow defines none), and R9 was still open when this line was
+written — run 90 closed R9 for the jobs that exist, and added no sanitizer
+coverage, because there was no job to add it to.
 
 ### Phase 9 — benchmarking, profiling and the decision not to integrate
 
@@ -1182,8 +1234,12 @@ locally exercised**, not observed in a runner: `packageNativeDistribution`
 executed and *correctly refused* on this host (`mandatory platform linux-x86_64
 is missing… linux-aarch64 is missing`), `verifyNativeManifestKeyPairing`
 executed and passed against the rotated anchor, and the Windows runtime-policy
-gate executed. **No CI job has ever run on this branch** — R9 is untouched, and
-nothing in this section may be described as a passing run. `actionlint` 1.7.12
+gate executed. **No CI job had ever run on this branch when this was written** —
+R9 was open, and nothing in this section may be described as a passing run.
+Superseded the same day: run 90 executed sixteen of nineteen jobs green, so this
+section's local-only list is now the *host* column of `CI_SUPPORT_MATRIX.md` §11
+and has a runner counterpart; the entry's own last paragraph, on `actionlint`, is
+the one thing that stayed exactly as written. `actionlint` 1.7.12
 validated the workflow with exit 0 on 2026-11-04 and again on 2026-11-05; the
 second run found and, after the fix, cleared a real error in the key-pairing
 step — `if: ${{ secrets.VELTIS_NATIVE_MANIFEST_KEY != '' }}`, which GitHub
@@ -1234,7 +1290,9 @@ be re-broken — `veltis-native` no longer lists "automatic download of a native
 library" among the things it deliberately does not do.
 
 **What Phase 11 did not do.** No document claims a platform the support table
-marks **Not tested**. No CI run is cited, because there is none. `TESTING_STRATEGY.md`
+marks **Not tested**. No CI run was cited, because at the time of writing there
+was none — every such citation has since been added, from run 90, and only in the
+runner column of the tables that now separate the two kinds of evidence. `TESTING_STRATEGY.md`
 and `FOUNDATION_AUDIT.md` were corrected against the state of the tree rather
 than rewritten from memory, which is why their 2026-11-05 entries name the exact
 commands that produced each number.
@@ -1272,6 +1330,75 @@ now runs the real library through package → signed two-platform manifest →
 loopback HTTP → install → `NativeLoader` → FFM `transform`, and asserts exactly
 three requests were made. What it cannot prove, and says so in its own KDoc, is
 the production trust relationship: it signs with a **per-run test key**, and no
-GitHub Release has ever been contacted. The full CI → release → runtime chain is
-**not executed**, for two independent reasons: this host cannot produce the two
-mandatory Linux lanes, and no CI run has ever happened (R9).
+GitHub Release has ever been contacted.
+
+The half of the chain this sentence used to mark unexecuted has since executed:
+in run 90 the six release-flagged lanes built on runners, `Package native
+distribution` collected their artifacts, assembled the manifest and uploaded the
+distribution under its release names — so "this host cannot produce the two
+mandatory Linux lanes" is no longer the binding reason, because Linux artifacts
+now exist and come from the packaging job's own inputs. What still has **not**
+executed is the second half, and each part of it has its own reason: the manifest
+was unsigned because `VELTIS_NATIVE_MANIFEST_KEY` is not configured in the
+repository yet — the private half is still only on the host that generated it, so
+the key-pairing step skipped and the signing state was reported as `signed=false`
+with a warning rather than faked; `Publish native release` never ran at all,
+because it is push/dispatch-only — its conclusion in run 90 is *skipped*, not
+*success*. That matters for one specific claim: the workflow step that refuses to
+publish an unsigned manifest (gradle.yml:1138, reading `signed` out of
+`native-dist/native-release.json`) has therefore **never executed anywhere**. It
+has not run on a runner, and it cannot run on this host either, because the
+publish job's inputs are the packaging job's artifacts. The rule is enforced in
+code and is worth reading, but it is untested, and neither this file nor
+`DISTRIBUTION.md` may cite run 90 as proof that the refusal fires. No GitHub
+Release was created in either place, and no server has ever downloaded from one.
+The CI → release → runtime chain is *half* executed — CI to packaged distribution,
+nothing past it — and the unexecuted half is now blocked only by a push/dispatch
+event plus a repository secret, not by this host's lack of a cross or Linux
+toolchain.
+
+### CI run 90 — the definitions executed (2026-11-05)
+
+[Run 90](https://github.com/VeltisMC/Veltis/actions/runs/42006900852) is the
+first real execution of this repository's CI workflow: a `pull_request` run of
+commit `873028c`, 19 jobs, started 09:59:16Z. The results below were read from
+GitHub's own runs API (`api.github.com/repos/VeltisMC/Veltis/actions/runs/…`,
+unauthenticated — `gh` is not installed on this host), job by job and step by
+step, not inferred from the YAML.
+
+Sixteen jobs succeeded: all nine `native-host` lanes, all three `native-cross`
+lanes, both `native-debug` lanes, the FreeBSD investigation, and `Package native
+distribution`. One failed — `Build & verify`, on
+`SchedulerTest.cancelledJobDoesNotRunBody`, a race in the Java world scheduler
+test with nothing to do with the native work; `CI_SUPPORT_MATRIX.md` §11.1
+records the diagnosis, the deterministic rewrite and the mutation that proves the
+new test load-bearing. Two were skipped — both publish jobs, which are
+push/dispatch-only.
+
+**The claims this falsified.** They were written when no run existed, and they
+are corrected here rather than quietly edited in place:
+
+| Claim as written | Status now |
+| --- | --- |
+| R9 "zero CI runs for an entire feature branch" | Closed; re-scored under §7 |
+| §5.5 "Linux glibc floors recorded by CI, the CI step has never run" | Ran green on the Linux lanes |
+| §5.5 MSVC and clang-cl presets "source-verified only" | Both configured, built and ran CTest on runners |
+| §5.8 "Linux ASan/UBSan/TSan via CI is defined" | **Wrong, independently of run 90**: `gradle.yml` has no sanitizer job at all — grep for `sanitiz` returns nothing |
+| §5.10 "no CI job can catch a `libwinpthread` regression" | Overstated: `check-pe-imports.ps1` rejects that import and ran green on every Windows lane. The real gap is narrower — no *MinGW-w64 GCC* lane exists to produce the bug |
+| §6 items 1–3 (Linux floors, macOS 11.0, MSVC presets as assumptions) | Now runner evidence, not assumptions; items 4–5 stay assumptions because CI runs no benchmark |
+| Phase 11's entry, `PLATFORM_SUPPORT`, `TESTING_STRATEGY` §5/§8, `BUILD_SYSTEM` §12, `DISTRIBUTION` §13/§14 — "never executed / no CI run" | Replaced by the runner column, with the host column kept separate |
+
+**What run 90 does not prove**, stated because the temptation after one green
+night is to let it mean everything: no sanitizer ran anywhere (Windows
+ASan+UBSan remains this host's 2026-11-04 result, the only one in the
+repository's history); no benchmark ran; no profile was taken; no Linux, macOS or
+ARM64 result belongs to this host, so none of those lanes is locally reproducible;
+the manifest was published **unsigned** because the signing secret is not
+configured in the repository yet; and `native-release` — the gate that refuses an
+unsigned release — never executed, because a pull request is not a release. Cross
+lanes compiled and were inspected and executed nothing, which is their design.
+
+The division that matters going forward is the one the corrected tables now make
+explicit: **host evidence** is reproducible with a command someone can type here,
+**runner evidence** is real but belongs to GitHub's machines and to the commit
+that triggered it. A claim may cite the second only if it names it as such.

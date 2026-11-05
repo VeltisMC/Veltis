@@ -1001,9 +1001,12 @@ jobs:
   #   * every entry must agree with its verification report on both digests
   #     before the entry is written;
   #   * the manifest is signed when VELTIS_NATIVE_MANIFEST_KEY is available
-  #     and read back through the runtime's own parser; without the secret
-  #     (pull requests, fork PRs) it is written unsigned and native-release
-  #     refuses to publish it.
+  #     and read back through the runtime's own parser; without the secret it is
+  #     written unsigned and native-release refuses to publish it. "Without"
+  #     covers a fork's pull request (GitHub passes no secrets to those) and any
+  #     event while the repository secret is unset — it does NOT cover a
+  #     same-repository pull request once the secret exists, which is why the
+  #     pairing step is gated on the value rather than on the event name.
   #
   # `!cancelled()` keeps this job running when an optional lane failed or was
   # cancelled, so the packaging task — not the job graph — decides whether

@@ -56,7 +56,7 @@ point of the set:
 | `TESTING_STRATEGY.md` | Every test layer, the sanitizer lanes, what cannot run on which host |
 | `SECURITY_MODEL.md` | Threat model, validation order, explicit non-protections |
 | `BENCHMARKING.md` | Method, current numbers, the optimization acceptance bar |
-| `CI_SUPPORT_MATRIX.md` | CI jobs, runner labels, and the fact that no CI run has executed yet |
+| `CI_SUPPORT_MATRIX.md` | CI jobs, runner labels, and what [run 90](https://github.com/VeltisMC/Veltis/actions/runs/42006900852) actually proved |
 | `DISTRIBUTION.md` | Selective download of one published artifact: manifest schema, signature, cache policy, configuration |
 
 ## Architecture
@@ -342,26 +342,35 @@ Integration-tested is listed as verified, and a cross-build is never promoted.
 
 ## Supported platforms
 
-Only one target has been executed and integration-tested **by this repository
-so far**. The other Tier 1 entries have CI jobs defined, but the jobs have not
-yet produced a green run on a real runner, so they are deliberately marked
-unverified. This table is the authority; a preset or CI job is not a support
-claim.
+Only one target has been executed and integration-tested **on this host**. Every
+other Tier 1 target has now been executed on its own GitHub-hosted runner: [CI
+run 90](https://github.com/VeltisMC/Veltis/actions/runs/42006900852), a
+`pull_request` run of commit `873028c` on 2026-11-05, produced fifteen green
+native jobs and one red job (`Build & verify`, a pre-existing Java scheduler
+race, not native code). This table is still the authority, and it separates what
+*this machine* ran from what a *runner* ran; a preset is not a support claim and
+neither is a workflow definition — only a green job on the real platform is.
 
 | Target | Toolchain | Configured | Compiled | Linked | Executed | Integration | Status |
 | --- | --- | :---: | :---: | :---: | :---: | :---: | --- |
-| Windows x86-64 | LLVM-MinGW Clang 23.1.4, Ninja | ✅ | ✅ | ✅ | ✅ | ✅ | **Verified** (2026-11-03; ASan+UBSan lane also passed 2026-11-04) |
-| Windows x86-64 | MinGW-w64 GCC 16.2.0 (winlibs, msvcrt), Ninja | ✅ | ✅ | ✅ | ✅ | ✅ | **Verified** (2026-11-04, re-verified 2026-11-05) |
-| Windows x86-64 | MSVC, clang-cl | — | — | — | — | — | **Not tested**; no MSVC toolchain on the verification host |
-| Windows ARM64 | LLVM-MinGW cross | ✅ | ✅ | ✅ | — | — | **Cross-compiled only** |
-| Windows ARM64 | MSVC (native `windows-11-arm` runner) | — | — | — | — | — | CI defined, blocking |
-| Linux x86-64 | GCC, Clang | — | — | — | — | — | CI defined, not yet run |
-| Linux AArch64 | GCC (native runner) | — | — | — | — | — | CI defined, not yet run |
-| Linux AArch64 | GNU cross | — | — | — | — | — | Preset defined, not run here |
-| macOS Apple Silicon | Apple Clang | — | — | — | — | — | CI defined, not yet run |
-| macOS Intel x86-64 | Apple Clang | — | — | — | — | — | CI defined, not yet run |
-| FreeBSD x86-64/ARM64 | — | — | — | — | — | — | **Not supported**; investigation job only |
-| Linux RISC-V 64 | GNU cross | — | — | — | — | — | **Not supported**; compile-only preset |
+| Windows x86-64 | LLVM-MinGW Clang 23.1.4, Ninja | ✅ | ✅ | ✅ | ✅ | ✅ | **Executed and integration-tested** here (2026-11-03; ASan+UBSan lane 2026-11-04) and in CI run 90 |
+| Windows x86-64 | MinGW-w64 GCC 16.2.0 (winlibs, msvcrt), Ninja | ✅ | ✅ | ✅ | ✅ | ✅ | **Executed and integration-tested** here (2026-11-04, re-verified 2026-11-05) |
+| Windows x86-64 | MSVC | ✅ | ✅ | ✅ | ✅ | ✅ | **Executed and integration-tested** in CI run 90 (host + debug lanes); not testable here — no Visual Studio |
+| Windows x86-64 | clang-cl | ✅ | ✅ | ✅ | ✅ | ✅ | **Executed and integration-tested** in CI run 90; not testable here |
+| Windows ARM64 | LLVM-MinGW, native `windows-11-arm` runner | ✅ | ✅ | ✅ | ✅ | ✅ | **Executed and integration-tested** in CI run 90 (Zulu 25; no Temurin win-aarch64 JDK exists) |
+| Windows ARM64 | LLVM-MinGW cross from x86-64 | ✅ | ✅ | ✅ | — | — | **Cross-compiled only** here (COFF ARM64, 13 exports); CI cross lane green in run 90 |
+| Linux x86-64 | GCC | ✅ | ✅ | ✅ | ✅ | ✅ | **Executed and integration-tested** in CI run 90; never built on this host |
+| Linux x86-64 | Clang | ✅ | ✅ | ✅ | ✅ | ✅ | **Executed and integration-tested** in CI run 90 |
+| Linux AArch64 | GCC, native `ubuntu-24.04-arm` runner | ✅ | ✅ | ✅ | ✅ | ✅ | **Executed and integration-tested** in CI run 90 |
+| Linux AArch64 | GNU cross from x86-64 | ✅ | ✅ | ✅ | — | — | **Cross-compiled only**; CI cross lane green in run 90 |
+| macOS Apple Silicon | Apple Clang | ✅ | ✅ | ✅ | ✅ | ✅ | **Executed and integration-tested** in CI run 90 (`macos-15`) |
+| macOS Intel x86-64 | Apple Clang | ✅ | ✅ | ✅ | ✅ | ✅ | **Executed and integration-tested** in CI run 90 (`macos-15-intel`) |
+| FreeBSD x86-64/ARM64 | — | — | — | — | — | — | **Unsupported**; the investigation job ran green in run 90 and reported — it does not change this row |
+| Linux RISC-V 64 | GNU cross | ✅ | ✅ | ✅ | — | — | **Unsupported as a release target**; compile-only, CI cross lane green in run 90 |
+
+Still true about this host: no Linux, macOS, MSVC or clang-cl artifact was ever
+built or run here, because the machine has none of those toolchains; the
+Windows ARM64 DLL was cross-compiled and inspected but never executed locally.
 
 Both verified rows were produced on Windows 11 x86-64 with JDK 25.0.5.0.3. The
 GCC row was re-verified on **2026-11-05** with CMake 4.4.4 and Ninja 1.13.2
@@ -616,19 +625,31 @@ summary:
 There is no job-level `continue-on-error` on `native-host`; every Tier 1 entry
 is a required check. Failures are never hidden behind an optional matrix value.
 
-The jobs have been written but **have not yet run on the commit in question** —
-no push or PR has been made from this work, so no hosted runner has executed
-them. Lint status: the workflow passes `actionlint` 1.7.12 with exit 0 on
+The jobs **have now run**: [CI run 90](https://github.com/VeltisMC/Veltis/actions/runs/42006900852)
+(`pull_request`, commit `873028c`, started 2026-11-05T09:59:16Z) scheduled all 19
+jobs. Fifteen native jobs were green — every Tier 1 platform built, tested and
+packaged on a real runner, both `native-cross` lanes, both `native-debug` lanes,
+the FreeBSD investigation, `Package native distribution`. `Publish native release`
+was skipped because the event was a pull request, and the key-pairing step inside
+`native-package` was skipped because `VELTIS_NATIVE_MANIFEST_KEY` is not exposed
+to that event — both are the designed behaviour, not a failure, and the skip is
+itself evidence that the `env`-gated condition works: the step skipped instead of
+failing, and the manifest was assembled unsigned and reported as such.
+One job was red: `Build & verify`, on the pre-existing
+`SchedulerTest.cancelledJobDoesNotRunBody` race in the Java world scheduler — no
+native code was involved, and that test is now deterministic.
+
+Lint status: the workflow passes `actionlint` 1.7.12 with exit 0 on
 **2026-11-05**, including the `native-package` / `native-release` wiring and the
-key-pairing step added this round — that second pass is what found the
-`secrets`-context error in the pairing step's `if:`. Lint-clean is not run-clean,
-and neither is review-clean: treat every row above without a ✅ as unverified
-until its job is green. Two currency notes live in `CI_SUPPORT_MATRIX.md`: the
-Apple Silicon lane's `macos-14` label was retired platform-wide on 2026-11-02 (the
-lane now uses `macos-15`), and `actionlint` does check runner labels against its
-bundled image list — 1.7.7 rejects `windows-11-arm` and `macos-15-intel` as
-unknown while 1.7.12 accepts both, so a label finding is a statement about the
-linter's age as much as about the workflow.
+key-pairing step added this round — that pass is what found the
+`secrets`-context error in the pairing step's `if:`, which is why the condition
+reads `env.` now. Lint-clean is not run-clean, and neither is review-clean. Two
+currency notes live in `CI_SUPPORT_MATRIX.md`: the Apple Silicon lane's
+`macos-14` label was retired platform-wide on 2026-11-02 (the lane now uses
+`macos-15`), and `actionlint` does check runner labels against its bundled image
+list — 1.7.7 rejects `windows-11-arm` and `macos-15-intel` as unknown while
+1.7.12 accepts both, so a label finding is a statement about the linter's age as
+much as about the workflow.
 
 ## Packaging a native artifact
 
@@ -844,8 +865,10 @@ still stands, labelled as such above: the AddressSanitizer + UBSan lane (CTest
 5/5 under instrumentation — not re-run on 2026-11-05), the benchmark table, and
 the earlier MinGW-w64 GCC verification. Evidence from 2026-11-03: the LLVM-MinGW
 verification, the three-build byte-reproducibility check, and the local Windows
-ARM64 cross-compilation (compiled, never executed). No number in this file should
-be read as coverage of a platform whose support-table row says **Not tested**.
+ARM64 cross-compilation (compiled, never executed **here** — the same target ran
+green on a native `windows-11-arm` runner in CI run 90). No number in this file
+should be read as coverage of a platform whose support-table row says
+**Cross-compiled only** or **Unsupported**.
 
 ## Implementation status
 
@@ -956,9 +979,13 @@ serving manifests signed with a per-run test key (48 tests across
 at all), plus two more that package the **real** Windows library, publish it
 in a two-platform signed manifest, installs it after exactly three requests and
 then runs it through FFM. **Not executed:** a download from a real GitHub
-Release. That needs the signed multi-platform publication, which needs the two
-mandatory Linux lanes, which this host cannot produce — and no CI run has
-happened yet. See `docs/DISTRIBUTION.md` §13–§14.
+Release. CI run 90 proved the half of the chain up to and including
+`Package native distribution` — the Linux lanes that packaging needs are now
+green on real runners — but that run was a pull request, so `native-release`
+skipped, the signing step skipped with it (no secret exposed to that event), and
+the manifest was assembled **unsigned**. Nothing has been published, so the
+runtime has still never fetched a published asset. See
+`docs/DISTRIBUTION.md` §13–§14.
 
 ## Configuration
 
@@ -1199,14 +1226,17 @@ acceleration again; do not add native code merely because the module exists.
   the ABI and platform, and that path is trusted from the filesystem rather than
   verified by signature (see `docs/SECURITY_MODEL.md` §7).
 - The distribution path has never contacted a real GitHub Release. Its security
-  behaviour is executed against a loopback repository with per-run test keys;
-  the published-signature half is gated on a CI run that has not happened.
+  behaviour is executed against a loopback repository with per-run test keys, and
+  CI run 90 executed the packaging half on real runners, unsigned because the
+  signing secret is not exposed to a pull request. Publication itself
+  (`native-release`) has still never run, so nothing has ever been downloadable.
 - The benchmark is not JMH and does not control CPU frequency, JIT compilation
   per implementation or the operating system scheduler. Use it to compare
   shapes of integration, not to publish a speed-up claim.
-- Linux, macOS and non-x86-64 variants are loader-recognized and have CI jobs,
-  but they have not yet run green. Until the support table shows Executed and
-  Integration-tested, no such claim is made.
+- Linux, macOS and ARM64 execution is **CI's evidence, not this host's**: run 90
+  ran those lanes green on their own runners, and no benchmark, sanitizer or
+  profile has ever been produced on any of them. Performance claims remain
+  Windows x86-64 only.
 
 ## Extending the ABI
 
