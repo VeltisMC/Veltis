@@ -47,9 +47,17 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.io.File
 import java.net.URLClassLoader
+import java.nio.file.Files
 import java.nio.file.Path
+import java.security.KeyFactory
+import java.security.KeyPairGenerator
 import java.security.MessageDigest
+import java.security.PrivateKey
+import java.security.PublicKey
+import java.security.Signature
+import java.security.spec.PKCS8EncodedKeySpec
 import java.time.Instant
+import java.util.Base64
 import java.util.zip.ZipFile
 
 plugins {
@@ -57,6 +65,16 @@ plugins {
 }
 
 description = "VeltisMC native engine: C/C++ implementation and Java FFM integration"
+
+dependencies {
+    // The signed distribution manifest is JSON. Gson is already on the server's
+    // runtime classpath (MojangMetadata parses Mojang's version document with
+    // it), so this adds no new shipped library — but it does mean this module's
+    // own tests can parse a manifest without a classpath trick. The dependency
+    // is deliberately not `compileOnly`: a consumer that uses the distribution
+    // classes must actually have Gson, and :server already declares it.
+    implementation("com.google.code.gson:gson:2.14.0")
+}
 
 // ---------------------------------------------------------------------------
 // Host platform naming
@@ -610,33 +628,55 @@ val analyzeNativeStatic by tasks.registering {
         }
         logger.lifecycle("Cppcheck: no findings in ${sources.joinToString(", ")}")
 
-        // -fanalyzer is GCC's own deep analyzer and understands this module's C
-        // translation unit (the thread-local error slot). It is skipped, not
-        // failed, when the compiler is not GCC, because Clang has its own path
-        // documented in docs/TESTING_STRATEGY.md and a second compiler's flag is
-        // not this tool's business.
+        // -fanalyzer is GCC's own deep analyzer, and it is the only checker here
+        // that follows the thread-local error slot and the engine's state through
+        // the interprocedural paths a compiler hint would not show. `-fsyntax-only`
+        // because the object file is worthless here — the analyzer's findings are
+        // the output. Skipped, not failed, when the compiler is not GCC: Clang's
+        // equivalent is `clang --analyze`, documented in docs/TESTING_STRATEGY.md,
+        // and one tool should not presume another's flags.
         val gcc = findOnPath("gcc")
-        if (gcc != null) {
-            val (analysisExit, analysisOutput) = runChecker(
-                listOf(
-                    gcc, "-fanalyzer", "-c",
-                    file("src/c/native_utils.c").absolutePath,
-                    "-I", file("include").absolutePath,
-                    "-o", File(layout.buildDirectory.asFile.get(), "native-utils-analyzer.o").absolutePath,
-                )
-            )
-            analysisOutput.lineSequence().filter { it.isNotBlank() }.forEach { logger.lifecycle(it) }
-            if (analysisExit != 0) {
-                throw GradleException("gcc -fanalyzer failed on src/c/native_utils.c (exit $analysisExit)")
-            }
-            logger.lifecycle("gcc -fanalyzer: src/c/native_utils.c is clean")
-        } else {
+        if (gcc == null) {
             logger.lifecycle("gcc not on PATH; the -fanalyzer half of this check did not run")
+        } else {
+            val gxx = findOnPath("g++")
+                ?: throw GradleException(
+                    "gcc was found but g++ was not; the analyzer lane covers every library " +
+                        "translation unit and needs both drivers."
+                )
+            // Globbed rather than listed: this must not be a second copy of the
+            // source set that quietly falls behind CMakeLists.txt's target.
+            val cSources = fileTree("src/c").matching { include("*.c") }.files.sortedBy { it.name }
+            val cxxSources = fileTree("src/cpp").matching { include("*.cpp") }.files.sortedBy { it.name }
+            val includeDirs = listOf(file("include"), file("src/c"), file("src/cpp"))
+            val analyzed = mutableListOf<String>()
+            for (source in cSources + cxxSources) {
+                val driver = if (source.name.endsWith(".c")) gcc else gxx
+                val standard = if (source.name.endsWith(".c")) "-std=c11" else "-std=c++20"
+                val command = mutableListOf(
+                    driver, "-fanalyzer", "-fsyntax-only", standard,
+                    // Without this the public header marks every export dllimport
+                    // and the analyzer stops at a compile error before its own work.
+                    "-DVELTIS_NATIVE_EXPORTS",
+                )
+                includeDirs.forEach { directory -> command += listOf("-I", directory.absolutePath) }
+                command += source.absolutePath
+                val (exit, output) = runChecker(command)
+                output.lineSequence().filter { it.isNotBlank() }.forEach { logger.lifecycle(it) }
+                if (exit != 0) {
+                    throw GradleException(
+                        "gcc -fanalyzer failed on ${source.relativeTo(projectDir)} (exit $exit)"
+                    )
+                }
+                analyzed += source.relativeTo(projectDir).path
+            }
+            logger.lifecycle("gcc -fanalyzer: clean over ${analyzed.size} translation units")
         }
     }
 }
 
-val cleanNative by tasks.registering(Delete::class) {    group = "native"
+val cleanNative by tasks.registering(Delete::class) {
+    group = "native"
     description = "Deletes this module's CMake build tree and native artifacts"
     delete(nativeRoot)
 }
@@ -833,6 +873,15 @@ tasks.withType<Test>().configureEach {
 
     if (providers.gradleProperty("veltisNativeTest").orNull?.toBoolean() == true) {
         dependsOn(buildNative)
+    } else if (!javaOnlyRequested) {
+        // The fixture inputs above are `buildNative`'s outputs, so whenever both
+        // tasks land in one invocation the suite has to run after the link. Only
+        // the property turns that into a dependency (a machine with no toolchain
+        // must still be able to run `test`); `mustRunAfter` covers every other
+        // graph — `verifyNativeRelease` paired with a packaging task, for
+        // instance — where Gradle would otherwise refuse the build with an
+        // implicit-dependency validation error instead of just ordering them.
+        mustRunAfter(buildNative)
     }
 }
 
@@ -1418,6 +1467,25 @@ val verifyNativeArtifact by tasks.registering {
         if (loaderAbi != abi.abiVersion) {
             problems += "NativeLoader accepts ABI $loaderAbi but the header declares ${abi.abiVersion}"
         }
+        // The download line the runtime defaults to names this version's native
+        // release tag. A header bump that leaves the repository pointing at the
+        // previous release would silently download last version's library.
+        val distributionSource = File(projectDir,
+            "src/main/java/org/veltismc/nativeengine/NativeDistributionConfig.java")
+        if (!distributionSource.isFile) {
+            problems += "the distribution config is missing: ${distributionSource.absolutePath}"
+        } else {
+            val repository = Regex("""DEFAULT_REPOSITORY\s*=\s*"\s*([^\s"]+)""").find(
+                distributionSource.readText()
+            )?.groupValues?.get(1)
+            val expectedTag = "veltis-native-v${abi.version}"
+            if (repository == null) {
+                problems += "NativeDistributionConfig declares no DEFAULT_REPOSITORY to check"
+            } else if (!repository.endsWith(expectedTag)) {
+                problems += "DEFAULT_REPOSITORY ends with '${repository.substringAfterLast('/')}' " +
+                    "but the header's version $expectedTag needs '$expectedTag'"
+            }
+        }
 
         // --- what the container actually is ----------------------------------
         val probed = probeWithNativeLoader(library)
@@ -1789,5 +1857,539 @@ val verifyNativeRelease by tasks.registering {
         val target = File(nativeDistRoot.get().asFile, "verification-report-$nativePlatform.json")
         target.writeText(JsonOutput.prettyPrint(JsonOutput.toJson(report)) + "\n")
         logger.lifecycle("Native release verification written to ${target.absolutePath}")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Selective distribution release
+//
+// The runtime downloads exactly one artifact per server, chosen from a signed
+// cross-platform manifest. This task is the only thing that writes that
+// manifest, and it refuses to write one that does not describe exactly what
+// will be published:
+//
+//   * every platform in the order below must be present — a missing mandatory
+//     platform fails the task (never a smaller manifest), a missing optional
+//     platform is recorded as skipped with its reason;
+//   * each platform's zip, its verification report and its inner manifest must
+//     agree on both digests (zip bytes and library bytes), so a manifest entry
+//     can never describe different bytes than the verified artifact;
+//   * the required verification checks must be in the report — a platform that
+//     was built but not runtime-verified is not publishable;
+//   * the manifest is signed with VELTIS_NATIVE_MANIFEST_KEY when it is set
+//     (and then read back through the runtime's own parser, which proves the
+//     embedded public key still matches the signing key), unsigned otherwise,
+//     which is what a pull request produces because secrets are not available
+//     to it. `native-release` asserts the signature before anything is
+//     published, so unsigned manifests never reach a release.
+//
+// Cross-compilation targets are not in the platform list at all: a binary the
+// producing runner could not execute is experimental by definition, and no
+// entry for it is ever written.
+// ---------------------------------------------------------------------------
+
+/** The six platforms the runtime can install, in manifest order. */
+val DISTRIBUTION_PLATFORM_ORDER = listOf(
+    "windows-x86_64", "linux-x86_64", "linux-aarch64",
+    "macos-x86_64", "macos-aarch64", "windows-aarch64",
+)
+
+/** A release without these is not a release; a missing one fails packaging. */
+val DISTRIBUTION_MANDATORY_PLATFORMS = setOf(
+    "windows-x86_64", "linux-x86_64", "linux-aarch64",
+)
+
+/** Skipped, never fatal, when their CI lane did not produce an artifact. */
+val DISTRIBUTION_OPTIONAL_PLATFORMS = setOf(
+    "macos-x86_64", "macos-aarch64", "windows-aarch64",
+)
+
+/**
+ * The checks a verification report must carry before its platform may be
+ * published: the runtime evidence (CTest, the Java FFM integration suite not
+ * skipped) and the artifact evidence (packaging, checksums, manifest-vs-
+ * artifact, runtime policy). Configure/export are proven by the report's
+ * existence — they run first and abort the lane before a report is written.
+ */
+val DISTRIBUTION_REQUIRED_CHECKS = setOf(
+    "ctest",
+    "export-check",
+    "java-integration",
+    "java-integration-not-skipped",
+    "package",
+    "checksum",
+    "manifest-vs-artifact",
+    "runtime-policy",
+)
+
+// ---------------------------------------------------------------------------
+// The release signing key pair
+//
+// NativeManifest embeds one Ed25519 public key and trusts no other, so the pair
+// needs a provenance: this task generates it, the private half becomes the
+// VELTIS_NATIVE_MANIFEST_KEY repository secret and the printed base64 becomes
+// NativeManifest.TRUSTED_PUBLIC_KEY_BASE64. Without that record an embedded
+// anchor is only a claim — a constant can sit in the source for months while
+// nobody holds the key that satisfies it, and every release then dead-ends at
+// the job that refuses to publish an unsigned manifest.
+// ---------------------------------------------------------------------------
+
+/** The PKCS#8 base64 — bare or PEM-armoured — that the release secret carries. */
+fun decodeManifestSigningKey(raw: String): PrivateKey {
+    val normalized = raw.trim()
+        .replace("-----BEGIN PRIVATE KEY-----", "")
+        .replace("-----END PRIVATE KEY-----", "")
+        .replace(Regex("\\s"), "")
+    return try {
+        KeyFactory.getInstance("Ed25519")
+            .generatePrivate(PKCS8EncodedKeySpec(Base64.getDecoder().decode(normalized)))
+    } catch (e: Exception) {
+        throw GradleException(
+            "the manifest signing key is not a base64 Ed25519 PKCS#8 private key: ${e.message}", e
+        )
+    }
+}
+
+/**
+ * The embedded anchor, read out of the class the server actually ships. This
+ * build keeps no second copy of the constant, so a pairing check can never pass
+ * against a value the runtime does not use.
+ */
+fun embeddedManifestPublicKey(): PublicKey {
+    val urls = sourceSets["main"].runtimeClasspath.files.map { it.toURI().toURL() }.toTypedArray()
+    if (urls.isEmpty()) {
+        throw GradleException("this module's classes were not compiled; cannot read the embedded key")
+    }
+    URLClassLoader(urls, null).use { loader ->
+        val parser = loader.loadClass("org.veltismc.nativeengine.NativeManifest")
+        val method = parser.getDeclaredMethod("trustedPublicKey").apply { isAccessible = true }
+        return try {
+            method.invoke(null) as PublicKey
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            throw GradleException(
+                "the embedded manifest public key is unusable: ${e.targetException.message}",
+                e.targetException
+            )
+        }
+    }
+}
+
+val generateNativeManifestKey by tasks.registering {
+    group = "native"
+    description = "Generates the manifest key pair: the private half to a file outside the repository, the public constant to the console"
+    outputs.upToDateWhen { false }
+
+    doLast {
+        val keyOut = providers.gradleProperty("veltisNativeManifestKeyOut").orNull
+        if (keyOut.isNullOrBlank()) {
+            throw GradleException(
+                "generateNativeManifestKey writes a private key, so it insists on knowing where: " +
+                    "-PveltisNativeManifestKeyOut=<path outside this repository>.\n" +
+                    "  It is never printed to the console, because a key that appears in build logs " +
+                    "is a key that ends up in a build log archive."
+            )
+        }
+        val target = file(keyOut)
+        if (target.canonicalPath.startsWith(projectDir.canonicalPath + File.separator)) {
+            throw GradleException(
+                "refusing to write a signing key inside the repository: ${target.absolutePath}. " +
+                    "Only the public half belongs in the source tree; the private one belongs in the " +
+                    "secret store."
+            )
+        }
+        if (target.exists()) {
+            throw GradleException(
+                "${target.absolutePath} already exists. Overwriting it would orphan every manifest " +
+                    "signed with the key already there, so nothing was written."
+            )
+        }
+
+        val pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val privateBase64 = Base64.getEncoder().encodeToString(pair.private.encoded)
+        val armoured = buildString {
+            append("-----BEGIN PRIVATE KEY-----\n")
+            privateBase64.chunked(64).forEach { append(it).append('\n') }
+            append("-----END PRIVATE KEY-----\n")
+        }
+        target.parentFile?.mkdirs()
+        target.writeText(armoured)
+        // Owner-only where the filesystem understands the request; on Windows
+        // this is a no-op, which is why the message says to move the file into
+        // the secret store rather than to leave it on disk.
+        target.setWritable(false, false)
+        target.setWritable(true, true)
+        target.setReadable(false, false)
+        target.setReadable(true, true)
+
+        logger.lifecycle("Private key written to ${target.absolutePath}")
+        logger.lifecycle("Set NativeManifest.TRUSTED_PUBLIC_KEY_BASE64 to:")
+        logger.lifecycle("    \"${Base64.getEncoder().encodeToString(pair.public.encoded)}\"")
+        logger.lifecycle(
+            "Then: put the file's contents in the VELTIS_NATIVE_MANIFEST_KEY repository secret, " +
+                "run :veltis-native:verifyNativeManifestKeyPairing with that secret in the " +
+                "environment to prove the pair, and delete this local copy. A developer machine " +
+                "never needs it; only the release job does."
+        )
+    }
+}
+
+val verifyNativeManifestKeyPairing by tasks.registering {
+    group = "verification"
+    description = "Proves VELTIS_NATIVE_MANIFEST_KEY is the private half of the key NativeManifest trusts"
+    dependsOn(tasks.named("classes"))
+    outputs.upToDateWhen { false }
+
+    doLast {
+        val raw = System.getenv("VELTIS_NATIVE_MANIFEST_KEY")
+        if (raw.isNullOrBlank()) {
+            throw GradleException(
+                "VELTIS_NATIVE_MANIFEST_KEY is not set, so there is nothing to check. Fork pull " +
+                    "requests cannot see repository secrets, which is why native-package produces an " +
+                    "unsigned manifest there and native-release refuses to publish it; run this task " +
+                    "where the secret exists."
+            )
+        }
+        val privateKey = decodeManifestSigningKey(raw)
+        val embedded = embeddedManifestPublicKey()
+        val probe = "veltis-native manifest key pairing probe".toByteArray(Charsets.US_ASCII)
+        val signer = Signature.getInstance("Ed25519")
+        signer.initSign(privateKey)
+        signer.update(probe)
+        val verifier = Signature.getInstance("Ed25519")
+        verifier.initVerify(embedded)
+        verifier.update(probe)
+        if (!verifier.verify(signer.sign())) {
+            throw GradleException(
+                "the configured signing key is not the private half of the embedded anchor, so every " +
+                    "server would reject a manifest it signs.\n" +
+                    "  embedded anchor: ${Base64.getEncoder().encodeToString(embedded.encoded)}\n" +
+                    "  Fix one of the two: regenerate with :veltis-native:generateNativeManifestKey " +
+                    "and paste its public constant into NativeManifest, or restore the secret that " +
+                    "matches the constant now in the source. packageNativeDistribution fails at the " +
+                    "same point, so this cannot reach a release either way."
+            )
+        }
+        logger.lifecycle(
+            "VELTIS_NATIVE_MANIFEST_KEY pairs with the embedded anchor " +
+                "${Base64.getEncoder().encodeToString(embedded.encoded)}"
+        )
+    }
+}
+
+val packageNativeDistribution by tasks.registering {
+    group = "native"
+    description = "Verifies every platform artifact and writes the signed cross-platform manifest"
+    // Aggregation only: it reads the lanes' outputs and must re-check them on
+    // every invocation, and it deliberately does not depend on buildNative so
+    // it runs on a machine with no CMake and no compiler.
+    dependsOn(tasks.named("classes"))
+    outputs.upToDateWhen { false }
+
+    doLast {
+        val distRoot = nativeDistRoot.get().asFile
+        val abi = readHeaderAbi()
+        val tag = "veltis-native-v${abi.version}"
+
+        val releaseDir = File(distRoot, "release")
+        if (releaseDir.exists()) releaseDir.deleteRecursively()
+        releaseDir.mkdirs()
+        // A signature from an earlier run must never survive an unsigned one.
+        val signatureFile = File(distRoot, "native-manifest.json.sig")
+        signatureFile.delete()
+
+        val artifacts = linkedMapOf<String, Any?>()
+        val skipped = mutableListOf<Map<String, Any?>>()
+        val problems = mutableListOf<String>()
+
+        for (platform in DISTRIBUTION_PLATFORM_ORDER) {
+            val dir = File(distRoot, platform)
+            val reportFile = File(distRoot, "verification-report-$platform.json")
+            val mandatory = platform in DISTRIBUTION_MANDATORY_PLATFORMS
+            val problemsBefore = problems.size
+            if (!dir.isDirectory || !reportFile.isFile) {
+                val reason = if (!dir.isDirectory && !reportFile.isFile) {
+                    "no packaged library and no verification report"
+                } else if (!dir.isDirectory) {
+                    "no packaged library"
+                } else {
+                    "no verification report"
+                }
+                if (mandatory) {
+                    problems += "mandatory platform $platform is missing: $reason"
+                } else {
+                    skipped += linkedMapOf("platform" to platform, "reason" to reason)
+                }
+                continue
+            }
+
+            @Suppress("UNCHECKED_CAST")
+            val report = JsonSlurper().parse(reportFile) as? Map<String, Any?>
+            if (report == null) {
+                problems += "the verification report for $platform is not a JSON object"
+                continue
+            }
+            if (report["platform"] != platform) {
+                problems += "the verification report for $platform says platform '${report["platform"]}'"
+                continue
+            }
+            val checks = (report["checks"] as? List<Any?>).orEmpty().map { it.toString() }.toSet()
+            val absentChecks = DISTRIBUTION_REQUIRED_CHECKS - checks
+            if (absentChecks.isNotEmpty()) {
+                problems += "the verification report for $platform is missing checks: " +
+                    absentChecks.sorted().joinToString(", ")
+                continue
+            }
+
+            val innerManifestFile = File(dir, "veltis-native-manifest.json")
+            if (!innerManifestFile.isFile) {
+                problems += "$platform has no veltis-native-manifest.json beside its library"
+                continue
+            }
+            @Suppress("UNCHECKED_CAST")
+            val innerManifest = JsonSlurper().parse(innerManifestFile) as? Map<String, Any?>
+            if (innerManifest == null) {
+                problems += "the inner manifest of $platform is not a JSON object"
+                continue
+            }
+            val libraryName = innerManifest["library"] as? String
+            val os = innerManifest["os"] as? String
+            val architecture = innerManifest["architecture"] as? String
+            if (libraryName == null || os == null || architecture == null) {
+                problems += "the inner manifest of $platform records no library/os/architecture"
+                continue
+            }
+            if ("$os-$architecture" != platform) {
+                problems += "the inner manifest of $platform spells os/architecture '$os-$architecture'"
+                continue
+            }
+            if (innerManifest["version"] != abi.version) {
+                problems += "the inner manifest of $platform declares version " +
+                    "'${innerManifest["version"]}' but the header says ${abi.version}"
+                continue
+            }
+            if (innerManifest["abiVersion"]?.toString() != abi.abiVersion) {
+                problems += "the inner manifest of $platform declares ABI " +
+                    "${innerManifest["abiVersion"]}, the header says ${abi.abiVersion}"
+                continue
+            }
+
+            val library = File(dir, libraryName)
+            if (!library.isFile) {
+                problems += "$platform packages no $libraryName on disk"
+                continue
+            }
+            val buildType = report["buildType"] as? String ?: nativeBuildType.get()
+            val archive = File(distRoot, "veltis-native-$platform-${buildType.lowercase()}.zip")
+            if (!archive.isFile) {
+                problems += "no distribution archive at ${archive.absolutePath}"
+                continue
+            }
+
+            // --- three-way digest agreement: zip, report, inner manifest ------
+            val archiveDigest = sha256(archive)
+            val libraryDigest = sha256(library)
+            if (report["archiveSha256"] != archiveDigest) {
+                problems += "$platform: the report records archive sha256 " +
+                    "'${report["archiveSha256"]}' but the archive hashes to $archiveDigest"
+            }
+            if (report["librarySha256"] != libraryDigest) {
+                problems += "$platform: the report records library sha256 " +
+                    "'${report["librarySha256"]}' but $libraryName hashes to $libraryDigest"
+            }
+            if (innerManifest["sha256"] != libraryDigest) {
+                problems += "$platform: the inner manifest records library sha256 " +
+                    "'${innerManifest["sha256"]}' but $libraryName hashes to $libraryDigest"
+            }
+            val sidecar = File(archive.parentFile, "${archive.name}.sha256")
+            val sidecarDigest = sidecar.takeIf { it.isFile }?.readLines()
+                ?.firstOrNull()?.trim()?.split(Regex("\\s+"))?.firstOrNull()
+            if (sidecarDigest != archiveDigest) {
+                problems += "$platform: ${sidecar.name} says '$sidecarDigest' but the archive " +
+                    "hashes to $archiveDigest"
+            }
+            // The published bytes are the ones inside the zip, so the embedded
+            // library is checked directly rather than assumed to be the copy
+            // sitting next to it.
+            var embeddedLibraryDigest: String? = null
+            ZipFile(archive).use { zip ->
+                val packed = zip.entries().asSequence()
+                    .filter { !it.isDirectory }
+                    .map { it.name }
+                    .toSet()
+                val expected = setOf(libraryName, "veltis-native-manifest.json", "SHA256SUMS")
+                if (packed != expected) {
+                    problems += "$platform: the archive packs ${packed.joinToString(",")};" +
+                        " expected ${expected.joinToString(",")}"
+                } else {
+                    val bytes = zip.getInputStream(zip.getEntry(libraryName)).use { it.readBytes() }
+                    embeddedLibraryDigest = MessageDigest.getInstance("SHA-256")
+                        .digest(bytes).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+                }
+            }
+            if (embeddedLibraryDigest != null && embeddedLibraryDigest != libraryDigest) {
+                problems += "$platform: the library inside the archive hashes to " +
+                    "$embeddedLibraryDigest but the packaged copy is $libraryDigest"
+            }
+
+            if (problems.size > problemsBefore) {
+                // This platform's evidence did not hold together; the failure
+                // is reported below and nothing of it is staged.
+                continue
+            }
+            artifacts[platform] = linkedMapOf(
+                "platform" to platform,
+                "os" to os,
+                "architecture" to architecture,
+                "asset" to "veltis-native-$platform.zip",
+                "sha256" to archiveDigest,
+                "sizeBytes" to archive.length(),
+                "library" to libraryName,
+                "librarySha256" to libraryDigest,
+                "abiVersion" to abi.abiVersion.toInt(),
+                "nativeVersion" to abi.version,
+                "verified" to true,
+                "verification" to "host",
+            )
+            archive.copyTo(File(releaseDir, "veltis-native-$platform.zip"), overwrite = true)
+        }
+
+        if (problems.isNotEmpty()) {
+            throw GradleException(
+                "the distribution cannot be assembled from these artifacts:\n  " +
+                    problems.joinToString("\n  ")
+            )
+        }
+
+        val manifestDocument = linkedMapOf<String, Any?>(
+            // Mirrors NativeManifest's schema constants: schemaVersion 1 and
+            // the kind string are what the runtime parser refuses to deviate
+            // from, and the read-back below proves this writer matched them.
+            "schemaVersion" to 1,
+            "kind" to "veltis-native-distribution-manifest",
+            "release" to tag,
+            "nativeVersion" to abi.version,
+            "abiVersion" to abi.abiVersion.toInt(),
+            "generatedAt" to Instant.now().toString(),
+            "commit" to gitCommit(),
+            "artifacts" to artifacts,
+        )
+        val manifestBytes =
+            (JsonOutput.prettyPrint(JsonOutput.toJson(manifestDocument)) + "\n").toByteArray(Charsets.UTF_8)
+        val manifestFile = File(distRoot, "native-manifest.json")
+        manifestFile.writeBytes(manifestBytes)
+
+        // Read the manifest back through the reader the server ships. When the
+        // manifest is signed this also verifies the signature against the
+        // *embedded* public key, so rotating the CI secret without updating
+        // NativeManifest fails here — at packaging — instead of at every
+        // server that downloads the manifest.
+        readBackWithRuntimeParser(manifestBytes, null)
+
+        val signingKey = System.getenv("VELTIS_NATIVE_MANIFEST_KEY")
+        var signed = false
+        if (signingKey.isNullOrBlank()) {
+            logger.lifecycle(
+                "VELTIS_NATIVE_MANIFEST_KEY is not set; the manifest was written unsigned. " +
+                    "Pull requests are expected to be in this state; native-release refuses " +
+                    "to publish an unsigned manifest."
+            )
+        } else {
+            try {
+                val privateKey = decodeManifestSigningKey(signingKey)
+                val signer = Signature.getInstance("Ed25519")
+                signer.initSign(privateKey)
+                signer.update(manifestBytes)
+                signatureFile.writeText(Base64.getEncoder().encodeToString(signer.sign()) + "\n")
+                signed = true
+            } catch (e: GradleException) {
+                throw e
+            } catch (e: Exception) {
+                throw GradleException(
+                    "VELTIS_NATIVE_MANIFEST_KEY is set but could not sign the manifest: " +
+                        "${e.message}\n" +
+                        "  The key must be the base64 PKCS#8 Ed25519 private key whose public " +
+                        "half is embedded in NativeManifest.TRUSTED_PUBLIC_KEY_BASE64.",
+                    e
+                )
+            }
+            readBackWithRuntimeParser(manifestBytes, signatureFile)
+        }
+
+        val releaseDocument = linkedMapOf<String, Any?>(
+            "schemaVersion" to 1,
+            "tag" to tag,
+            "version" to abi.version,
+            "signed" to signed,
+            "platforms" to artifacts.keys.toList(),
+            "skipped" to skipped,
+        )
+        File(distRoot, "native-release.json")
+            .writeText(JsonOutput.prettyPrint(JsonOutput.toJson(releaseDocument)) + "\n")
+
+        for (entry in skipped) {
+            logger.lifecycle("Optional platform ${entry["platform"]} skipped: ${entry["reason"]}")
+        }
+        logger.lifecycle(
+            "Native distribution $tag: ${artifacts.size} platform(s) " +
+                "(${artifacts.keys.joinToString(", ")}), signed=$signed, " +
+                "${releaseDir.listFiles()?.size ?: 0} staged archive(s)"
+        )
+    }
+}
+
+/**
+ * Parses `manifestBytes` with this module's own `NativeManifest` — the exact
+ * class the server runs at startup — verifying `signatureFile` against the
+ * embedded public key when the manifest was signed.
+ *
+ * The classes are loaded from this project's runtime classpath, so a document
+ * this task writes but that class refuses becomes a packaging failure now
+ * rather than a download failure on every server later.
+ */
+fun readBackWithRuntimeParser(manifestBytes: ByteArray, signatureFile: File?) {
+    val urls = sourceSets["main"].runtimeClasspath.files.map { it.toURI().toURL() }.toTypedArray()
+    if (urls.isEmpty()) {
+        throw GradleException("this module's classes were not compiled; cannot read the manifest back")
+    }
+    URLClassLoader(urls, null).use { loader ->
+        val parser = loader.loadClass("org.veltismc.nativeengine.NativeManifest")
+        val trustedKey = try {
+            parser.getDeclaredMethod("trustedPublicKey").apply { isAccessible = true }.invoke(null)
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            throw GradleException(
+                "the embedded manifest public key is unusable: ${e.targetException.message}",
+                e.targetException
+            )
+        }
+        val keyType = PublicKey::class.java
+        val method: java.lang.reflect.Method
+        val arguments: Array<Any?>
+        if (signatureFile != null) {
+            method = parser.getDeclaredMethod(
+                "verifyAndParse", ByteArray::class.java, ByteArray::class.java, keyType
+            )
+            arguments = arrayOf(
+                manifestBytes,
+                Files.readAllBytes(signatureFile.toPath()),
+                trustedKey,
+            )
+        } else {
+            method = parser.getDeclaredMethod("parse", ByteArray::class.java)
+            arguments = arrayOf(manifestBytes)
+        }
+        method.isAccessible = true
+        try {
+            method.invoke(null, *arguments)
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            throw GradleException(
+                "the runtime reader rejected the manifest this task produced: " +
+                    e.targetException.message,
+                e.targetException
+            )
+        }
+        logger.lifecycle(
+            "Manifest read back through NativeManifest" +
+                (if (signatureFile != null) " and its signature verified against the embedded key" else "")
+        )
     }
 }

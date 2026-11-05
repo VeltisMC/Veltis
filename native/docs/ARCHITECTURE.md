@@ -49,6 +49,27 @@ the only place that knows policy. L6 does not know whether native ran.
 | L5 | `nativeengine/NativeEngine.java` |
 | L6 | `server/.../runtime/VeltisBootstrap.java` |
 
+### The distribution subsystem is a feeder, not a seventh layer
+
+The module also ships an optional installer that can fetch the published
+artifact for the detected platform and place it where L4 already looks. It is
+deliberately outside the stack above, because it never participates in a
+transform call and adds no ABI surface — its only job is to produce a file:
+
+| File | Role |
+| --- | --- |
+| `nativeengine/NativeDistributionManager.java` | Decide, fetch, verify, install, hand off |
+| `nativeengine/NativeDistributionTransport.java` | The only code allowed to open a connection |
+| `nativeengine/NativeDistributionInstaller.java` | The only code allowed to write `<home>/native/<platform>/` |
+| `nativeengine/NativeManifest.java` | Signed manifest parsing and Ed25519 verification |
+| `nativeengine/NativeDistributionConfig.java` | The five `veltis.native.*` distribution knobs |
+
+The hand-off is the L4 gate itself, not a parallel one: `NativeLoader.checkBinary`
+runs on the extracted library before it is moved into place and again when the
+loader opens it, so an installer bug can only cause a failed install, never a
+loaded binary the loader would have refused. [DISTRIBUTION.md](DISTRIBUTION.md)
+is the authority for that path.
+
 ## 3. The two things this layering buys
 
 **A wrong native library cannot be loaded by accident.** `NativeLoader.tryLoad`

@@ -672,6 +672,23 @@ public final class NativeLoader {
         return normalizeOs(osName) + "-" + normalizeArch(archName);
     }
 
+    /**
+     * Whether the loader has an installation layout for this platform key.
+     *
+     * <p>The distribution asks this before it looks for an artifact, so an
+     * operating system the loader would refuse (FreeBSD, a 32-bit host, an
+     * architecture outside the six keys) never triggers a download decision —
+     * the Java fallback is the whole answer for it.
+     */
+    static boolean isRecognizedPlatform(String platform) {
+        return RECOGNIZED_PLATFORMS.contains(platform);
+    }
+
+    /** The recognized keys in one sorted list, for a diagnostic message. */
+    static String recognizedPlatformList() {
+        return RECOGNIZED_PLATFORM_LIST;
+    }
+
     private static String normalizeOs(String osName) {
         var lower = osName.toLowerCase(Locale.ROOT);
         // Order matters: "darwin" contains "win", so the macOS spellings must be

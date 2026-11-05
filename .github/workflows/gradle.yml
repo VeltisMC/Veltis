@@ -167,6 +167,21 @@ jobs:
   # library, runs the Java-only fallback suite, and starts/stops the server once
   # with the library and once without it. A platform enters the README support
   # table only after its entry here has run green.
+  #
+  # Two flags steer the distribution:
+  #
+  #   optional  the platform is one of the three (macOS x86-64, macOS ARM64,
+  #             Windows ARM64) whose lane is allowed to fail without failing
+  #             the workflow — a retired runner image or a GitHub outage on
+  #             one of them must not redden the whole pipeline, and the
+  #             distribution then simply skips that platform with a reason.
+  #             Mandatory lanes (Windows x86-64, Linux x86-64, Linux AArch64)
+  #             carry optional: false and always fail the workflow.
+  #   release   the lane whose artifact is published: exactly one lane per
+  #             platform, and only those upload `veltis-native-release-*` for
+  #             the distribution manifest. The other lanes are independent
+  #             proof of the same platform under a different toolchain and
+  #             never enter the manifest.
   # ---------------------------------------------------------------------------
   native-host:
     name: Native host (${{ matrix.name }})
@@ -179,32 +194,43 @@ jobs:
             platform: windows-x86_64
             toolchain: msvc
             generator: ""
+            generatorPlatform: ""
             cc: ""
             cxx: ""
             osxArch: ""
             # A DLL copied beside a JAR must not need a compiler runtime; MSVC's
             # own default (/MD) would import vcruntime140.dll.
             staticRuntime: "true"
+            optional: false
+            # LLVM-MinGW is this platform's release lane; MSVC proves the same
+            # platform under a different toolchain and never publishes.
+            release: false
           - name: Windows x86-64 clang-cl
             os: windows-latest
             platform: windows-x86_64
             toolchain: clang-cl
             generator: Ninja
+            generatorPlatform: ""
             cc: clang-cl
             cxx: clang-cl
             osxArch: ""
             staticRuntime: "true"
+            optional: false
+            release: false
           - name: Windows x86-64 LLVM-MinGW
             os: windows-latest
             platform: windows-x86_64
             toolchain: llvm-mingw
             generator: Ninja
+            generatorPlatform: ""
             cc: clang
             cxx: clang++
             osxArch: ""
             # Left empty on purpose: a Windows build is already static by the
             # CMake default, and this lane proves the default rather than a flag.
             staticRuntime: ""
+            optional: false
+            release: true
           - name: Windows ARM64 LLVM-MinGW
             # The hosted ARM64 image has clang-cl but no Visual Studio/MSVC
             # installation. LLVM-MinGW's ARM64-hosted compiler still builds a
@@ -213,6 +239,7 @@ jobs:
             platform: windows-aarch64
             toolchain: llvm-mingw-arm64
             generator: Ninja
+            generatorPlatform: ""
             cc: clang
             cxx: clang++
             osxArch: ""
@@ -224,30 +251,46 @@ jobs:
             # verified toolchain; Java 25 still provides the FFM API (22+).
             javaDistribution: zulu
             javaVersion: "25"
+            # Optional platform: a retired runner image or an ARM64-only
+            # toolchain failure skips windows-aarch64 in the manifest instead
+            # of failing the pipeline.
+            optional: true
+            release: true
           - name: Linux x86-64 GCC
             os: ubuntu-latest
             platform: linux-x86_64
             toolchain: gcc
             generator: Ninja
+            generatorPlatform: ""
             cc: gcc
             cxx: g++
             osxArch: ""
+            optional: false
+            # The designated linux-x86_64 release lane (GCC, the toolchain the
+            # support table records for this platform).
+            release: true
           - name: Linux x86-64 Clang
             os: ubuntu-latest
             platform: linux-x86_64
             toolchain: clang
             generator: Ninja
+            generatorPlatform: ""
             cc: clang
             cxx: clang++
             osxArch: ""
+            optional: false
+            release: false
           - name: Linux AArch64 GCC
             os: ubuntu-24.04-arm
             platform: linux-aarch64
             toolchain: gcc
             generator: Ninja
+            generatorPlatform: ""
             cc: gcc
             cxx: g++
             osxArch: ""
+            optional: false
+            release: true
           - name: macOS Apple Silicon
             # All macOS 14 images were retired from GitHub-hosted Actions on
             # 2026-11-02, so `macos-14` no longer schedules. `macos-15` is the
@@ -257,18 +300,30 @@ jobs:
             platform: macos-aarch64
             toolchain: apple-clang
             generator: Ninja
+            generatorPlatform: ""
             cc: ""
             cxx: ""
             osxArch: arm64
+            optional: true
+            release: true
           - name: macOS Intel x86-64
             os: macos-15-intel
             platform: macos-x86_64
             toolchain: apple-clang
             generator: Ninja
+            generatorPlatform: ""
             cc: ""
             cxx: ""
             osxArch: x86_64
+            optional: true
+            release: true
     runs-on: ${{ matrix.os }}
+    # An optional lane that fails — or never schedules because GitHub retired
+    # its runner image — must not fail the workflow; the distribution then
+    # skips that platform with a recorded reason. Mandatory lanes carry
+    # optional: false, so their failure still reddens the run: nothing here
+    # can hide a mandatory failure.
+    continue-on-error: ${{ matrix.optional }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -606,6 +661,23 @@ jobs:
             native/build/native/dist/verification-report-${{ matrix.platform }}.json
           if-no-files-found: error
 
+      # The release lane of each platform additionally ships the verified zip
+      # (under its build-type name; the packaging job renames it to the
+      # release asset name). Only one lane per platform has `release: true`,
+      # so the artifact names never collide, and only these artifacts can
+      # enter the signed distribution manifest.
+      - name: Upload native release artifact
+        if: matrix.release
+        uses: actions/upload-artifact@v4
+        with:
+          name: veltis-native-release-${{ matrix.platform }}
+          path: |
+            native/build/native/dist/${{ matrix.platform }}
+            native/build/native/dist/verification-report-${{ matrix.platform }}.json
+            native/build/native/dist/veltis-native-${{ matrix.platform }}-*.zip
+            native/build/native/dist/veltis-native-${{ matrix.platform }}-*.zip.sha256
+          if-no-files-found: error
+
   # ---------------------------------------------------------------------------
   # Cross-compilation. These jobs prove that the source and CMake configuration
   # compile for a target; they deliberately do not claim runtime support, because
@@ -917,6 +989,233 @@ jobs:
               -DVELTIS_NATIVE_BUILD_TESTS=ON
             cmake --build build/native/cmake/freebsd-x86_64 --parallel
             ctest --test-dir build/native/cmake/freebsd-x86_64 --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Distribution packaging. One job collects every platform's verified release
+  # artifact and runs the Gradle task that assembles the signed cross-platform
+  # manifest:
+  #
+  #   * a missing mandatory platform fails that task with one precise message
+  #     (never a silently smaller manifest);
+  #   * a missing optional platform is recorded as skipped, with its reason;
+  #   * every entry must agree with its verification report on both digests
+  #     before the entry is written;
+  #   * the manifest is signed when VELTIS_NATIVE_MANIFEST_KEY is available
+  #     and read back through the runtime's own parser; without the secret it is
+  #     written unsigned and native-release refuses to publish it. "Without"
+  #     covers a fork's pull request (GitHub passes no secrets to those) and any
+  #     event while the repository secret is unset — it does NOT cover a
+  #     same-repository pull request once the secret exists, which is why the
+  #     pairing step is gated on the value rather than on the event name.
+  #
+  # `!cancelled()` keeps this job running when an optional lane failed or was
+  # cancelled, so the packaging task — not the job graph — decides whether
+  # what remains is publishable, while a cancelled run still skips it.
+  # ---------------------------------------------------------------------------
+  native-package:
+    name: Package native distribution
+    needs: [build, native-host]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    # Declared at job scope, not step scope, on purpose: a step's own `env` is
+    # not guaranteed to be resolved when that same step's `if` is evaluated, and
+    # an `if` that reads an empty variable silently skips a verification gate.
+    # The `secrets` context itself is not available in a step `if` at all, which
+    # is why the value is projected into `env` here and the condition below tests
+    # `env`. No step echoes this variable; the key never reaches a log.
+    env:
+      VELTIS_NATIVE_MANIFEST_KEY: ${{ secrets.VELTIS_NATIVE_MANIFEST_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 26 (build toolchain)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '26'
+          cache: gradle
+
+      - name: Collect the verified release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: veltis-native-release-*
+          path: native/build/native/dist
+          merge-multiple: true
+
+      # A rotated secret with a stale embedded anchor is the one configuration
+      # mistake that would produce a manifest every server rejects. Checking it
+      # here names the pair in one line, before the artifacts have been
+      # assembled into a release that then fails at publish time.
+      - name: Verify the manifest key pairs with the embedded anchor
+        if: ${{ env.VELTIS_NATIVE_MANIFEST_KEY != '' }}
+        run: ./gradlew :veltis-native:verifyNativeManifestKeyPairing --stacktrace --no-daemon
+
+      - name: Assemble and sign the distribution manifest
+        run: ./gradlew :veltis-native:packageNativeDistribution --stacktrace --no-daemon
+
+      - name: Report the signing state
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -c . native/build/native/dist/native-release.json
+          if [ -f native/build/native/dist/native-manifest.json.sig ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::VELTIS_NATIVE_MANIFEST_KEY is not available; the manifest was assembled unsigned. The native-release job refuses to publish it."
+          fi
+
+      - name: Upload the distribution under its release names
+        uses: actions/upload-artifact@v4
+        with:
+          name: veltis-native-distribution
+          path: |
+            native/build/native/dist/native-manifest.json
+            native/build/native/dist/native-release.json
+            native/build/native/dist/release/
+          if-no-files-found: error
+
+      - name: Upload the manifest signature
+        if: steps.signing.outputs.signed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: veltis-native-distribution-signature
+          path: native/build/native/dist/native-manifest.json.sig
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Native release publication. Push and dispatch only — a pull request never
+  # publishes — and only after the full build passed. The manifest must be
+  # signed: an unsigned manifest fails here with an instruction, it is never
+  # uploaded "for now". Every asset is re-read from the releases API and
+  # compared by name, because an upload is not proof of an asset.
+  #
+  # The tag is created once, targeting the commit that first published it;
+  # later runs replace its assets in place with --clobber and delete assets
+  # whose platform this run skipped, so the release never holds a zip the
+  # manifest does not list. The manifest's own `commit` field records which
+  # build the published bytes came from. `--latest=false` keeps the
+  # repository's "latest release" pointer on the server distribution.
+  # ---------------------------------------------------------------------------
+  native-release:
+    name: Publish native release
+    needs: [build, native-package]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: veltis-native-distribution
+          path: native-dist
+
+      - name: Download the manifest signature
+        uses: actions/download-artifact@v4
+        with:
+          name: veltis-native-distribution-signature
+          path: native-dist
+
+      - name: Publish the native release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # This job does not check out the repository, so `gh` is told which
+          # repository to act on rather than inferred from a missing remote.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG=$(jq -r .tag native-dist/native-release.json)
+          VERSION=$(jq -r .version native-dist/native-release.json)
+          SIGNED=$(jq -r .signed native-dist/native-release.json)
+          test -n "$TAG" && [ "$TAG" != "null" ] || {
+            echo "::error::native-release.json names no release tag"
+            exit 1
+          }
+          if [ "$SIGNED" != "true" ]; then
+            echo "::error::the manifest for $TAG is unsigned; refusing to publish it."
+            echo "::error::set the VELTIS_NATIVE_MANIFEST_KEY repository secret to the"
+            echo "::error::Ed25519 signing key whose public half is embedded in"
+            echo "::error::NativeManifest.TRUSTED_PUBLIC_KEY_BASE64, then re-run."
+            exit 1
+          fi
+          test -s native-dist/native-manifest.json || {
+            echo "::error::native-manifest.json is missing from the distribution artifact"
+            exit 1
+          }
+          test -s native-dist/native-manifest.json.sig || {
+            echo "::error::native-manifest.json.sig is missing from the distribution artifact"
+            exit 1
+          }
+
+          EXPECTED="native-manifest.json
+          native-manifest.json.sig"
+          for platform in $(jq -r '.platforms[]' native-dist/native-release.json); do
+            zip="native-dist/release/veltis-native-$platform.zip"
+            test -s "$zip" || {
+              echo "::error::native-release.json lists $platform but $zip is missing"
+              exit 1
+            }
+            EXPECTED="$EXPECTED
+          veltis-native-$platform.zip"
+          done
+
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --title "VeltisMC native engine $VERSION"
+          else
+            gh release create "$TAG" \
+              --target "$GITHUB_SHA" \
+              --latest=false \
+              --title "VeltisMC native engine $VERSION" \
+              --notes "Selective native distribution for \`$TAG\`: one library per platform plus a signed manifest. A server downloads only the artifact for its own OS and architecture, and continues on its Java implementation when this release publishes none."
+          fi
+
+          # Assets of an earlier run whose platform is absent now must not
+          # linger beside a manifest that does not list them.
+          RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")
+          ACTUAL=$(printf '%s' "$RELEASE" | jq -r '.assets[].name')
+          while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            if ! printf '%s\n' "$EXPECTED" | grep -Fxq "$name"; then
+              echo "Removing stale asset '$name' from $TAG"
+              gh release delete-asset "$TAG" "$name" --yes
+            fi
+          done <<< "$ACTUAL"
+
+          gh release upload "$TAG" \
+            native-dist/native-manifest.json \
+            native-dist/native-manifest.json.sig \
+            native-dist/release/*.zip --clobber
+
+          # Ask the release what it holds and compare exactly, so a failed
+          # upload stops the run here instead of being reported as a
+          # publication. Read from the REST API, not `gh release view --json`:
+          # that export renames the asset's REST `browser_download_url`.
+          RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")
+          ACTUAL=$(printf '%s' "$RELEASE" | jq -r '.assets[].name')
+          MISSING=0
+          while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            if ! printf '%s\n' "$ACTUAL" | grep -Fxq "$name"; then
+              echo "::error::release $TAG has no asset named '$name'"
+              MISSING=1
+            fi
+          done <<< "$EXPECTED"
+          if [ "$MISSING" -ne 0 ]; then
+            echo "::error::assets the release actually holds:"
+            printf '%s\n' "$ACTUAL" | sed 's/^/    /'
+            exit 1
+          fi
+          ASSET_URL=$(printf '%s' "$RELEASE" | jq -r \
+            '.assets[] | select(.name == "native-manifest.json") | .browser_download_url' | head -n 1)
+          test -n "$ASSET_URL" || {
+            echo "::error::release $TAG lists native-manifest.json but the API returned no browser_download_url"
+            exit 1
+          }
+          echo "Published $(printf '%s\n' "$ACTUAL" | grep -c . || true) assets to $TAG"
+          echo "Manifest: $ASSET_URL"
 
   publish:
     name: Publish durable release & notify website

@@ -11,6 +11,7 @@ import org.veltismc.world.api.WorldEngine;
 import org.veltismc.world.api.WorldEngines;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -76,44 +77,68 @@ class SchedulerTest {
     @Test
     void cancelledJobDoesNotRunBody() throws Exception {
         WorldEngine engine = engine();
+        CountDownLatch release = new CountDownLatch(1);
         try {
             RegionScheduler scheduler = engine.scheduler();
             AtomicInteger executed = new AtomicInteger();
-            JobHandle handle = scheduler.schedule(new RegionJob() {
-                @Override
-                public String name() {
-                    return "cancelled-test-job";
-                }
+            // Both workers take a job the moment it is queued, so cancelling a
+            // freshly scheduled job races tryStart() and only passes by luck.
+            // Parking both workers in blocking jobs first makes "cancelled before
+            // it started" a fact: nothing can dequeue the target until release,
+            // and release is awaited strictly after cancel().
+            CountDownLatch workersBusy = new CountDownLatch(2);
+            for (int i = 0; i < 2; i++) {
+                scheduler.schedule(migratable("blocker-" + i, ctx -> {
+                    workersBusy.countDown();
+                    release.await();
+                }));
+            }
+            assertTrue(workersBusy.await(10, TimeUnit.SECONDS), "both workers must be inside a job");
 
-                @Override
-                public JobPriority priority() {
-                    return JobPriority.NORMAL;
-                }
-
-                @Override
-                public boolean regionBound() {
-                    return false;
-                }
-
-                @Override
-                public void execute(JobContext ctx) {
-                    if (ctx.cancelled()) {
-                        return;
-                    }
-                    executed.incrementAndGet();
-                }
-            });
+            JobHandle handle = scheduler.schedule(migratable("cancelled-test-job", ctx -> executed.incrementAndGet()));
             handle.cancel();
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            release.countDown();
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             while (!handle.isDone() && System.nanoTime() < deadline) {
                 Thread.sleep(1);
             }
-            assertTrue(handle.isDone());
+            assertTrue(handle.isDone(), "a freed worker must still drain the cancelled job to done");
             assertTrue(handle.isCancelled());
             assertEquals(0, executed.get());
         } finally {
+            // Never leave the engine stopped with workers parked on the latch.
+            release.countDown();
             engine.stop();
         }
+    }
+
+    private interface JobBody {
+        void run(JobContext ctx) throws Exception;
+    }
+
+    private static RegionJob migratable(String name, JobBody body) {
+        return new RegionJob() {
+            @Override
+            public String name() {
+                return name;
+            }
+
+            @Override
+            public JobPriority priority() {
+                return JobPriority.NORMAL;
+            }
+
+            @Override
+            public boolean regionBound() {
+                return false;
+            }
+
+            @Override
+            public void execute(JobContext ctx) throws Exception {
+                body.run(ctx);
+            }
+        };
     }
 
     @Test
