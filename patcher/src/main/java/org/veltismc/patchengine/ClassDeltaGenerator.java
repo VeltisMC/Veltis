@@ -175,7 +175,7 @@ public final class ClassDeltaGenerator {
         var outcomes = new Outcome[names.size()];
         ExecutorService pool = poolSize > 1 && names.size() > 1
             ? Executors.newFixedThreadPool(poolSize) : null;
-        try {
+        try (pool) {
             if (pool == null) {
                 for (var i = 0; i < names.size(); i++) {
                     outcomes[i] = generateOne(vanillaClasses, compiledClasses, names.get(i),
@@ -203,10 +203,6 @@ public final class ClassDeltaGenerator {
                                 + MojangMetadata.rootMessage(e), e);
                     }
                 }
-            }
-        } finally {
-            if (pool != null) {
-                pool.shutdown();
             }
         }
 

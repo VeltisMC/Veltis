@@ -603,7 +603,12 @@ final class GitPatchEngine {
             command.add(file.toString());
         }
 
+        // The module compiles with --release 25 (Minecraft's class-file floor),
+        // where java.lang.Process is not Closeable, so try-with-resources does
+        // not compile here. Both streams are closed below and the child is
+        // always reaped by waitFor or destroyForcibly, so nothing is leaked.
         try {
+            //noinspection resource
             var process = new ProcessBuilder(command).start();
             var stderr = new AtomicReference<>(new byte[0]);
             var reader = Thread.ofPlatform().name("veltis-git-stderr").start(() -> {

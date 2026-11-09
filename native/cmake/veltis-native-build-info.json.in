@@ -4,20 +4,18 @@
   "version": "@VELTIS_NATIVE_VERSION_STRING@",
   "exportCount": @VELTIS_NATIVE_EXPORT_COUNT@,
   "exports": [@VELTIS_NATIVE_EXPORTS_JSON@],
+  "modules": [@VELTIS_NATIVE_MODULES_JSON@],
   "platform": "@VELTIS_NATIVE_PLATFORM_KEY@",
   "os": "@VELTIS_NATIVE_OS_NAME@",
   "architecture": "@VELTIS_NATIVE_ARCHITECTURE@",
   "pointerBits": @VELTIS_NATIVE_POINTER_BITS@,
+  "language": "C11",
   "compiler": {
     "c": {
       "id": "@CMAKE_C_COMPILER_ID@",
       "version": "@CMAKE_C_COMPILER_VERSION@"
     },
-    "cxx": {
-      "id": "@CMAKE_CXX_COMPILER_ID@",
-      "version": "@CMAKE_CXX_COMPILER_VERSION@"
-    },
-    "targetTriple": "@VELTIS_NATIVE_TARGET_TRIPLE@"
+    "targetTriple": "unknown"
   },
   "runtime": {
     "staticRuntime": @VELTIS_NATIVE_STATIC_RUNTIME_JSON@,

@@ -181,7 +181,12 @@ public final class VeltisConsole {
      */
     private static void enableUtf8Console() {
         if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win")) return;
+        // The module compiles with --release 25 (Minecraft's class-file floor),
+        // where java.lang.Process is not Closeable, so try-with-resources does
+        // not compile here. Both streams are redirected to DISCARD and the
+        // child is reaped by waitFor, so there is nothing left to close.
         try {
+            //noinspection resource
             var process = new ProcessBuilder("cmd.exe", "/c", "chcp", "65001")
                 .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                 .redirectError(ProcessBuilder.Redirect.DISCARD)

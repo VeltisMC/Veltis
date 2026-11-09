@@ -162,7 +162,7 @@ jobs:
   # Native engine, executed on every Tier 1 runner this repository can use.
   #
   # Compiling a library is not evidence that it works: each native-host entry
-  # below builds the library, runs the C/C++ suite (including the export and
+  # below builds the module, runs its C11 suite (including the export and
   # binary-format check), runs the Java FFM integration suite against the real
   # library, runs the Java-only fallback suite, and starts/stops the server once
   # with the library and once without it. A platform enters the README support
@@ -177,11 +177,9 @@ jobs:
   #             distribution then simply skips that platform with a reason.
   #             Mandatory lanes (Windows x86-64, Linux x86-64, Linux AArch64)
   #             carry optional: false and always fail the workflow.
-  #   release   the lane whose artifact is published: exactly one lane per
-  #             platform, and only those upload `veltis-native-release-*` for
-  #             the distribution manifest. The other lanes are independent
-  #             proof of the same platform under a different toolchain and
-  #             never enter the manifest.
+  #   release   the lane whose commit-pinned platform ZIP is published:
+  #             exactly one lane per platform. Other lanes independently prove
+  #             the same platform under a different toolchain.
   # ---------------------------------------------------------------------------
   native-host:
     name: Native host (${{ matrix.name }})
@@ -196,7 +194,6 @@ jobs:
             generator: ""
             generatorPlatform: ""
             cc: ""
-            cxx: ""
             osxArch: ""
             # A DLL copied beside a JAR must not need a compiler runtime; MSVC's
             # own default (/MD) would import vcruntime140.dll.
@@ -212,7 +209,6 @@ jobs:
             generator: Ninja
             generatorPlatform: ""
             cc: clang-cl
-            cxx: clang-cl
             osxArch: ""
             staticRuntime: "true"
             optional: false
@@ -224,7 +220,6 @@ jobs:
             generator: Ninja
             generatorPlatform: ""
             cc: clang
-            cxx: clang++
             osxArch: ""
             # Left empty on purpose: a Windows build is already static by the
             # CMake default, and this lane proves the default rather than a flag.
@@ -241,7 +236,6 @@ jobs:
             generator: Ninja
             generatorPlatform: ""
             cc: clang
-            cxx: clang++
             osxArch: ""
             staticRuntime: "true"
             # No vendor ships a Windows ARM64 JDK 26 (or 25) for Temurin — the
@@ -263,7 +257,6 @@ jobs:
             generator: Ninja
             generatorPlatform: ""
             cc: gcc
-            cxx: g++
             osxArch: ""
             optional: false
             # The designated linux-x86_64 release lane (GCC, the toolchain the
@@ -276,7 +269,6 @@ jobs:
             generator: Ninja
             generatorPlatform: ""
             cc: clang
-            cxx: clang++
             osxArch: ""
             optional: false
             release: false
@@ -287,7 +279,6 @@ jobs:
             generator: Ninja
             generatorPlatform: ""
             cc: gcc
-            cxx: g++
             osxArch: ""
             optional: false
             release: true
@@ -302,7 +293,6 @@ jobs:
             generator: Ninja
             generatorPlatform: ""
             cc: ""
-            cxx: ""
             osxArch: arm64
             optional: true
             release: true
@@ -313,7 +303,6 @@ jobs:
             generator: Ninja
             generatorPlatform: ""
             cc: ""
-            cxx: ""
             osxArch: x86_64
             optional: true
             release: true
@@ -434,7 +423,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake ninja-build binutils file
           case "${{ matrix.toolchain }}" in
-            gcc) sudo apt-get install -y --no-install-recommends gcc g++ ;;
+            gcc) sudo apt-get install -y --no-install-recommends gcc ;;
             clang) sudo apt-get install -y --no-install-recommends clang ;;
           esac
 
@@ -451,7 +440,6 @@ jobs:
         run: |
           set -euo pipefail
           echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
-          echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
 
       - name: Build, test and package the native library
         shell: bash
@@ -470,9 +458,10 @@ jobs:
           if [ -n "${{ matrix.staticRuntime }}" ]; then
             args+=("-PveltisNativeStaticRuntime=${{ matrix.staticRuntime }}")
           fi
-          # One task that proves configure, build, CTest, the export check, the
-          # Java FFM suite, packaging, manifest and checksums for this host.
-          ./gradlew :veltis-native:verifyNativeRelease -PveltisNativeTest=true \
+          # This task depends on verifyNativeRelease, so the commit ZIP is only
+          # emitted after configure/build, CTest, FFM, fallback, packaging, and
+          # server startup/shutdown verification all pass.
+          ./gradlew :veltis-native:packageNativeCommitArchive -PveltisNativeTest=true \
             "${args[@]}" --stacktrace --no-daemon
 
       - name: Validate Windows ARM64 compiler and target configuration
@@ -483,8 +472,6 @@ jobs:
           if (Test-Path $cache) {
             Write-Host "CMAKE_C_COMPILER="
             Select-String -Path $cache -Pattern "^CMAKE_C_COMPILER:" -SimpleMatch
-            Write-Host "CMAKE_CXX_COMPILER="
-            Select-String -Path $cache -Pattern "^CMAKE_CXX_COMPILER:" -SimpleMatch
             Write-Host "CMAKE_SYSTEM_PROCESSOR="
             Select-String -Path $cache -Pattern "^CMAKE_SYSTEM_PROCESSOR:" -SimpleMatch
             Write-Host "CMAKE_HOST_SYSTEM_PROCESSOR="
@@ -497,7 +484,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $dll = "native/build/native/dist/${{ matrix.platform }}/veltis_native.dll"
+          $dll = "native/build/native/dist/${{ matrix.platform }}/transform.dll"
           if (-not (Test-Path $dll)) { throw "native library was not packaged: $dll" }
           $machine = if ("${{ matrix.platform }}" -like '*-aarch64') { 'aarch64' } else { 'x86_64' }
           # The import check follows the manifest, not the job label: an artifact
@@ -520,7 +507,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LIB="native/build/native/${{ matrix.platform }}/libveltis_native.so"
+          LIB="native/build/native/${{ matrix.platform }}/libtransform.so"
           test -f "$LIB" || { echo "::error::native library was not produced"; exit 1; }
           file "$LIB"
           NEEDED=$(readelf -d "$LIB" | awk '/\(NEEDED\)/ {print $5}' | tr -d '[]')
@@ -530,7 +517,7 @@ jobs:
           # TLS, which this module does (the thread-local last-error slot), so
           # rejecting it would be a false positive on a core glibc component.
           UNEXPECTED=$(printf '%s\n' "$NEEDED" | grep -Ev \
-            '^(libc|libm|libstdc\+\+|libgcc_s|libpthread|libdl|librt|ld-linux(-[A-Za-z0-9_-]+)?)\.so(\.[0-9]+)*$' || true)
+            '^(libc|libm|libgcc_s|libpthread|libdl|librt|ld-linux(-[A-Za-z0-9_-]+)?)\.so(\.[0-9]+)*$' || true)
           if [ -n "$UNEXPECTED" ]; then
             echo "::error::unexpected shared-library dependency: $UNEXPECTED"
             exit 1
@@ -546,7 +533,7 @@ jobs:
           fi
           # Recorded, not asserted: the oldest glibc/libstdc++ symbols used.
           REQUIREMENTS=$(readelf --version-info "$LIB" |
-            grep -oE '(GLIBC|GLIBCXX|CXXABI)_[0-9]+(\.[0-9]+)+' | sort -Vu)
+            grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sort -Vu)
           printf 'version requirements:\n'; printf '%s\n' "$REQUIREMENTS" | sed 's/^/  /'
           {
             echo "### Native runtime requirements (Linux ${{ matrix.platform }})"
@@ -560,7 +547,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LIB="native/build/native/${{ matrix.platform }}/libveltis_native.dylib"
+          LIB="native/build/native/${{ matrix.platform }}/libtransform.dylib"
           test -f "$LIB" || { echo "::error::native library was not produced"; exit 1; }
           file "$LIB"
           SLICES=$(lipo -archs "$LIB")
@@ -635,7 +622,7 @@ jobs:
         run: |
           set -euo pipefail
           LIB=$(find native/build/native -maxdepth 2 -type f \
-            \( -name 'veltis_native.dll' -o -name 'libveltis_native.so' -o -name 'libveltis_native.dylib' \) \
+            \( -name 'transform.dll' -o -name 'libtransform.so' -o -name 'libtransform.dylib' \) \
             | head -n 1)
           test -f "$LIB" || { echo "::error::native library was not produced"; exit 1; }
           ./gradlew -Dveltis.native.path="$LIB" \
@@ -661,21 +648,17 @@ jobs:
             native/build/native/dist/verification-report-${{ matrix.platform }}.json
           if-no-files-found: error
 
-      # The release lane of each platform additionally ships the verified zip
-      # (under its build-type name; the packaging job renames it to the
-      # release asset name). Only one lane per platform has `release: true`,
-      # so the artifact names never collide, and only these artifacts can
-      # enter the signed distribution manifest.
+      # Only the designated host-verified lane publishes one platform ZIP for
+      # this exact source commit. The archive itself contains every module.
       - name: Upload native release artifact
         if: matrix.release
         uses: actions/upload-artifact@v4
         with:
-          name: veltis-native-release-${{ matrix.platform }}
+          name: veltis-native-commit-release-${{ matrix.platform }}
           path: |
-            native/build/native/dist/${{ matrix.platform }}
             native/build/native/dist/verification-report-${{ matrix.platform }}.json
-            native/build/native/dist/veltis-native-${{ matrix.platform }}-*.zip
-            native/build/native/dist/veltis-native-${{ matrix.platform }}-*.zip.sha256
+            native/build/native/dist/commit/${{ matrix.platform }}-*.zip
+            native/build/native/dist/commit/${{ matrix.platform }}-*.zip.sha256
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -695,7 +678,7 @@ jobs:
             platform: windows-aarch64
             preset: windows-arm64-mingw-cross
             builddir: native/build/native/cmake/windows-arm64-mingw-cross
-            artifact: native/build/native/windows-aarch64/veltis_native.dll
+            artifact: native/build/native/windows-aarch64/transform.dll
             toolchain: cmake/toolchains/windows-arm64-mingw.cmake
             optional: false
           - name: Linux AArch64 GNU
@@ -703,7 +686,7 @@ jobs:
             platform: linux-aarch64
             preset: linux-aarch64-cross
             builddir: native/build/native/cmake/linux-aarch64-cross
-            artifact: native/build/native/linux-aarch64/libveltis_native.so
+            artifact: native/build/native/linux-aarch64/libtransform.so
             toolchain: cmake/toolchains/linux-aarch64.cmake
             optional: false
           - name: Linux RISC-V 64 GNU
@@ -711,7 +694,7 @@ jobs:
             platform: linux-riscv64
             preset: linux-riscv64-cross
             builddir: native/build/native/cmake/linux-riscv64-cross
-            artifact: native/build/native/linux-riscv64/libveltis_native.so
+            artifact: native/build/native/linux-riscv64/libtransform.so
             toolchain: cmake/toolchains/linux-riscv64.cmake
             # Tier 2 investigation only. This is the one entry allowed to fail;
             # Windows ARM64 and Linux AArch64 must fail the workflow.
@@ -758,12 +741,18 @@ jobs:
           sudo apt-get install -y --no-install-recommends cmake ninja-build binutils
           case "${{ matrix.preset }}" in
             linux-aarch64-cross)
+              # The cross libc development package has to be named explicitly:
+              # libgcc-*-dev-arm64-cross accepts `libc6-dev-arm64-cross | libc6-dev`
+              # as an alternative, and the host libc6-dev already installed on the
+              # runner satisfies that dependency, so apt never installs the cross
+              # startup files. Without them the linker cannot find Scrt1.o and
+              # CMake's own compiler check fails before the first real source.
               sudo apt-get install -y --no-install-recommends \
-                gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+                gcc-aarch64-linux-gnu libc6-dev-arm64-cross
               ;;
             linux-riscv64-cross)
               sudo apt-get install -y --no-install-recommends \
-                gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+                gcc-riscv64-linux-gnu libc6-dev-riscv64-cross
               ;;
           esac
 
@@ -793,8 +782,8 @@ jobs:
           EXPECTED=$(grep -E '^VELTIS_NATIVE_API ' native/include/veltis/native/veltis_native.h |
             sed -E 's/.*[ *]([A-Za-z_][A-Za-z0-9_]*)\(.*/\1/' | sort)
           EXPECTED_COUNT=$(printf '%s\n' "$EXPECTED" | wc -l | tr -d ' ')
-          [ "$EXPECTED_COUNT" -eq 13 ] || {
-            echo "::error::header declares $EXPECTED_COUNT exports, expected 13"
+          [ "$EXPECTED_COUNT" -eq 14 ] || {
+            echo "::error::header declares $EXPECTED_COUNT exports, expected 14"
             exit 1
           }
 
@@ -826,7 +815,7 @@ jobs:
             echo "::error::the manifest export list is not the public header's"
             exit 1
           }
-          echo "manifest: os/arch/pointerBits/abi and 13 exports agree with the header"
+          echo "manifest: os/arch/pointerBits/abi and 14 exports agree with the header"
 
           case "${{ matrix.platform }}" in
             windows-aarch64)
@@ -834,10 +823,6 @@ jobs:
               echo "machine: $MACHINE"
               [ "$MACHINE" = "aarch64" ] || { echo "::error::not an ARM64 image"; exit 1; }
               ACTUAL=$(llvm-readobj --coff-exports "$ART" | awk '/Name: / {print $2}' | sort)
-              if llvm-readobj --coff-exports "$ART" | grep -Eq 'Name: (\?|_Z)'; then
-                echo "::error::mangled C++ symbol in the export table"
-                exit 1
-              fi
               pwsh -NoProfile -File native/tools/check-pe-imports.ps1 \
                 -Path "$ART" -ExpectMachine aarch64
               ;;
@@ -861,7 +846,7 @@ jobs:
             echo "::error::exported symbols do not match the public header"
             exit 1
           }
-          echo "exports: 13 (exact match, no C++ symbols)"
+          echo "exports: 14 (exact match)"
 
           if [ "${{ matrix.platform }}" = "windows-aarch64" ]; then
             echo "compile-only: the x86-64 runner cannot execute an ARM64 DLL"
@@ -951,7 +936,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake ninja-build gcc g++
+          sudo apt-get install -y --no-install-recommends cmake ninja-build gcc
 
       - name: Build and test in Debug
         shell: bash
@@ -990,41 +975,15 @@ jobs:
             cmake --build build/native/cmake/freebsd-x86_64 --parallel
             ctest --test-dir build/native/cmake/freebsd-x86_64 --output-on-failure
 
-  # ---------------------------------------------------------------------------
-  # Distribution packaging. One job collects every platform's verified release
-  # artifact and runs the Gradle task that assembles the signed cross-platform
-  # manifest:
-  #
-  #   * a missing mandatory platform fails that task with one precise message
-  #     (never a silently smaller manifest);
-  #   * a missing optional platform is recorded as skipped, with its reason;
-  #   * every entry must agree with its verification report on both digests
-  #     before the entry is written;
-  #   * the manifest is signed when VELTIS_NATIVE_MANIFEST_KEY is available
-  #     and read back through the runtime's own parser; without the secret it is
-  #     written unsigned and native-release refuses to publish it. "Without"
-  #     covers a fork's pull request (GitHub passes no secrets to those) and any
-  #     event while the repository secret is unset — it does NOT cover a
-  #     same-repository pull request once the secret exists, which is why the
-  #     pairing step is gated on the value rather than on the event name.
-  #
-  # `!cancelled()` keeps this job running when an optional lane failed or was
-  # cancelled, so the packaging task — not the job graph — decides whether
-  # what remains is publishable, while a cancelled run still skips it.
-  # ---------------------------------------------------------------------------
+  # One aggregator validates all per-platform archives. Required platforms
+  # must be present; optional platforms are recorded as skipped.
   native-package:
-    name: Package native distribution
+    name: Verify commit-pinned native distribution
     needs: [build, native-host]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    # Declared at job scope, not step scope, on purpose: a step's own `env` is
-    # not guaranteed to be resolved when that same step's `if` is evaluated, and
-    # an `if` that reads an empty variable silently skips a verification gate.
-    # The `secrets` context itself is not available in a step `if` at all, which
-    # is why the value is projected into `env` here and the condition below tests
-    # `env`. No step echoes this variable; the key never reaches a log.
-    env:
-      VELTIS_NATIVE_MANIFEST_KEY: ${{ secrets.VELTIS_NATIVE_MANIFEST_KEY }}
+    outputs:
+      ready: ${{ steps.ready.outputs.ready }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -1036,144 +995,123 @@ jobs:
           java-version: '26'
           cache: gradle
 
-      - name: Collect the verified release artifacts
+      - name: Collect per-platform commit archives
         uses: actions/download-artifact@v4
         with:
-          pattern: veltis-native-release-*
+          pattern: veltis-native-commit-release-*
           path: native/build/native/dist
           merge-multiple: true
 
-      # A rotated secret with a stale embedded anchor is the one configuration
-      # mistake that would produce a manifest every server rejects. Checking it
-      # here names the pair in one line, before the artifacts have been
-      # assembled into a release that then fails at publish time.
-      - name: Verify the manifest key pairs with the embedded anchor
-        if: ${{ env.VELTIS_NATIVE_MANIFEST_KEY != '' }}
-        run: ./gradlew :veltis-native:verifyNativeManifestKeyPairing --stacktrace --no-daemon
-
-      - name: Assemble and sign the distribution manifest
-        run: ./gradlew :veltis-native:packageNativeDistribution --stacktrace --no-daemon
-
-      - name: Report the signing state
-        id: signing
+      - name: Verify archives against this build commit
+        id: ready
         shell: bash
         run: |
           set -euo pipefail
-          jq -c . native/build/native/dist/native-release.json
-          if [ -f native/build/native/dist/native-manifest.json.sig ]; then
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::VELTIS_NATIVE_MANIFEST_KEY is not available; the manifest was assembled unsigned. The native-release job refuses to publish it."
-          fi
+          ACTUAL=$(git rev-parse HEAD)
+          EXPECTED="${{ needs.build.outputs.commit }}"
+          test "$ACTUAL" = "$EXPECTED" || {
+            echo "::error::aggregator checked out $ACTUAL, build metadata names $EXPECTED"
+            exit 1
+          }
+          ./gradlew :veltis-native:packageNativeCommitDistribution --stacktrace --no-daemon
+          jq -c . native/build/native/dist/native-commit-release.json
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
-      - name: Upload the distribution under its release names
+      - name: Upload the verified archives and release index
         uses: actions/upload-artifact@v4
         with:
-          name: veltis-native-distribution
+          name: veltis-native-commit-distribution
           path: |
-            native/build/native/dist/native-manifest.json
-            native/build/native/dist/native-release.json
-            native/build/native/dist/release/
+            native/build/native/dist/native-commit-release.json
+            native/build/native/dist/commit/*.zip
           if-no-files-found: error
 
-      - name: Upload the manifest signature
-        if: steps.signing.outputs.signed == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: veltis-native-distribution-signature
-          path: native/build/native/dist/native-manifest.json.sig
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
-  # Native release publication. Push and dispatch only — a pull request never
-  # publishes — and only after the full build passed. The manifest must be
-  # signed: an unsigned manifest fails here with an instruction, it is never
-  # uploaded "for now". Every asset is re-read from the releases API and
-  # compared by name, because an upload is not proof of an asset.
-  #
-  # The tag is created once, targeting the commit that first published it;
-  # later runs replace its assets in place with --clobber and delete assets
-  # whose platform this run skipped, so the release never holds a zip the
-  # manifest does not list. The manifest's own `commit` field records which
-  # build the published bytes came from. `--latest=false` keeps the
-  # repository's "latest release" pointer on the server distribution.
-  # ---------------------------------------------------------------------------
+  # The manifest is finalized only after uploading the ZIPs, so its signed
+  # download URLs come from GitHub Release metadata, never a constructed URL.
   native-release:
     name: Publish native release
     needs: [build, native-package]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.native-package.outputs.ready == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VELTIS_NATIVE_MANIFEST_KEY: ${{ secrets.VELTIS_NATIVE_MANIFEST_KEY }}
     steps:
-      - name: Download the distribution
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 26 (manifest verification)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '26'
+          cache: gradle
+
+      - name: Download verified platform archives
         uses: actions/download-artifact@v4
         with:
-          name: veltis-native-distribution
-          path: native-dist
+          name: veltis-native-commit-distribution
+          path: native/build/native/dist
 
-      - name: Download the manifest signature
-        uses: actions/download-artifact@v4
-        with:
-          name: veltis-native-distribution-signature
-          path: native-dist
-
-      - name: Publish the native release assets
+      - name: Verify signing key and publish commit archives
         env:
           GH_TOKEN: ${{ github.token }}
-          # This job does not check out the repository, so `gh` is told which
-          # repository to act on rather than inferred from a missing remote.
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          TAG=$(jq -r .tag native-dist/native-release.json)
-          VERSION=$(jq -r .version native-dist/native-release.json)
-          SIGNED=$(jq -r .signed native-dist/native-release.json)
-          test -n "$TAG" && [ "$TAG" != "null" ] || {
-            echo "::error::native-release.json names no release tag"
+          META=native/build/native/dist/native-commit-release.json
+          COMMIT=$(jq -r .commit "$META")
+          SHORT=$(jq -r .shortCommit "$META")
+          TAG=$(jq -r .releaseTag "$META")
+          test "$COMMIT" = "${{ needs.build.outputs.commit }}" || {
+            echo "::error::native archive commit does not match server build metadata"
             exit 1
           }
-          if [ "$SIGNED" != "true" ]; then
-            echo "::error::the manifest for $TAG is unsigned; refusing to publish it."
-            echo "::error::set the VELTIS_NATIVE_MANIFEST_KEY repository secret to the"
-            echo "::error::Ed25519 signing key whose public half is embedded in"
-            echo "::error::NativeManifest.TRUSTED_PUBLIC_KEY_BASE64, then re-run."
-            exit 1
-          fi
-          test -s native-dist/native-manifest.json || {
-            echo "::error::native-manifest.json is missing from the distribution artifact"
+          test "$SHORT" = "${COMMIT:0:7}" && test "$TAG" = "veltis-native-$SHORT" || {
+            echo "::error::native release tag does not identify its source commit"
             exit 1
           }
-          test -s native-dist/native-manifest.json.sig || {
-            echo "::error::native-manifest.json.sig is missing from the distribution artifact"
+          test -n "$VELTIS_NATIVE_MANIFEST_KEY" || {
+            echo "::error::VELTIS_NATIVE_MANIFEST_KEY is required for signed native publication"
             exit 1
           }
+          ./gradlew :veltis-native:verifyNativeManifestKeyPairing --stacktrace --no-daemon
 
-          EXPECTED="native-manifest.json
-          native-manifest.json.sig"
-          for platform in $(jq -r '.platforms[]' native-dist/native-release.json); do
-            zip="native-dist/release/veltis-native-$platform.zip"
-            test -s "$zip" || {
-              echo "::error::native-release.json lists $platform but $zip is missing"
+          EXPECTED=$(jq -r '.platforms[].asset' "$META")
+          while IFS= read -r asset; do
+            [ -n "$asset" ] || continue
+            test -s "native/build/native/dist/commit/$asset" || {
+              echo "::error::verified archive is missing: $asset"
               exit 1
             }
-            EXPECTED="$EXPECTED
-          veltis-native-$platform.zip"
-          done
+          done <<< "$EXPECTED"
 
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release edit "$TAG" --title "VeltisMC native engine $VERSION"
+            gh release edit "$TAG" --title "VeltisMC native modules $SHORT"
           else
             gh release create "$TAG" \
-              --target "$GITHUB_SHA" \
+              --target "$COMMIT" \
               --latest=false \
-              --title "VeltisMC native engine $VERSION" \
-              --notes "Selective native distribution for \`$TAG\`: one library per platform plus a signed manifest. A server downloads only the artifact for its own OS and architecture, and continues on its Java implementation when this release publishes none."
+              --title "VeltisMC native modules $SHORT" \
+              --notes "Commit-pinned, host-verified native modules for Veltis commit \`$COMMIT\`. Each platform archive contains separate module libraries and build metadata. Servers without an exact compatible artifact continue on Java."
           fi
 
-          # Assets of an earlier run whose platform is absent now must not
-          # linger beside a manifest that does not list them.
+          # A pre-existing tag must resolve to this exact commit before any
+          # assets are replaced.
+          REF=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG")
+          TYPE=$(printf '%s' "$REF" | jq -r '.object.type')
+          OBJECT=$(printf '%s' "$REF" | jq -r '.object.sha')
+          while [ "$TYPE" = "tag" ]; do
+            REF=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$OBJECT")
+            TYPE=$(printf '%s' "$REF" | jq -r '.object.type')
+            OBJECT=$(printf '%s' "$REF" | jq -r '.object.sha')
+          done
+          test "$TYPE" = "commit" && test "$OBJECT" = "$COMMIT" || {
+            echo "::error::release tag $TAG resolves to $OBJECT ($TYPE), not $COMMIT"
+            exit 1
+          }
+
           RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")
           ACTUAL=$(printf '%s' "$RELEASE" | jq -r '.assets[].name')
           while IFS= read -r name; do
@@ -1184,17 +1122,24 @@ jobs:
             fi
           done <<< "$ACTUAL"
 
-          gh release upload "$TAG" \
-            native-dist/native-manifest.json \
-            native-dist/native-manifest.json.sig \
-            native-dist/release/*.zip --clobber
+          gh release upload "$TAG" native/build/native/dist/commit/*.zip --clobber
 
-          # Ask the release what it holds and compare exactly, so a failed
-          # upload stops the run here instead of being reported as a
-          # publication. Read from the REST API, not `gh release view --json`:
-          # that export renames the asset's REST `browser_download_url`.
+          # The manifest is signed only after the release API supplies the
+          # actual browser_download_url and size of each uploaded archive.
+          RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")
+          printf '%s' "$RELEASE" | jq --arg tag "$TAG" --arg commit "$COMMIT" \
+            '{tag:$tag, commit:$commit, assets:[.assets[] | {name,browser_download_url,size}]}' \
+            > native/build/native/dist/native-release-assets.json
+          ./gradlew :veltis-native:signNativeCommitManifest --stacktrace --no-daemon
+          gh release upload "$TAG" \
+            native/build/native/dist/native-manifest.json \
+            native/build/native/dist/native-manifest.json.sig --clobber
+
           RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")
           ACTUAL=$(printf '%s' "$RELEASE" | jq -r '.assets[].name')
+          EXPECTED="$EXPECTED
+          native-manifest.json
+          native-manifest.json.sig"
           MISSING=0
           while IFS= read -r name; do
             [ -z "$name" ] && continue
@@ -1204,18 +1149,12 @@ jobs:
             fi
           done <<< "$EXPECTED"
           if [ "$MISSING" -ne 0 ]; then
-            echo "::error::assets the release actually holds:"
+            echo "::error::release assets do not match the signed manifest"
             printf '%s\n' "$ACTUAL" | sed 's/^/    /'
             exit 1
           fi
-          ASSET_URL=$(printf '%s' "$RELEASE" | jq -r \
-            '.assets[] | select(.name == "native-manifest.json") | .browser_download_url' | head -n 1)
-          test -n "$ASSET_URL" || {
-            echo "::error::release $TAG lists native-manifest.json but the API returned no browser_download_url"
-            exit 1
-          }
-          echo "Published $(printf '%s\n' "$ACTUAL" | grep -c . || true) assets to $TAG"
-          echo "Manifest: $ASSET_URL"
+          echo "Published commit-pinned native release $TAG with assets:"
+          printf '%s\n' "$ACTUAL" | sort | sed 's/^/  /'
 
   publish:
     name: Publish durable release & notify website
@@ -1355,7 +1294,11 @@ jobs:
           RELEASE_URL: ${{ steps.release.outputs.releaseUrl }}
         run: |
           set -euo pipefail
-          SIZE=$(stat -c%s "release/$(jq -r .assetName metadata/build-metadata.json)")
+          ASSET="release/$(jq -r .assetName metadata/build-metadata.json)"
+          SIZE=$(stat -c%s "$ASSET")
+          # Digest of the exact bytes that were uploaded, so the site can show a
+          # checksum for the asset it links to rather than one for a local build.
+          SHA256=$(sha256sum "$ASSET" | cut -d' ' -f1)
           PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           # `client_payload` allows at most 10 top-level properties, and the
@@ -1368,9 +1311,10 @@ jobs:
             --arg releaseUrl "$RELEASE_URL" \
             --arg publishedAt "$PUBLISHED_AT" \
             --argjson size "$SIZE" \
+            --arg sha256 "$SHA256" \
             '{event_type: "veltis-release",
               client_payload: {
-                metadata: .,
+                metadata: (. + {sha256: $sha256}),
                 release: {downloadUrl: $url, releaseUrl: $releaseUrl,
                           publishedAt: $publishedAt, size: $size}
               }}' \

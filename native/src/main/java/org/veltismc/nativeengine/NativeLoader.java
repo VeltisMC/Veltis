@@ -36,6 +36,7 @@ public final class NativeLoader {
 
     /** The only ABI this Java side understands. */
     public static final int EXPECTED_ABI_VERSION = 1;
+    public static final String DEFAULT_MODULE_NAME = "transform";
 
     /** Engine major version required by this integration layer. */
     public static final int SUPPORTED_ENGINE_MAJOR = 1;
@@ -65,8 +66,6 @@ public final class NativeLoader {
     /** The same keys in a stable order, because a log line is read by a human. */
     private static final String RECOGNIZED_PLATFORM_LIST =
             String.join(", ", RECOGNIZED_PLATFORMS.stream().sorted().toList());
-
-    private static final String LIBRARY_BASE_NAME = "veltis_native";
 
     /**
      * The window a returned C string is reinterpreted to before reading it. The
@@ -166,19 +165,36 @@ public final class NativeLoader {
      */
     public static final class LoadedLibrary implements AutoCloseable {
         private final Arena arena;
+        private final SymbolLookup lookup;
         private final Bindings bindings;
         private final NativeStatus status;
+        private final String moduleName;
         private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
         private volatile boolean closed;
 
-        private LoadedLibrary(Arena arena, Bindings bindings, NativeStatus status) {
+        private LoadedLibrary(
+                Arena arena, SymbolLookup lookup, Bindings bindings, NativeStatus status, String moduleName) {
             this.arena = arena;
+            this.lookup = lookup;
             this.bindings = bindings;
             this.status = status;
+            this.moduleName = moduleName;
+        }
+
+        public String moduleName() {
+            return moduleName;
         }
 
         public NativeStatus status() {
             return status;
+        }
+
+        /** Resolves an operation symbol while this module remains open. */
+        public Optional<MemorySegment> findSymbol(String symbolName) {
+            if (symbolName == null || !symbolName.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                throw new IllegalArgumentException("invalid native symbol name: " + symbolName);
+            }
+            return underReadLock(() -> lookup.find(symbolName));
         }
 
         public int initialize() {
@@ -283,6 +299,21 @@ public final class NativeLoader {
      * failure; the returned status explains why native support is unavailable.
      */
     public static LoadResult tryLoad(NativeConfig config) {
+        return tryLoad(config, DEFAULT_MODULE_NAME, EXPECTED_ABI_VERSION);
+    }
+
+    /**
+     * Loads one requested module without coupling its lifecycle to other modules.
+     * Module identifiers are directory and library basenames and must be simple
+     * lowercase identifiers.
+     */
+    public static LoadResult tryLoad(NativeConfig config, String moduleName, int expectedAbiVersion) {
+        if (!isValidModuleName(moduleName)) {
+            return failure(false, 0, "0.0.0", "invalid native module name: " + moduleName);
+        }
+        if (expectedAbiVersion < 1) {
+            return failure(false, 0, "0.0.0", "invalid expected ABI for module " + moduleName);
+        }
         var platform = platformKey();
         if (!RECOGNIZED_PLATFORMS.contains(platform)) {
             return failure(false, 0, "0.0.0",
@@ -293,7 +324,7 @@ public final class NativeLoader {
 
         Optional<Path> located;
         try {
-            located = locate(config);
+            located = locate(config, moduleName);
         } catch (RuntimeException invalidPath) {
             return failure(false, 0, "0.0.0",
                     "invalid native library path '" + config.libraryPath() + "': "
@@ -301,7 +332,7 @@ public final class NativeLoader {
         }
         if (located.isEmpty()) {
             var searched = new ArrayList<String>();
-            for (var candidate : candidatePaths(platform, libraryFileName(platform))) {
+            for (var candidate : candidatePaths(platform, moduleLibraryFileName(moduleName, platform))) {
                 searched.add(candidate.toString());
             }
             var reason = config.hasLibraryPath()
@@ -332,12 +363,21 @@ public final class NativeLoader {
             // built for a different ABI may predate those exports, so asking for
             // them first would report a missing symbol instead of the real,
             // actionable incompatibility.
+            var actualModule = readString(downcall(
+                    lookup, linker, "veltis_native_module_name", POINTER_RESULT));
+            if (!moduleName.equals(actualModule)) {
+                closeQuietly(arena);
+                return failure(true, 0, engineVersion,
+                        path + ": requested module '" + moduleName
+                                + "' but library identifies itself as '" + actualModule + "'");
+            }
+
             abiVersion = invokeInt(downcall(lookup, linker, "veltis_native_abi_version", INT_RESULT));
-            if (abiVersion != EXPECTED_ABI_VERSION) {
+            if (abiVersion != expectedAbiVersion) {
                 closeQuietly(arena);
                 return failure(true, abiVersion, engineVersion,
-                        path + ": " + checkCompatibility(
-                                abiVersion, SUPPORTED_ENGINE_MAJOR, MINIMUM_ENGINE_MINOR));
+                        path + ": module ABI mismatch: expected " + expectedAbiVersion
+                                + ", got " + abiVersion);
             }
 
             var major = invokeInt(downcall(lookup, linker, "veltis_native_version_major", INT_RESULT));
@@ -346,7 +386,8 @@ public final class NativeLoader {
             // symbol the ABI promises must exist before the library is accepted.
             invokeInt(downcall(lookup, linker, "veltis_native_version_patch", INT_RESULT));
             engineVersion = readString(downcall(lookup, linker, "veltis_native_version_string", POINTER_RESULT));
-            var incompatibility = checkCompatibility(abiVersion, major, minor);
+            var incompatibility = checkCompatibility(
+                    abiVersion, major, minor, expectedAbiVersion);
             if (incompatibility != null) {
                 closeQuietly(arena);
                 return failure(true, abiVersion, engineVersion, path + ": " + incompatibility);
@@ -365,10 +406,10 @@ public final class NativeLoader {
                 throw new IllegalStateException("veltis_native_status_string returned no text");
             }
 
-            var bindings = Bindings.bind(lookup, linker);
+            var bindings = Bindings.bind(lookup, linker, moduleName);
             var status = NativeStatus.available(
                     abiVersion, engineVersion, NativeCapabilities.fromMask(bindings.capabilities()));
-            return new LoadResult(new LoadedLibrary(arena, bindings, status), status);
+            return new LoadResult(new LoadedLibrary(arena, lookup, bindings, status, moduleName), status);
         } catch (Throwable t) {
             closeQuietly(arena);
             var detail = t.getMessage() == null || t.getMessage().isBlank()
@@ -384,10 +425,19 @@ public final class NativeLoader {
      * a file or the directory that contains the platform's library.
      */
     public static Optional<Path> locate(NativeConfig config) {
+        return locate(config, DEFAULT_MODULE_NAME);
+    }
+
+    public static Optional<Path> locate(NativeConfig config, String moduleName) {
         if (config.hasLibraryPath()) {
             var configured = Path.of(config.libraryPath());
             if (Files.isDirectory(configured)) {
-                configured = configured.resolve(libraryFileName());
+                var moduleDirectory = configured.resolve(moduleName);
+                configured = moduleDirectory.resolve(moduleLibraryFileName(moduleName));
+                if (!Files.isRegularFile(configured)) {
+                    configured = configured.getParent().getParent()
+                            .resolve(moduleLibraryFileName(moduleName));
+                }
             }
             return Files.isRegularFile(configured)
                     ? Optional.of(configured.toAbsolutePath().normalize())
@@ -395,7 +445,7 @@ public final class NativeLoader {
         }
 
         var platform = platformKey();
-        var fileName = libraryFileName(platform);
+        var fileName = moduleLibraryFileName(moduleName, platform);
         var candidates = candidatePaths(platform, fileName);
 
         for (var candidate : candidates) {
@@ -416,14 +466,27 @@ public final class NativeLoader {
 
         var home = System.getProperty("veltismc.home");
         if (home != null && !home.isBlank()) {
+            candidates.add(Path.of(home).resolve("native").resolve(platform)
+                    .resolve(moduleNameFromLibraryFile(fileName)).resolve(fileName));
             candidates.add(Path.of(home).resolve("native").resolve(platform).resolve(fileName));
         }
 
         var workingDirectory = Path.of("").toAbsolutePath();
+        candidates.add(workingDirectory.resolve("native").resolve(platform)
+                .resolve(moduleNameFromLibraryFile(fileName)).resolve(fileName));
         candidates.add(workingDirectory.resolve("native").resolve(platform).resolve(fileName));
         candidates.add(workingDirectory.resolve("build").resolve("native").resolve(platform).resolve(fileName));
 
         return List.copyOf(candidates);
+    }
+
+    private static String moduleNameFromLibraryFile(String fileName) {
+        var name = fileName;
+        if (name.startsWith("lib")) {
+            name = name.substring(3);
+        }
+        var extension = name.lastIndexOf('.');
+        return extension > 0 ? name.substring(0, extension) : name;
     }
 
     /**
@@ -718,18 +781,33 @@ public final class NativeLoader {
 
     /** The file name the operating system's dynamic loader expects. */
     public static String libraryFileName() {
-        return libraryFileName(platformKey());
+        return moduleLibraryFileName(DEFAULT_MODULE_NAME, platformKey());
     }
 
-    /** File naming is driven by the operating system part of the key only. */
+    /** File naming is driven by module and operating-system identifiers. */
+    public static String moduleLibraryFileName(String moduleName) {
+        return moduleLibraryFileName(moduleName, platformKey());
+    }
+
     static String libraryFileName(String platform) {
+        return moduleLibraryFileName(DEFAULT_MODULE_NAME, platform);
+    }
+
+    static String moduleLibraryFileName(String moduleName, String platform) {
+        if (!isValidModuleName(moduleName)) {
+            throw new IllegalArgumentException("invalid native module name: " + moduleName);
+        }
         if (platform.startsWith("windows")) {
-            return LIBRARY_BASE_NAME + ".dll";
+            return moduleName + ".dll";
         }
         if (platform.startsWith("macos")) {
-            return "lib" + LIBRARY_BASE_NAME + ".dylib";
+            return "lib" + moduleName + ".dylib";
         }
-        return "lib" + LIBRARY_BASE_NAME + ".so";
+        return "lib" + moduleName + ".so";
+    }
+
+    static boolean isValidModuleName(String moduleName) {
+        return moduleName != null && moduleName.matches("[a-z][a-z0-9_]*");
     }
 
     /**
@@ -738,9 +816,14 @@ public final class NativeLoader {
      * accepted because the ABI is additive. Returns null when compatible.
      */
     static String checkCompatibility(int abiVersion, int engineMajor, int engineMinor) {
-        if (abiVersion != EXPECTED_ABI_VERSION) {
+        return checkCompatibility(abiVersion, engineMajor, engineMinor, EXPECTED_ABI_VERSION);
+    }
+
+    private static String checkCompatibility(
+            int abiVersion, int engineMajor, int engineMinor, int expectedAbiVersion) {
+        if (abiVersion != expectedAbiVersion) {
             return "ABI mismatch: native library reports " + abiVersion
-                    + ", this server expects " + EXPECTED_ABI_VERSION;
+                    + ", this server expects " + expectedAbiVersion;
         }
         if (engineMajor != SUPPORTED_ENGINE_MAJOR) {
             return "engine version mismatch: native library reports major " + engineMajor
@@ -818,14 +901,17 @@ public final class NativeLoader {
             this.lastError = lastError;
         }
 
-        static Bindings bind(SymbolLookup lookup, Linker linker) {
+        static Bindings bind(SymbolLookup lookup, Linker linker, String moduleName) {
+            var transform = moduleName.equals(DEFAULT_MODULE_NAME)
+                    ? downcall(lookup, linker, "veltis_native_transform_i32", TRANSFORM)
+                    : null;
             return new Bindings(
                     downcall(lookup, linker, "veltis_native_init", INT_RESULT),
                     downcall(lookup, linker, "veltis_native_is_initialized", INT_RESULT),
                     downcall(lookup, linker, "veltis_native_shutdown", VOID_RESULT),
                     downcall(lookup, linker, "veltis_native_capabilities", INT_RESULT),
                     downcall(lookup, linker, "veltis_native_self_test", INT_RESULT),
-                    downcall(lookup, linker, "veltis_native_transform_i32", TRANSFORM),
+                    transform,
                     downcall(lookup, linker, "veltis_native_last_error", POINTER_RESULT));
         }
 
@@ -870,6 +956,9 @@ public final class NativeLoader {
         }
 
         int transform(MemorySegment input, long inputLength, int salt, MemorySegment output, long outputLength) {
+            if (transform == null) {
+                throw new UnsupportedOperationException("this native module has no int32 transform operation");
+            }
             try {
                 return (int) transform.invokeExact(input, inputLength, salt, output, outputLength);
             } catch (Throwable t) {

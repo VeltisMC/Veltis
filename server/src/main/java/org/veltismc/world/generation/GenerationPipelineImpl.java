@@ -43,6 +43,9 @@ public final class GenerationPipelineImpl implements GenerationPipeline {
             world.regionImpl(pos).chunk(pos);
             chunk = world.chunkIfPresent(pos);
         }
+        if (chunk == null) {
+            throw new IllegalStateException("the region did not create chunk " + pos);
+        }
         final Chunk target = chunk;
         if (!target.isLoaded()) {
             final long epoch = target.epoch();

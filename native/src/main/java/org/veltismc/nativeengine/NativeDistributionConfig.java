@@ -58,15 +58,16 @@ public record NativeDistributionConfig(
     public static final String UPDATE_POLICY_ALWAYS = "always";
 
     /**
-     * The release line this build downloads from when no repository is
-     * configured. It names the native release tag rather than
-     * {@code releases/latest}, because the same repository also publishes the
-     * server distribution and "latest" would resolve to whichever of the two
-     * was created last. Kept in step with the header's version string by
-     * {@code verifyNativeArtifact}.
+     * The release API base this build downloads from when no repository is
+     * configured. The runtime resolves the running commit's own tag beneath it
+     * ({@code <base>/tags/veltis-native-<short-commit>}); release tags name the
+     * commit, not the engine version. It is not {@code releases/latest}, because
+     * the same repository also publishes the server distribution and "latest"
+     * would resolve to whichever of the two was created last.
+     * {@code verifyNativeArtifact} rejects a default that is not this base.
      */
     public static final String DEFAULT_REPOSITORY =
-            "https://github.com/VeltisMC/Veltis/releases/download/veltis-native-v1.0.0";
+            "https://api.github.com/repos/VeltisMC/Veltis/releases";
 
     public static final int DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 30;
 

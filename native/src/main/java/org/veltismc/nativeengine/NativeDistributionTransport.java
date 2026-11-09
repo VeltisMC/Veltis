@@ -109,6 +109,13 @@ final class NativeDistributionTransport implements AutoCloseable {
      */
     byte[] fetch(String asset, long maxBytes) throws IOException {
         var target = resolveAsset(asset);
+        return fetch(target, maxBytes);
+    }
+
+    byte[] fetch(URI target, long maxBytes) throws IOException {
+        if (maxBytes < 0 || maxBytes >= Integer.MAX_VALUE) {
+            throw new IOException("invalid response size limit: " + maxBytes);
+        }
         // HttpResponse itself is not closeable; the body stream is what holds
         // the connection, and sendFollowingRedirects has already disposed of
         // every response it did not return.
@@ -116,7 +123,7 @@ final class NativeDistributionTransport implements AutoCloseable {
         try (var body = response.body()) {
             var bytes = body.readNBytes(checkedReadLimit(maxBytes));
             if (bytes.length > maxBytes) {
-                throw new IOException(asset + " is larger than the " + maxBytes + "-byte limit");
+                throw new IOException(target + " is larger than the " + maxBytes + "-byte limit");
             }
             return bytes;
         }
@@ -128,7 +135,10 @@ final class NativeDistributionTransport implements AutoCloseable {
      * no file behind.
      */
     void download(String asset, Path target, long expectedSize, long maxBytes) throws IOException {
-        var uri = resolveAsset(asset);
+        download(resolveAsset(asset), target, expectedSize, maxBytes);
+    }
+
+    void download(URI uri, Path target, long expectedSize, long maxBytes) throws IOException {
         try {
             var response = sendFollowingRedirects(uri);
             // The body stream is closed explicitly: an open stream would pin
@@ -143,12 +153,12 @@ final class NativeDistributionTransport implements AutoCloseable {
                 while ((read = body.read(buffer)) != -1) {
                     total += read;
                     if (total > maxBytes) {
-                        throw new IOException(asset + " exceeds the " + maxBytes + "-byte limit");
+                        throw new IOException(uri + " exceeds the " + maxBytes + "-byte limit");
                     }
                     out.write(buffer, 0, read);
                 }
                 if (total != expectedSize) {
-                    throw new IOException(asset + " is " + total
+                    throw new IOException(uri + " is " + total
                             + " bytes but the manifest declares " + expectedSize);
                 }
             }
@@ -159,6 +169,14 @@ final class NativeDistributionTransport implements AutoCloseable {
             deleteQuietly(target);
             throw new IOException(e);
         }
+    }
+
+    static URI resolve(URI base, String relativePath) throws IOException {
+        if (relativePath == null || relativePath.isBlank() || relativePath.startsWith("/")
+                || relativePath.contains("\\") || relativePath.contains("..")) {
+            throw new IOException("unsafe relative release path '" + relativePath + "'");
+        }
+        return base.resolve(relativePath);
     }
 
     private static void deleteQuietly(Path target) {
@@ -280,6 +298,10 @@ final class NativeDistributionTransport implements AutoCloseable {
                 || host.equals("[::1]")
                 || host.equals("0:0:0:0:0:0:0:1")
                 || host.matches("127(?:\\.\\d{1,3}){3}");
+    }
+
+    static boolean isLoopbackAddress(String host) {
+        return isLoopback(host);
     }
 
     @Override

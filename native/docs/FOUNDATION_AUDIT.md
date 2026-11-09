@@ -1,4 +1,10 @@
-# veltis-native — Foundation Audit (Phase 0)
+# veltis-native — Historical foundation audit
+
+> This audit describes a previous native implementation and workflow. Its
+> source paths, architecture, build outputs, measurements, and run evidence do
+> not describe the current C11 modules. Use the current [native README](../README.md)
+> and the other current documents in this directory for implementation details.
+> This historical record is not evidence of a current CI run or release.
 
 Date: 2026-11-03. Host for all executed verification: Windows 11 x86-64
 (10.0.26300), JDK 25.0.5.0.3, Gradle 9.5.1, CMake 3.31.6, Ninja 1.12.1,

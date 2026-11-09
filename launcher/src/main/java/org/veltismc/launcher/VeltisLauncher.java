@@ -179,11 +179,13 @@ public final class VeltisLauncher {
             command.add(launcherLocation.toString());
             command.add(VeltisLauncher.class.getName());
         }
-        for (var arg : args) {
-            command.add(arg);
-        }
+        command.addAll(List.of(args));
 
+        // All modules compile with --release 25 (Minecraft's class-file floor),
+        // where java.lang.Process is not Closeable; the child is reaped by
+        // waitFor, and System.exit ends this JVM either way.
         try {
+            //noinspection resource
             var child = new ProcessBuilder(command).inheritIO().start();
             System.exit(child.waitFor());
         } catch (Exception e) {
@@ -300,7 +302,7 @@ public final class VeltisLauncher {
         // to notice.
         var sourcePatches = manifest.patchesRoot();
         if (sourcePatches.isPresent()) {
-            LOG.error("This build carries no source patch pipeline"
+            var message = "This build carries no source patch pipeline"
                 + "\n  Patches: " + sourcePatches.get()
                 + "\n  Reason: a distributable ships Minecraft's changes as compiled"
                 + " bytecode with three hashes on every index line, so it has no decompiler,"
@@ -310,7 +312,8 @@ public final class VeltisLauncher {
                 + " edit minecraft/workspace/<version>/patched/, then ./gradlew rebuildPatches"
                 + " and ./gradlew buildVeltisMC -- and run the jar that produces; or run"
                 + " this jar from a directory with no server/Shulker/ beside it, which uses the"
-                + " patch set packaged inside it.");
+                + " patch set packaged inside it.";
+            LOG.error(message);
             System.exit(1);
             return;
         }
@@ -634,6 +637,9 @@ public final class VeltisLauncher {
             if (needHomeDirectory) {
                 builder.directory(target.toFile());
             }
+            // Same --release 25 constraint as restartAfterFetch: the child is
+            // reaped by waitFor and this JVM exits immediately afterwards.
+            //noinspection resource
             var child = builder.start();
             System.exit(child.waitFor());
         } catch (Exception e) {

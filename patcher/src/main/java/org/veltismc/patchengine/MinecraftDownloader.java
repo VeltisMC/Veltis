@@ -337,7 +337,7 @@ public final class MinecraftDownloader {
     private void extractClassesJar(Path bundler, String version, Path classesJar) {
         var nested = "META-INF/versions/" + version + "/";
         try (var fs = FileSystems.newFileSystem(bundler, (ClassLoader) null)) {
-            Path inner = null;
+            Path inner;
             try (var walk = Files.walk(fs.getPath("/" + nested))) {
                 inner = walk.filter(Files::isRegularFile)
                     .filter(p -> p.getFileName().toString().endsWith(".jar"))
@@ -431,10 +431,10 @@ public final class MinecraftDownloader {
     private static void deleteQuietly(Path path) {
         try {
             Files.deleteIfExists(path);
-        } catch (IOException ignored) {
+        } catch (IOException e) {
             // A file that could not be removed is still not trusted: the next
             // run re-hashes it before reuse, sees the mismatch and replaces it.
-            log.debug("[VeltisMinecraft] Could not delete {}", path, ignored);
+            log.debug("[VeltisMinecraft] Could not delete {}", path, e);
         }
     }
 

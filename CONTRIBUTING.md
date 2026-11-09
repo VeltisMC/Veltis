@@ -11,8 +11,8 @@ Contributions to bug fixes, performance, world simulation, source patches, and d
 - Internet access for initial setup
 - A Java IDE (IntelliJ IDEA recommended)
 
-CMake 3.21+ and a C11/C++20 compiler are needed only for the optional native
-engine's `native` tasks; ordinary Java builds do not require them. See
+CMake 3.21+ and a C11 compiler are needed only for the optional native engine's
+`native` tasks; ordinary Java builds do not require them. See
 [`native/README.md`](native/README.md).
 
 Gradle is provided through the repository wrapper.
@@ -86,13 +86,29 @@ If a change touches the optional native engine, build and test both sides:
 ./gradlew :veltis-native:check -PveltisNativeTest=true
 ```
 
-This requires CMake and a C/C++ compiler. Without that toolchain, run
+This requires CMake 3.21+ and a C11 compiler. Without that toolchain, run
 `./gradlew :veltis-native:test`; the real-library test skips and the unit tests
 still cover configuration, compatibility rules and the Java fallback.
 
 For Minecraft source changes, confirm that the patch workflow completes successfully and that rebuilding the project does not introduce unrelated changes.
 
 For performance improvements, include profiling or benchmark results when available. Do not claim performance gains without supporting measurements.
+
+### Static analysis
+
+Qodana runs the `qodana.starter` profile on pull requests and on pushes to
+`main`, using the configuration in [`qodana.yaml`](qodana.yaml). It imports the
+Gradle project with the same JDK 26 toolchain the build requests, and
+`qodana_code_quality.yml` provisions that JDK before the scan so the import is
+not analyzed against a different Java version.
+
+Fix findings rather than hiding them: do not disable inspections, exclude source
+trees, or add a blanket baseline to make a run green. A single finding may be
+suppressed with a `//noinspection <id>` comment when the suggested fix cannot be
+applied to this project — for example, a `Process` used in a
+try-with-resources is only valid at the Java 26 API level, while the modules
+compile with `--release 25`, so the resource is reaped explicitly instead. State
+the reason in the comment; an unexplained suppression is a defect.
 
 ## Pull Requests
 

@@ -1,3 +1,5 @@
+import org.gradle.language.jvm.tasks.ProcessResources
+
 plugins {
     id("java-library")
 }
@@ -56,6 +58,13 @@ dependencies {
     // Tests run with a real Log4j2 context (see src/test/resources/log4j2.xml).
     testRuntimeOnly("org.apache.logging.log4j:log4j-core:2.26.0")
     testRuntimeOnly("org.apache.logging.log4j:log4j-jul:2.26.0")
+}
+
+tasks.named<ProcessResources>("processResources") {
+    dependsOn(rootProject.tasks.named("generateBuildMetadata"))
+    from(rootProject.layout.buildDirectory.file("metadata/build-metadata.json")) {
+        rename { "veltis-build-metadata.json" }
+    }
 }
 
 // `NativeBootstrapTest` exercises the same startup path a real installation

@@ -49,7 +49,7 @@ final class ParsedPatch {
             this.originalStart = originalStart;
             this.search = new java.util.ArrayList<>(oldCount);
             this.replace = new java.util.ArrayList<>(newCount);
-            this.contextSearchIndex = new int[Math.max(0, newCount)];
+            this.contextSearchIndex = new int[newCount];
             java.util.Arrays.fill(contextSearchIndex, -1);
         }
 

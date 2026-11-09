@@ -4,6 +4,8 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Objects;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.LongSupplier;
@@ -30,6 +32,8 @@ public final class NativeEngine {
 
     private volatile NativeConfig config = NativeConfig.defaults();
     private volatile NativeLoader.LoadedLibrary library;
+    private final Map<String, NativeLoader.LoadedLibrary> modules = new LinkedHashMap<>();
+    private final Map<String, NativeStatus> moduleStatuses = new LinkedHashMap<>();
     private volatile NativeStatus status = NativeStatus.disabled("not initialized");
     private boolean initialized;
 
@@ -80,6 +84,120 @@ public final class NativeEngine {
     }
 
     /**
+     * Loads and initializes one additional native module independently. A failed
+     * module is recorded without changing the status or availability of others.
+     */
+    public NativeStatus loadModule(NativeConfig requested, String moduleName, int expectedAbiVersion) {
+        Objects.requireNonNull(requested, "requested");
+        if (!NativeLoader.isValidModuleName(moduleName)) {
+            throw new IllegalArgumentException("invalid native module name: " + moduleName);
+        }
+        if (expectedAbiVersion < 1) {
+            throw new IllegalArgumentException("expected ABI version must be positive");
+        }
+        var write = lifecycle.writeLock();
+        write.lock();
+        try {
+            if (moduleName.equals(NativeLoader.DEFAULT_MODULE_NAME)) {
+                if (expectedAbiVersion != NativeLoader.EXPECTED_ABI_VERSION) {
+                    return NativeStatus.unavailable(false, 0, "0.0.0",
+                            "the transform module requires ABI " + NativeLoader.EXPECTED_ABI_VERSION);
+                }
+                if (library != null) {
+                    return status;
+                }
+                if (!requested.enabled()) {
+                    var disabled = NativeStatus.disabled("disabled by " + NativeConfig.ENABLED_PROPERTY);
+                    config = requested;
+                    initialized = true;
+                    status = disabled;
+                    return disabled;
+                }
+                config = requested;
+                initialized = true;
+                return loadLocked();
+            }
+            var current = modules.get(moduleName);
+            if (current != null) {
+                return moduleStatuses.get(moduleName);
+            }
+            if (!requested.enabled()) {
+                var disabled = NativeStatus.disabled("disabled by " + NativeConfig.ENABLED_PROPERTY);
+                moduleStatuses.put(moduleName, disabled);
+                return disabled;
+            }
+
+            var result = NativeLoader.tryLoad(requested, moduleName, expectedAbiVersion);
+            // Ownership moves into `modules` when the module is published and
+            // shutdown() closes it; a try-with-resources here would unload the
+            // library while the server is calling into it.
+            //noinspection resource
+            var loaded = result.library();
+            if (loaded == null) {
+                moduleStatuses.put(moduleName, result.status());
+                return result.status();
+            }
+            try {
+                var code = loaded.initialize();
+                if (code != 0) {
+                    var failed = NativeStatus.unavailable(true, loaded.status().abiVersion(),
+                            loaded.status().engineVersion(), moduleName + " initialization failed: "
+                                    + loaded.lastError() + " (status " + code + ")");
+                    closeQuietly(loaded);
+                    moduleStatuses.put(moduleName, failed);
+                    return failed;
+                }
+                var available = NativeStatus.available(loaded.status().abiVersion(),
+                        loaded.status().engineVersion(),
+                        NativeCapabilities.fromMask(loaded.capabilitiesMask()));
+                modules.put(moduleName, loaded);
+                moduleStatuses.put(moduleName, available);
+                return available;
+            } catch (Throwable t) {
+                closeQuietly(loaded);
+                var failed = NativeStatus.unavailable(true, loaded.status().abiVersion(),
+                        loaded.status().engineVersion(),
+                        moduleName + " initialization failed: " + describe(t));
+                moduleStatuses.put(moduleName, failed);
+                return failed;
+            }
+        } finally {
+            write.unlock();
+        }
+    }
+
+    /** The most recent status for a named module, or an explicit not-loaded status. */
+    public NativeStatus moduleStatus(String moduleName) {
+        Objects.requireNonNull(moduleName, "moduleName");
+        if (moduleName.equals(NativeLoader.DEFAULT_MODULE_NAME)) {
+            return status;
+        }
+        var read = lifecycle.readLock();
+        read.lock();
+        try {
+            return moduleStatuses.getOrDefault(moduleName,
+                    NativeStatus.disabled("module '" + moduleName + "' has not been loaded"));
+        } finally {
+            read.unlock();
+        }
+    }
+
+    /** Returns the requested loaded module for FFM operation binding, if present. */
+    public java.util.Optional<NativeLoader.LoadedLibrary> loadedModule(String moduleName) {
+        Objects.requireNonNull(moduleName, "moduleName");
+        if (moduleName.equals(NativeLoader.DEFAULT_MODULE_NAME)) {
+            return java.util.Optional.ofNullable(library);
+        }
+        var read = lifecycle.readLock();
+        read.lock();
+        try {
+            return java.util.Optional.ofNullable(modules.get(moduleName));
+        } finally {
+            read.unlock();
+        }
+    }
+
+    /**
      * Attempts a load without requiring autoload. This is the manual path for an
      * administrator who enables native support after startup, and it is
      * idempotent while a library is active.
@@ -104,12 +222,14 @@ public final class NativeEngine {
 
     private NativeStatus loadLocked() {
         var result = NativeLoader.tryLoad(config);
-        if (result.library() == null) {
+        // The library is published to `library` and closed by shutdown(); it has
+        // to outlive this method, so try-with-resources is not an option.
+        //noinspection resource
+        var loaded = result.library();
+        if (loaded == null) {
             status = result.status();
             return status;
         }
-
-        var loaded = result.library();
         int rc;
         try {
             rc = loaded.initialize();
@@ -148,6 +268,7 @@ public final class NativeEngine {
             return status;
         }
         library = loaded;
+        moduleStatuses.put(NativeLoader.DEFAULT_MODULE_NAME, available);
         status = available;
         return status;
     }
@@ -175,6 +296,16 @@ public final class NativeEngine {
                     LOG.log(System.Logger.Level.WARNING, "Native engine shutdown failed", t);
                 }
             }
+            for (var module : modules.values()) {
+                try {
+                    module.close();
+                } catch (Throwable t) {
+                    LOG.log(System.Logger.Level.WARNING,
+                            "Native module " + module.moduleName() + " shutdown failed", t);
+                }
+            }
+            modules.clear();
+            moduleStatuses.clear();
             initialized = false;
             status = NativeStatus.disabled("native engine stopped");
             transformFailures.clearBudget();
@@ -321,9 +452,9 @@ public final class NativeEngine {
     }
 
     /**
-     * Java implementation of the same contract as the C++ algorithm. The
+     * Java implementation of the same contract as the C11 module. The
      * multiplication intentionally uses Java's two's-complement overflow, which
-     * matches the C++ side's unsigned 32-bit wraparound.
+     * matches the native side's unsigned 32-bit wraparound.
      */
     public static int[] javaTransform(int[] input, int salt) {
         Objects.requireNonNull(input, "input");

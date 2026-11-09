@@ -161,15 +161,17 @@ final class BootstrapLibraries {
             staging = target.resolveSibling(target.getFileName() + ".part");
             Files.deleteIfExists(staging);
 
-            var client = HttpClient.newBuilder()
-                .connectTimeout(CONNECT_TIMEOUT)
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
-            var request = HttpRequest.newBuilder(URI.create(row.url()))
-                .timeout(REQUEST_TIMEOUT)
-                .GET()
-                .build();
-            var response = client.send(request, HttpResponse.BodyHandlers.ofFile(staging));
+            HttpResponse<Path> response;
+            try (var client = HttpClient.newBuilder()
+                    .connectTimeout(CONNECT_TIMEOUT)
+                    .followRedirects(HttpClient.Redirect.NORMAL)
+                    .build()) {
+                var request = HttpRequest.newBuilder(URI.create(row.url()))
+                    .timeout(REQUEST_TIMEOUT)
+                    .GET()
+                    .build();
+                response = client.send(request, HttpResponse.BodyHandlers.ofFile(staging));
+            }
             if (response.statusCode() / 100 != 2) {
                 throw new IllegalStateException(report(row,
                     "the download answered HTTP " + response.statusCode(),

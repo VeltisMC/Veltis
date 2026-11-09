@@ -20,7 +20,7 @@ enableFeaturePreview("STABLE_CONFIGURATION_CACHE")
 //                 NMS entrypoint, the Veltis runtime framework and the world
 //                 engine.
 //
-//   :veltis-native the optional C/C++ engine and its Java FFM integration
+//   :veltis-native the optional C11 modules and their Java FFM integration
 //                 layer. It is a real module even though its native artifact is
 //                 not required at runtime: :server compiles against its Java
 //                 classes, and the native library is loaded only when an
