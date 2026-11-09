@@ -1,4 +1,8 @@
-# veltis-native Benchmarking
+# veltis-native — Historical benchmark report
+
+> These measurements were collected for the previous native implementation
+> and have not been re-run against the current C11 module. Do not treat the
+> results below as current performance evidence.
 
 How native performance against Java is measured in this module, what the
 current numbers actually say (including the ones that say "native loses"), and

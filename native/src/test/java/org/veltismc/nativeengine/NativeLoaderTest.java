@@ -86,7 +86,7 @@ class NativeLoaderTest {
         assertFalse(NativeLoader.platformKey().isBlank());
         assertFalse(NativeLoader.platformKey().contains(" "));
         assertFalse(NativeLoader.libraryFileName().isBlank());
-        assertTrue(NativeLoader.libraryFileName().contains("veltis_native"));
+        assertTrue(NativeLoader.libraryFileName().contains("transform"));
     }
 
     @Test
@@ -103,9 +103,9 @@ class NativeLoaderTest {
 
     @Test
     void libraryNameDependsOnOperatingSystemNotArchitecture() {
-        assertEquals("veltis_native.dll", NativeLoader.libraryFileName("windows-aarch64"));
-        assertEquals("libveltis_native.so", NativeLoader.libraryFileName("linux-aarch64"));
-        assertEquals("libveltis_native.dylib", NativeLoader.libraryFileName("macos-x86_64"));
+        assertEquals("transform.dll", NativeLoader.libraryFileName("windows-aarch64"));
+        assertEquals("libtransform.so", NativeLoader.libraryFileName("linux-aarch64"));
+        assertEquals("libtransform.dylib", NativeLoader.libraryFileName("macos-x86_64"));
     }
 
     @Test
@@ -312,7 +312,7 @@ class NativeLoaderTest {
 
     @Test
     void wrongBinaryFormatIsExplainedBeforeTheOperatingSystemLoader() throws Exception {
-        var elf = write("libveltis_native.so", elfImage(0x3E, true));
+        var elf = write("libtransform.so", elfImage(0x3E, true));
         var reason = NativeLoader.checkBinary(elf, "windows-x86_64");
 
         assertNotNull(reason);
@@ -478,9 +478,9 @@ class NativeLoaderTest {
             default -> peImage(0x8664);
         };
         var name = switch (foreign) {
-            case "ELF" -> "libveltis_native.so";
-            case "Mach-O" -> "libveltis_native.dylib";
-            default -> "veltis_native.dll";
+            case "ELF" -> "libtransform.so";
+            case "Mach-O" -> "libtransform.dylib";
+            default -> "transform.dll";
         };
 
         var file = write(name, bytes);

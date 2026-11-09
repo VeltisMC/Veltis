@@ -39,6 +39,17 @@ class NativeEngineTest {
     }
 
     @Test
+    void moduleLookupRejectsInvalidNamesBeforeResolvingPaths() {
+        var engine = new NativeEngine();
+        assertThrows(IllegalArgumentException.class,
+                () -> engine.loadModule(NativeConfig.defaults(), "../transform", 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeLoader.moduleLibraryFileName("../transform", "windows-x86_64"));
+        assertTrue(engine.moduleStatus("additional").reason().contains("has not been loaded"));
+        engine.shutdown();
+    }
+
+    @Test
     void missingLibraryUsesTheJavaFallback() {
         var engine = new NativeEngine();
         var missing = temp.resolve("missing").resolve(NativeLoader.libraryFileName());

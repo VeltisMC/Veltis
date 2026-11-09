@@ -3,6 +3,7 @@ package org.veltismc.runtime;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.veltismc.nativeengine.NativeConfig;
+import org.veltismc.nativeengine.NativeBuildMetadata;
 import org.veltismc.nativeengine.NativeDistributionConfig;
 import org.veltismc.nativeengine.NativeDistributionManager;
 import org.veltismc.nativeengine.NativeEngine;
@@ -109,8 +110,9 @@ public final class VeltisBootstrap {
     private static void initializeNative(Path home) {
         try {
             var config = NativeConfig.load(home);
-            reportDistribution(NativeDistributionManager.ensureInstalled(
-                    home, config, NativeDistributionConfig.load(home)));
+            var distribution = NativeDistributionManager.ensureInstalled(
+                    home, config, NativeDistributionConfig.load(home), NativeBuildMetadata.commit());
+            reportDistribution(distribution);
             var status = NativeEngine.shared().initialize(config);
             if (status.available()) {
                 LOG.info("Native support enabled: {}", status.summary());
@@ -119,6 +121,19 @@ public final class VeltisBootstrap {
                         status.reason());
             } else {
                 LOG.info("Native support unavailable; Java fallback active: {}", status.reason());
+            }
+            for (var module : distribution.modules()) {
+                if (module.equals(org.veltismc.nativeengine.NativeLoader.DEFAULT_MODULE_NAME)) {
+                    continue;
+                }
+                var moduleStatus = NativeEngine.shared().loadModule(config, module,
+                        org.veltismc.nativeengine.NativeLoader.EXPECTED_ABI_VERSION);
+                if (moduleStatus.available()) {
+                    LOG.info("Native module {} enabled: {}", module, moduleStatus.summary());
+                } else {
+                    LOG.info("Native module {} unavailable; Java fallback active: {}",
+                            module, moduleStatus.reason());
+                }
             }
         } catch (Throwable t) {
             LOG.warn("Failed to initialize native support; Java fallback remains active", t);

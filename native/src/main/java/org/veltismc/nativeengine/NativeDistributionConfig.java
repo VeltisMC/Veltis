@@ -66,7 +66,7 @@ public record NativeDistributionConfig(
      * {@code verifyNativeArtifact}.
      */
     public static final String DEFAULT_REPOSITORY =
-            "https://github.com/VeltisMC/Veltis/releases/download/veltis-native-v1.0.0";
+            "https://api.github.com/repos/VeltisMC/Veltis/releases";
 
     public static final int DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 30;
 

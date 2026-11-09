@@ -112,14 +112,14 @@ class NativeDistributionRealArtifactTest {
         var hostZip = releaseZip(host, libraryBytes);
         var foreignZip = releaseZip(foreign, libraryBytes);
         var artifacts = new JsonObject();
-        artifacts.add(host, artifactFor(host, libraryBytes, hostZip));
-        artifacts.add(foreign, artifactFor(foreign, libraryBytes, foreignZip));
+        artifacts.add("transform/" + host, artifactFor(host, libraryBytes, hostZip));
+        artifacts.add("transform/" + foreign, artifactFor(foreign, libraryBytes, foreignZip));
         var manifest = manifestBytes(artifacts);
         bodies.put("/" + NativeManifest.MANIFEST_ASSET, manifest);
         bodies.put("/" + NativeManifest.SIGNATURE_ASSET,
                 NativeManifest.sign(manifest, keyPair.getPrivate()));
-        bodies.put("/veltis-native-" + host + ".zip", hostZip);
-        bodies.put("/veltis-native-" + foreign + ".zip", foreignZip);
+        bodies.put("/veltis-native-transform-" + host + ".zip", hostZip);
+        bodies.put("/veltis-native-transform-" + foreign + ".zip", foreignZip);
 
         var result = NativeDistributionManager.ensureInstalled(home, NATIVE_ENABLED,
                 new NativeDistributionConfig(true, false,
@@ -129,7 +129,7 @@ class NativeDistributionRealArtifactTest {
         assertEquals(NativeDistributionManager.Outcome.INSTALLED, result.outcome(), result.detail());
         assertEquals(List.of("/" + NativeManifest.MANIFEST_ASSET,
                         "/" + NativeManifest.SIGNATURE_ASSET,
-                        "/veltis-native-" + host + ".zip"),
+                        "/veltis-native-transform-" + host + ".zip"),
                 List.copyOf(requests),
                 "the manifest published two platforms; this runtime must fetch exactly its own");
 
@@ -140,7 +140,7 @@ class NativeDistributionRealArtifactTest {
 
         // From here down this is the server's own startup path: the installed
         // file is what NativeLoader is pointed at, and the assertions are about
-        // the C++ implementation answering through the bindings.
+        // the C11 module answering through the bindings.
         var config = new NativeConfig(true, true, true, false, installed.toString());
         var load = NativeLoader.tryLoad(config);
         assertNotNull(load.library(), () -> "the installed library did not load: " + load.status().summary());
@@ -193,7 +193,7 @@ class NativeDistributionRealArtifactTest {
     /** The three entries a release archive carries, and nothing else. */
     private static byte[] releaseZip(String platform, byte[] library) throws Exception {
         var inner = innerManifest(platform, library);
-        var name = NativeLoader.libraryFileName(platform);
+        var name = NativeLoader.moduleLibraryFileName("transform", platform);
         var out = new ByteArrayOutputStream();
         try (var zip = new ZipOutputStream(out)) {
             put(zip, name, library);
@@ -213,6 +213,7 @@ class NativeDistributionRealArtifactTest {
     private static byte[] innerManifest(String platform, byte[] library) {
         var inner = new JsonObject();
         inner.addProperty("schemaVersion", 1);
+        inner.addProperty("module", "transform");
         inner.addProperty("platform", platform);
         inner.addProperty("library", NativeLoader.libraryFileName(platform));
         inner.addProperty("sha256", sha256(library));
@@ -224,13 +225,14 @@ class NativeDistributionRealArtifactTest {
     private static JsonObject artifactFor(String platform, byte[] library, byte[] zip) {
         var parts = platform.split("-", 2);
         var artifact = new JsonObject();
+        artifact.addProperty("module", "transform");
         artifact.addProperty("platform", platform);
         artifact.addProperty("os", parts[0]);
         artifact.addProperty("architecture", parts[1]);
-        artifact.addProperty("asset", "veltis-native-" + platform + ".zip");
+        artifact.addProperty("asset", "veltis-native-transform-" + platform + ".zip");
         artifact.addProperty("sha256", sha256(zip));
         artifact.addProperty("sizeBytes", zip.length);
-        artifact.addProperty("library", NativeLoader.libraryFileName(platform));
+        artifact.addProperty("library", NativeLoader.moduleLibraryFileName("transform", platform));
         artifact.addProperty("librarySha256", sha256(library));
         artifact.addProperty("abiVersion", NativeLoader.EXPECTED_ABI_VERSION);
         artifact.addProperty("nativeVersion", "1.0.0");
@@ -267,8 +269,8 @@ class NativeDistributionRealArtifactTest {
         var host = NativeLoader.platformKey();
         var foreign = host.startsWith("windows") ? "linux-x86_64" : "windows-x86_64";
         var artifacts = new JsonObject();
-        artifacts.add(host, artifactFor(host, libraryBytes, releaseZip(host, libraryBytes)));
-        artifacts.add(foreign, artifactFor(foreign, libraryBytes, releaseZip(foreign, libraryBytes)));
+        artifacts.add("transform/" + host, artifactFor(host, libraryBytes, releaseZip(host, libraryBytes)));
+        artifacts.add("transform/" + foreign, artifactFor(foreign, libraryBytes, releaseZip(foreign, libraryBytes)));
         assertTrue(artifacts.size() > 1,
                 "a single-platform manifest cannot demonstrate selective downloading");
         assertTrue(NativeManifest.verifyAndParse(manifestBytes(artifacts),

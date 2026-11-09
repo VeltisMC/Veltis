@@ -87,7 +87,14 @@ public final class NativeDistributionManager {
      * The outcome of the check, the platform it was made for, and a
      * human-readable reason. Never null, never blank.
      */
-    public record Result(Outcome outcome, String platform, String detail) {
+    public record Result(Outcome outcome, String platform, String detail, java.util.List<String> modules) {
+        public Result(Outcome outcome, String platform, String detail) {
+            this(outcome, platform, detail, java.util.List.of());
+        }
+
+        public Result {
+            modules = java.util.List.copyOf(modules);
+        }
 
         /**
          * Whether the bootstrap should tell the operator that native
@@ -129,6 +136,31 @@ public final class NativeDistributionManager {
         return ensureInstalled(home, nativeConfig, distribution, trustedKey);
     }
 
+    /**
+     * Resolves the release built for the running server's full Git commit. Unlike
+     * the legacy version-line entry point, this never substitutes another commit.
+     */
+    public static Result ensureInstalled(Path home, NativeConfig nativeConfig,
+            NativeDistributionConfig distribution, String serverCommit) {
+        final PublicKey trustedKey;
+        try {
+            trustedKey = NativeManifest.trustedPublicKey();
+        } catch (IOException e) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "The embedded manifest key could not be loaded; native distribution is unavailable", e);
+            return new Result(Outcome.FETCH_FAILED, NativeLoader.platformKey(),
+                    "the embedded manifest public key could not be loaded");
+        }
+        var result = NativeCommitDistributionManager.ensureInstalled(home, nativeConfig,
+                distribution, trustedKey, serverCommit, NativeLoader.platformKey());
+        if (result.outcome() != Outcome.REUSED && result.outcome() != Outcome.INSTALLED
+                && result.outcome() != Outcome.DISABLED) {
+            LOG.log(System.Logger.Level.INFO, "Native release for " + result.platform()
+                    + " is unavailable; Java fallback remains active: " + result.detail());
+        }
+        return new Result(result.outcome(), result.platform(), result.detail(), result.modules());
+    }
+
     /** Test seam: the same check against a caller-supplied trust anchor. */
     static Result ensureInstalled(Path home, NativeConfig nativeConfig,
             NativeDistributionConfig distribution, PublicKey trustedKey) {
@@ -142,9 +174,15 @@ public final class NativeDistributionManager {
      */
     static Result ensureInstalled(Path home, NativeConfig nativeConfig,
             NativeDistributionConfig distribution, PublicKey trustedKey, String platform) {
+        return ensureInstalled(home, nativeConfig, distribution, trustedKey,
+                NativeLoader.DEFAULT_MODULE_NAME, platform);
+    }
+
+    static Result ensureInstalled(Path home, NativeConfig nativeConfig,
+            NativeDistributionConfig distribution, PublicKey trustedKey, String module, String platform) {
         final Result result;
         try {
-            result = run(home, nativeConfig, distribution, trustedKey, platform);
+            result = run(home, nativeConfig, distribution, trustedKey, module, platform);
         } catch (Throwable t) {
             LOG.log(System.Logger.Level.WARNING,
                     "Native distribution check failed; continuing without a downloaded library", t);
@@ -156,7 +194,7 @@ public final class NativeDistributionManager {
     }
 
     private static Result run(Path home, NativeConfig nativeConfig,
-            NativeDistributionConfig distribution, PublicKey trustedKey, String platform) {
+            NativeDistributionConfig distribution, PublicKey trustedKey, String module, String platform) {
 
         if (!nativeConfig.enabled()) {
             return new Result(Outcome.DISABLED, platform, NativeConfig.ENABLED_PROPERTY + " is false");
@@ -176,7 +214,7 @@ public final class NativeDistributionManager {
         }
 
         var installDir = home.resolve("native").resolve(platform);
-        var installed = NativeDistributionInstaller.validate(installDir, platform);
+        var installed = NativeDistributionInstaller.validate(installDir, module, platform);
 
         // The default policy is satisfied by a verified local library: no
         // manifest, no archive, no request.
@@ -219,14 +257,14 @@ public final class NativeDistributionManager {
                         "another Veltis process is installing native libraries");
             }
             try (lock) {
-                return refresh(home, distribution, trustedKey, platform, installDir, installed, transport);
+                return refresh(home, distribution, trustedKey, module, platform, installDir, installed, transport);
             }
         }
     }
 
     /** The manifest, the entry for this platform, and the single download. */
     private static Result refresh(Path home, NativeDistributionConfig distribution,
-            PublicKey trustedKey, String platform, Path installDir,
+            PublicKey trustedKey, String module, String platform, Path installDir,
             NativeDistributionInstaller.InstallState installed,
             NativeDistributionTransport transport) {
 
@@ -244,7 +282,7 @@ public final class NativeDistributionManager {
             return new Result(Outcome.FETCH_FAILED, platform, describe(e));
         }
 
-        var entry = manifest.artifact(platform).orElse(null);
+        var entry = manifest.artifact(module, platform).orElse(null);
         if (entry == null) {
             // The graceful-skip path: an optional platform with no runner, no
             // build or no verified artifact is simply not in this release.

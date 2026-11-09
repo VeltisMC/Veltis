@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * so a Java-only checkout (or a CI job with no compiler) still runs the suite.
  * When the file is present the library is loaded through the same
  * {@link NativeLoader} the server uses, and every assertion is about bytes that
- * came out of the C++ implementation.
+ * came out of the C11 implementation.
  *
  * <p>Run it against a freshly built library with:
  *

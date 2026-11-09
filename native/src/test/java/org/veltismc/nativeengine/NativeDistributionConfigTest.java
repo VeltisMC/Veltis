@@ -74,13 +74,10 @@ class NativeDistributionConfigTest {
     }
 
     @Test
-    void theDefaultRepositoryIsVersionedNotLatest() {
-        // `releases/latest` would resolve to whichever release the repository
-        // created last — the server distribution publishes far more often than
-        // the native engine does.
+    void theDefaultRepositoryResolvesReleaseMetadataNotGuessedAssetUrls() {
         var repository = NativeDistributionConfig.DEFAULT_REPOSITORY;
         assertTrue(repository.startsWith("https://"), repository);
-        assertTrue(repository.contains("/releases/download/veltis-native-v"), repository);
+        assertTrue(repository.equals("https://api.github.com/repos/VeltisMC/Veltis/releases"), repository);
         assertFalse(repository.contains("latest"), repository);
     }
 

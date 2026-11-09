@@ -45,48 +45,31 @@ cd Veltis
 
 If the build succeeds, check the repository's configured distribution and artifact directories for the generated server JAR.
 
-### Optional native engine
+### Optional native modules
 
-VeltisMC can use an optional C/C++ engine through a stable C ABI and the Java
-Foreign Function & Memory API. It is not required: the normal build and server
-startup use the Java fallback unless a compatible library is installed. Building
-the library needs CMake 3.21+ and a C11/C++20 compiler, and is a separate task:
+The optional native layer uses independent C11 modules behind a stable C ABI
+and Java's Foreign Function & Memory API. It is not required to build or start
+the server; Java fallback remains available when a compatible native module is
+not installed. The current native module is `transform`.
+
+Native builds are separate from the ordinary Java build and require CMake 3.21+
+and a C11 compiler:
 
 ```bash
 ./gradlew :veltis-native:buildNative
 ./gradlew :veltis-native:testNative
 ```
 
-Windows x86-64 is the target built, executed and integration-tested **on the
-development host**. The other Tier 1 targets — Linux x86-64 (GCC and Clang),
-Linux AArch64, macOS on both architectures, Windows ARM64, and Windows x86-64
-under MSVC and clang-cl — were built, tested and packaged green on their own
-GitHub-hosted runners in
-[CI run 90](https://github.com/VeltisMC/Veltis/actions/runs/42006900852)
-(commit `873028c`, 2026-11-05), so they are executed-and-tested evidence of a
-different kind: the runner's, not a local one's. No benchmark, sanitizer or
-profile has been produced on any of them. See
-[`native/README.md`](native/README.md) for the support table that keeps the two
-apart.
+The loader identifies a module by name and ABI before use. If a signed
+commit-pinned platform ZIP is available for the running server's exact build
+and detected OS/CPU architecture, startup installs its verified module set into
+`./native/<platform>/` and caches the ZIP under `./cache/native/`. Missing,
+unsupported, or invalid artifacts leave Java fallback in place. Native
+publication is gated on successful manifest signing. Platform recognition does
+not itself imply that a platform has a verified artifact.
 
-The server can also fetch that library for you. `veltis.native.autoDownload`
-defaults to `true`, so a start-up with no verified installation for this
-operating system and JVM architecture reads the signed release manifest,
-downloads **exactly one** artifact — the one for its own platform — installs it
-atomically under `<server root>/native/<platform>/`, and hands it to the same
-loader validation a manually installed library goes through. It never downloads
-every platform's binary, refuses plain HTTP outside loopback, re-checks the host
-allowlist on every redirect hop, and refuses a manifest that does not verify
-against the public key embedded in this build. A platform the release skipped,
-or one it only cross-compiled, reports a skip. Every failure path in this flow
-ends the same way: the server continues on its Java implementation. Set
-`veltis.native.autoDownload=false` (or `veltis.native.offline=true`) and the
-server makes zero network requests.
-
-See [`native/README.md`](native/README.md) for the support table, the ABI,
-installation layout, packaging and release verification, and
-[`native/docs/DISTRIBUTION.md`](native/docs/DISTRIBUTION.md) for the download
-path: its manifest schema, signature mechanism, cache policy and configuration.
+See [`native/README.md`](native/README.md) for the module layout, build tasks,
+ABI, and distribution format.
 
 ### Run
 

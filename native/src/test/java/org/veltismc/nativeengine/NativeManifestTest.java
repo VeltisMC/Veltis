@@ -198,6 +198,9 @@ class NativeManifestTest {
             artifact.addProperty("abiVersion", 7);
         }), "declares abiVersion 7");
         assertRefused(withArtifact(artifact -> {
+            artifact.addProperty("nativeVersion", "2.0.0");
+        }), "declares nativeVersion 2.0.0");
+        assertRefused(withArtifact(artifact -> {
             artifact.addProperty("verification", "we-think-it-is-fine");
         }), "neither host nor cross");
         assertRefused(withArtifact(artifact -> {
@@ -247,7 +250,7 @@ class NativeManifestTest {
 
     private static byte[] withArtifact(java.util.function.Consumer<JsonObject> mutateArtifact) {
         return withRoot(root -> {
-            var artifact = root.getAsJsonObject("artifacts").getAsJsonObject("linux-x86_64");
+            var artifact = root.getAsJsonObject("artifacts").getAsJsonObject("transform/linux-x86_64");
             mutateArtifact.accept(artifact);
         });
     }
@@ -259,13 +262,14 @@ class NativeManifestTest {
 
     private static JsonObject baseRoot() {
         var artifact = new JsonObject();
+        artifact.addProperty("module", "transform");
         artifact.addProperty("platform", "linux-x86_64");
         artifact.addProperty("os", "linux");
         artifact.addProperty("architecture", "x86_64");
-        artifact.addProperty("asset", "veltis-native-linux-x86_64.zip");
+        artifact.addProperty("asset", "veltis-native-transform-linux-x86_64.zip");
         artifact.addProperty("sha256", "a".repeat(64));
         artifact.addProperty("sizeBytes", 4096);
-        artifact.addProperty("library", "libveltis_native.so");
+        artifact.addProperty("library", "libtransform.so");
         artifact.addProperty("librarySha256", "b".repeat(64));
         artifact.addProperty("abiVersion", 1);
         artifact.addProperty("nativeVersion", "1.0.0");
@@ -273,7 +277,7 @@ class NativeManifestTest {
         artifact.addProperty("verification", "host");
 
         var artifacts = new JsonObject();
-        artifacts.add("linux-x86_64", artifact);
+        artifacts.add("transform/linux-x86_64", artifact);
 
         var root = new JsonObject();
         root.addProperty("schemaVersion", 1);

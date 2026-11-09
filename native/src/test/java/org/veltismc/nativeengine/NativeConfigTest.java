@@ -33,7 +33,7 @@ class NativeConfigTest {
         properties.setProperty(NativeConfig.AUTOLOAD_PROPERTY, "false");
         properties.setProperty(NativeConfig.FALLBACK_PROPERTY, "false");
         properties.setProperty(NativeConfig.STATS_PROPERTY, "true");
-        properties.setProperty(NativeConfig.PATH_PROPERTY, "  /opt/veltis/libveltis_native.so  ");
+        properties.setProperty(NativeConfig.PATH_PROPERTY, "  /opt/veltis/libtransform.so  ");
 
         var config = NativeConfig.fromProperties(properties);
 
@@ -41,7 +41,7 @@ class NativeConfigTest {
         assertFalse(config.autoload());
         assertFalse(config.fallback());
         assertTrue(config.stats());
-        assertEquals("/opt/veltis/libveltis_native.so", config.libraryPath());
+        assertEquals("/opt/veltis/libtransform.so", config.libraryPath());
         assertTrue(config.hasLibraryPath());
     }
 
@@ -59,14 +59,14 @@ class NativeConfigTest {
                 motd=test
                 veltis.native.enabled=false
                 veltis.native.stats=true
-                veltis.native.path=native/test/libveltis_native.so
+                veltis.native.path=native/test/libtransform.so
                 """);
 
         var config = NativeConfig.load(home);
 
         assertFalse(config.enabled());
         assertTrue(config.stats());
-        assertEquals("native/test/libveltis_native.so", config.libraryPath());
+        assertEquals("native/test/libtransform.so", config.libraryPath());
     }
 
     @Test

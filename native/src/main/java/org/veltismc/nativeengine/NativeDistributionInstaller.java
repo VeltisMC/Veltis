@@ -55,7 +55,7 @@ import java.util.zip.ZipInputStream;
 final class NativeDistributionInstaller {
 
     /** Records what was installed, so a later run can verify it without a network. */
-    static final String INSTALL_RECORD = "veltis-native-install.json";
+    static final String INSTALL_RECORD = "transform.install.json";
 
     private static final String LOCK_FILE = ".distribution.lock";
     private static final String INNER_MANIFEST = "veltis-native-manifest.json";
@@ -76,13 +76,17 @@ final class NativeDistributionInstaller {
 
     /** Checks the installed library against its record and the binary probe. */
     static InstallState validate(Path installDir, String platform) {
-        var library = installDir.resolve(NativeLoader.libraryFileName(platform));
+        return validate(installDir, NativeLoader.DEFAULT_MODULE_NAME, platform);
+    }
+
+    static InstallState validate(Path installDir, String module, String platform) {
+        var library = installDir.resolve(NativeLoader.moduleLibraryFileName(module, platform));
         if (!Files.isRegularFile(library)) {
             return InstallState.absent();
         }
         final InstallRecord record;
         try {
-            record = readRecord(installDir);
+            record = readRecord(installDir, module);
         } catch (IOException e) {
             return new InstallState(false, "", "", "the installation record is unreadable: " + e.getMessage());
         }
@@ -93,6 +97,10 @@ final class NativeDistributionInstaller {
         if (!platform.equals(record.platform())) {
             return new InstallState(false, "", "",
                     "the installation record is for " + record.platform() + ", not " + platform);
+        }
+        if (!module.equals(record.module())) {
+            return new InstallState(false, "", "",
+                    "the installation record is for module " + record.module() + ", not " + module);
         }
         if (record.abiVersion() != NativeLoader.EXPECTED_ABI_VERSION) {
             return new InstallState(false, "", "",
@@ -294,6 +302,7 @@ final class NativeDistributionInstaller {
         } catch (com.google.gson.JsonParseException | IllegalStateException e) {
             throw new IOException("the inner manifest is not valid JSON: " + e.getMessage(), e);
         }
+        requireField(inner, "module", entry.module());
         requireField(inner, "platform", platform);
         requireField(inner, "library", entry.library());
         requireField(inner, "sha256", entry.librarySha256());
@@ -356,10 +365,11 @@ final class NativeDistributionInstaller {
     // Installation record
     // ------------------------------------------------------------------
 
-    private record InstallRecord(String platform, String sha256, String nativeVersion, int abiVersion) {}
+    private record InstallRecord(
+            String module, String platform, String sha256, String nativeVersion, int abiVersion) {}
 
-    private static InstallRecord readRecord(Path installDir) throws IOException {
-        var file = installDir.resolve(INSTALL_RECORD);
+    private static InstallRecord readRecord(Path installDir, String module) throws IOException {
+        var file = installDir.resolve(installRecordName(module));
         if (!Files.isRegularFile(file)) {
             return null;
         }
@@ -370,6 +380,7 @@ final class NativeDistributionInstaller {
             }
             var object = parsed.getAsJsonObject();
             return new InstallRecord(
+                    object.get("module").getAsString(),
                     object.get("platform").getAsString(),
                     object.get("sha256").getAsString(),
                     object.get("nativeVersion").getAsString(),
@@ -394,6 +405,7 @@ final class NativeDistributionInstaller {
             String librarySha256) throws IOException {
         var object = new JsonObject();
         object.addProperty("schemaVersion", 1);
+        object.addProperty("module", entry.module());
         object.addProperty("platform", platform);
         object.addProperty("library", entry.library());
         object.addProperty("sha256", librarySha256);
@@ -401,8 +413,9 @@ final class NativeDistributionInstaller {
         object.addProperty("abiVersion", entry.abiVersion());
         object.addProperty("asset", entry.asset());
         object.addProperty("installedAt", Instant.now().toString());
-        var target = installDir.resolve(INSTALL_RECORD);
-        var staging = installDir.resolve(INSTALL_RECORD + ".part");
+        var recordName = installRecordName(entry.module());
+        var target = installDir.resolve(recordName);
+        var staging = installDir.resolve(recordName + ".part");
         try {
             Files.writeString(staging, object.toString(), StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
@@ -411,6 +424,12 @@ final class NativeDistributionInstaller {
         } finally {
             Files.deleteIfExists(staging);
         }
+    }
+
+    private static String installRecordName(String module) {
+        return module.equals(NativeLoader.DEFAULT_MODULE_NAME)
+                ? INSTALL_RECORD
+                : module + ".install.json";
     }
 
     // ------------------------------------------------------------------

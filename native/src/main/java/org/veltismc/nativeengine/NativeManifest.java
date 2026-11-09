@@ -19,7 +19,7 @@ import java.util.regex.Pattern;
 
 /**
  * The signed, cross-platform manifest that tells one running server which
- * single artifact it may download.
+ * module artifact it may download.
  *
  * <p>The manifest is fetched as bytes first and verified as bytes second:
  * {@link #verifyAndParse} checks the Ed25519 signature over the exact bytes it
@@ -44,14 +44,15 @@ import java.util.regex.Pattern;
  *   "abiVersion": 1,
  *   "generatedAt": "2026-11-05T00:00:00Z",
  *   "artifacts": {
- *     "linux-x86_64": {
+ *     "transform/linux-x86_64": {
+ *       "module": "transform",
  *       "platform": "linux-x86_64",
  *       "os": "linux",
  *       "architecture": "x86_64",
- *       "asset": "veltis-native-linux-x86_64.zip",
+ *       "asset": "veltis-native-transform-linux-x86_64.zip",
  *       "sha256": "&lt;64 hex, the archive&gt;",
  *       "sizeBytes": 123456,
- *       "library": "libveltis_native.so",
+ *       "library": "libtransform.so",
  *       "librarySha256": "&lt;64 hex, the library&gt;",
  *       "abiVersion": 1,
  *       "nativeVersion": "1.0.0",
@@ -109,6 +110,7 @@ final class NativeManifest {
 
     /** One publishable artifact, with every field a download decision needs. */
     record Artifact(
+            String module,
             String platform,
             String os,
             String architecture,
@@ -154,7 +156,11 @@ final class NativeManifest {
     }
 
     Optional<Artifact> artifact(String platform) {
-        return Optional.ofNullable(artifacts.get(platform));
+        return artifact(NativeLoader.DEFAULT_MODULE_NAME, platform);
+    }
+
+    Optional<Artifact> artifact(String module, String platform) {
+        return Optional.ofNullable(artifacts.get(module + "/" + platform));
     }
 
     /** The artifact keys this manifest publishes, in document order. */
@@ -194,7 +200,7 @@ final class NativeManifest {
         return parse(manifestBytes);
     }
 
-    private static void verifySignature(byte[] manifestBytes, byte[] signatureBytes, PublicKey trustedKey)
+    static void verifySignature(byte[] manifestBytes, byte[] signatureBytes, PublicKey trustedKey)
             throws IOException {
         if (signatureBytes == null || signatureBytes.length == 0) {
             throw new IOException("the manifest signature file is missing or empty");
@@ -263,7 +269,8 @@ final class NativeManifest {
             if (!entry.getValue().isJsonObject()) {
                 throw new IOException("artifact '" + entry.getKey() + "' is not a JSON object");
             }
-            var artifact = parseArtifact(entry.getKey(), entry.getValue().getAsJsonObject());
+            var artifact = parseArtifact(
+                    entry.getKey(), entry.getValue().getAsJsonObject(), abiVersion, nativeVersion);
             artifacts.put(entry.getKey(), artifact);
         }
         if (artifacts.isEmpty()) {
@@ -272,13 +279,19 @@ final class NativeManifest {
         return new NativeManifest(release, nativeVersion, abiVersion, generatedAt, artifacts);
     }
 
-    private static Artifact parseArtifact(String key, JsonObject object) throws IOException {
+    private static Artifact parseArtifact(
+            String key, JsonObject object, int manifestAbiVersion, String manifestNativeVersion) throws IOException {
+        var module = stringField(object, "module");
+        if (!module.matches("[a-z][a-z0-9_]*")) {
+            throw new IOException("artifact module '" + module + "' is not a module identifier");
+        }
         var platform = stringField(object, "platform");
         if (!PLATFORM_KEY.matcher(platform).matches()) {
             throw new IOException("artifact platform '" + platform + "' is not a platform key");
         }
-        if (!platform.equals(key)) {
-            throw new IOException("artifact is keyed '" + key + "' but claims platform '" + platform + "'");
+        if (!(module + "/" + platform).equals(key)) {
+            throw new IOException("artifact is keyed '" + key + "' but claims module/platform '"
+                    + module + "/" + platform + "'");
         }
         var os = stringField(object, "os");
         var architecture = stringField(object, "architecture");
@@ -291,9 +304,9 @@ final class NativeManifest {
         // The release asset this platform's zip is published as. Requiring the
         // exact conventional name means a signed manifest can never describe a
         // path, a URL or another platform's archive.
-        var expectedAsset = "veltis-native-" + platform + ".zip";
+        var expectedAsset = "veltis-native-" + module + "-" + platform + ".zip";
         if (!asset.equals(expectedAsset)) {
-            throw new IOException("artifact " + platform + " names asset '" + asset
+            throw new IOException("artifact " + module + "/" + platform + " names asset '" + asset
                     + "' but this release publishes '" + expectedAsset + "'");
         }
 
@@ -311,17 +324,22 @@ final class NativeManifest {
                     + ", outside 1.." + MAX_ARCHIVE_BYTES);
         }
         var library = stringField(object, "library");
-        if (!library.equals(NativeLoader.libraryFileName(platform))) {
-            throw new IOException("artifact " + platform + " names library '" + library
-                    + "' but that platform loads '" + NativeLoader.libraryFileName(platform) + "'");
+        if (!library.equals(NativeLoader.moduleLibraryFileName(module, platform))) {
+            throw new IOException("artifact " + module + "/" + platform + " names library '" + library
+                    + "' but that platform loads '" + NativeLoader.moduleLibraryFileName(module, platform) + "'");
         }
         var abiVersion = intField(object, "abiVersion");
-        if (abiVersion != NativeLoader.EXPECTED_ABI_VERSION) {
-            throw new IOException("artifact " + platform + " declares abiVersion " + abiVersion);
+        if (abiVersion != manifestAbiVersion) {
+            throw new IOException("artifact " + module + "/" + platform + " declares abiVersion " + abiVersion
+                    + " but the manifest declares " + manifestAbiVersion);
         }
         var nativeVersion = stringField(object, "nativeVersion");
         if (!VERSION.matcher(nativeVersion).matches()) {
             throw new IOException("artifact " + platform + " has nativeVersion '" + nativeVersion + "'");
+        }
+        if (!nativeVersion.equals(manifestNativeVersion)) {
+            throw new IOException("artifact " + module + "/" + platform + " declares nativeVersion "
+                    + nativeVersion + " but the manifest declares " + manifestNativeVersion);
         }
         if (!object.has("verified") || !object.get("verified").isJsonPrimitive()
                 || !object.get("verified").getAsJsonPrimitive().isBoolean()) {
@@ -333,7 +351,7 @@ final class NativeManifest {
             throw new IOException("artifact " + platform + " has verification '" + verification
                     + "', which is neither host nor cross");
         }
-        return new Artifact(platform, os, architecture, asset, sha256, sizeBytes, library,
+        return new Artifact(module, platform, os, architecture, asset, sha256, sizeBytes, library,
                 librarySha256, abiVersion, nativeVersion, verified, verification);
     }
 

@@ -3,15 +3,15 @@
  *
  * The Java side of this module is ordinary code: it is compiled by every
  * `build`, it is a dependency of :server, and it contains no mandatory native
- * reference. The C/C++ side is deliberately *not* part of the ordinary build
+ * reference. The native C side is deliberately *not* part of the ordinary build
  * graph. CMake is invoked only by the `native` tasks below, so a checkout with
- * no compiler still builds and tests every Java module exactly as before.
+ * no C compiler still builds and tests every Java module exactly as before.
  *
  * The three task groups:
  *
  *   configureNative  runs CMake's configure step into build/native/cmake/<platform>
  *   buildNative      compiles and links the shared library into build/native/<platform>
- *   testNative       runs the C/C++ test executable through CTest
+ *   testNative       runs the C11 module tests through CTest
  *   cleanNative      deletes this module's native build tree
  *
  * The release-side tasks do not change what is built; they check what was built:
@@ -46,6 +46,7 @@
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.io.File
+import java.net.URI
 import java.net.URLClassLoader
 import java.nio.file.Files
 import java.nio.file.Path
@@ -58,13 +59,15 @@ import java.security.Signature
 import java.security.spec.PKCS8EncodedKeySpec
 import java.time.Instant
 import java.util.Base64
+import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
 
 plugins {
     id("java-library")
 }
 
-description = "VeltisMC native engine: C/C++ implementation and Java FFM integration"
+description = "VeltisMC native C modules and Java FFM integration"
 
 dependencies {
     // The signed distribution manifest is JSON. Gson is already on the server's
@@ -199,8 +202,9 @@ fun libraryName(base: String, platform: String): String = when {
     else -> "lib$base.so"
 }
 
-val nativeLibraryName = libraryName("veltis_native", nativePlatform)
+val nativeLibraryName = libraryName("transform", nativePlatform)
 val nativeLibraryFile = nativeOutputDir.map { it.file(nativeLibraryName) }
+val nativeModuleName = "transform"
 
 /**
  * Finds an executable on PATH, trying the platform's usual suffixes.
@@ -292,7 +296,6 @@ fun requireTool(
  */
 val nativeCompilerKnobs = listOf(
     Triple("CMAKE_C_COMPILER", "CC", "veltisNativeCc"),
-    Triple("CMAKE_CXX_COMPILER", "CXX", "veltisNativeCxx"),
 )
 
 /**
@@ -364,7 +367,7 @@ fun sameCompiler(requested: String, recorded: String): Boolean {
  * Fails when the cache holds a different compiler than the one just requested.
  *
  * CMake writes the first compiler it finds into `CMakeCache.txt` and afterwards
- * ignores `CC`, `CXX` and a changed PATH: the reconfigure succeeds and rebuilds
+ * ignores `CC` and a changed PATH: the reconfigure succeeds and rebuilds
  * every object with the tool the caller did not ask for, and the artifact check
  * then reports that tool as if it had been chosen. An edit to a cache is not
  * something Gradle can see as an input either, so the only honest option is to
@@ -394,12 +397,13 @@ val nativeSourceInputs = fileTree(projectDir) {
     include("CMakeLists.txt", "CMakePresets.json")
     include("cmake/**")
     include("include/**")
+    include("modules/**")
     include("src/**")
     include("tests/**")
 }
 
 /**
- * The subset of the build inputs that a C/C++ rebuild actually consumes.
+ * The subset of the build inputs that a C11 rebuild actually consumes.
  *
  * The src glob above also holds this module's Java sources, and an edit there
  * says nothing about whether the library on disk matches the native code.
@@ -410,6 +414,7 @@ val nativeCodeInputs = fileTree(projectDir) {
     include("CMakeLists.txt", "CMakePresets.json")
     include("cmake/**")
     include("include/**")
+    include("modules/**")
     include("src/**")
     include("tests/**")
     exclude("src/main/java/**", "src/test/java/**")
@@ -502,7 +507,7 @@ val configureNative by tasks.registering(Exec::class) {
 
 val buildNative by tasks.registering(Exec::class) {
     group = "native"
-    description = "Compiles and links the C/C++ shared library for $nativePlatform"
+    description = "Compiles and links the C11 modules for $nativePlatform"
     dependsOn(configureNative)
     inputs.files(nativeSourceInputs).withPropertyName("nativeSources")
     inputs.property("platform", nativePlatform)
@@ -534,7 +539,7 @@ val buildNative by tasks.registering(Exec::class) {
 
 val testNative by tasks.registering(Exec::class) {
     group = "verification"
-    description = "Runs the C/C++ native engine tests with CTest"
+    description = "Runs the C11 native module tests with CTest"
     dependsOn(buildNative)
     outputs.upToDateWhen { false }
 
@@ -563,7 +568,7 @@ val testNative by tasks.registering(Exec::class) {
 }
 
 /**
- * Cppcheck over the C/C++ sources — the static-analysis lane that needs no
+ * Cppcheck over the C sources — the static-analysis lane that needs no
  * compile database and therefore runs on a tree that has never been configured.
  *
  * It is a separate task rather than part of `build` because it is a *review*
@@ -603,8 +608,8 @@ val analyzeNativeStatic by tasks.registering {
             "--suppress=unusedFunction",
             "--suppress=missingIncludeSystem",
             "--inline-suppr",
-            "--language=c++",
-            "--std=c++20",
+            "--language=c",
+            "--std=c11",
             "--quiet",
         ) + sources
         // `providers.exec` cannot be used here: it captures output into a buffer
@@ -639,25 +644,15 @@ val analyzeNativeStatic by tasks.registering {
         if (gcc == null) {
             logger.lifecycle("gcc not on PATH; the -fanalyzer half of this check did not run")
         } else {
-            val gxx = findOnPath("g++")
-                ?: throw GradleException(
-                    "gcc was found but g++ was not; the analyzer lane covers every library " +
-                        "translation unit and needs both drivers."
-                )
-            // Globbed rather than listed: this must not be a second copy of the
-            // source set that quietly falls behind CMakeLists.txt's target.
-            val cSources = fileTree("src/c").matching { include("*.c") }.files.sortedBy { it.name }
-            val cxxSources = fileTree("src/cpp").matching { include("*.cpp") }.files.sortedBy { it.name }
-            val includeDirs = listOf(file("include"), file("src/c"), file("src/cpp"))
+            val cSources = fileTree(projectDir).matching {
+                include("modules/**/*.c", "tests/**/*.c")
+            }.files.sortedBy { it.relativeTo(projectDir).path }
+            val includeDirs = listOf(file("include"), file("modules/transform"))
             val analyzed = mutableListOf<String>()
-            for (source in cSources + cxxSources) {
-                val driver = if (source.name.endsWith(".c")) gcc else gxx
-                val standard = if (source.name.endsWith(".c")) "-std=c11" else "-std=c++20"
+            for (source in cSources) {
                 val command = mutableListOf(
-                    driver, "-fanalyzer", "-fsyntax-only", standard,
-                    // Without this the public header marks every export dllimport
-                    // and the analyzer stops at a compile error before its own work.
-                    "-DVELTIS_NATIVE_EXPORTS",
+                    gcc, "-fanalyzer", "-fsyntax-only", "-std=c11",
+                    "-DVELTIS_MODULE_EXPORTS",
                 )
                 includeDirs.forEach { directory -> command += listOf("-I", directory.absolutePath) }
                 command += source.absolutePath
@@ -748,7 +743,7 @@ val nativeTestFixtures: List<Pair<String, File>> = listOf(
  * This exists for the case a file input cannot express: `:veltis-native:test` is
  * *meant* to run with no toolchain and no native build at all, and it happily
  * wires itself to any library it finds. If that library predates an edit to
- * `algorithms.cpp`, Gradle sees a perfectly unchanged input and reports green —
+ * `modules/transform/transform.c`, Gradle sees a perfectly unchanged input and reports green —
  * about a binary this source tree did not produce. Earlier sessions on this host
  * left exactly such libraries behind (R5 in `docs/FOUNDATION_AUDIT.md`), and the
  * stale bytes were then quoted as evidence about the current ones.
@@ -766,7 +761,7 @@ val nativeTestFixtures: List<Pair<String, File>> = listOf(
  * premise is gone either way, which is why every fixture is withheld.
  */
 fun nativeLibraryIsStale(library: File, newestSourceTime: Long): Boolean =
-    library.isFile && library.lastModified() < newestSourceTime
+    !library.isFile || library.lastModified() < newestSourceTime
 
 fun configureFixturePath(target: Test, property: String, defaultFile: File) {
     val explicit = providers.systemProperty(property)
@@ -814,18 +809,15 @@ tasks.withType<Test>().configureEach {
         configureFixturePath(this, property, file)
     }
 
-    // The freshness decision is taken when the task's inputs are fingerprinted,
-    // which is after any native build in the same invocation has relinked, and
-    // not while the tasks are configured. The ordering is the reason:
+    // The freshness decision is made in doFirst, after any native build in the
+    // same invocation has relinked, and not while the task is configured:
     // `-PveltisNativeTest=true` makes this task depend on `buildNative`, so a
     // configuration-time check saw the *previous* library, withheld every
     // fixture from a suite that was about to verify a freshly linked one, and
     // `verifyNativeRelease` then reported native cases that had no chance to run.
     //
-    // The verdict is an input as well as an action. This build is reproducible,
-    // so a relink after a no-op edit can leave the library byte-identical and the
-    // file hashes unchanged; without the property this task would stay UP-TO-DATE
-    // holding a result recorded under a different verdict.
+    // The verdict is an input as well as an action, so a reproducible relink
+    // cannot leave this task UP-TO-DATE under a different freshness decision.
     val suite = this
     val fixtureProperties = nativeTestFixtures.map { it.first }
     val libraryUnderTest = nativeLibraryFile.get().asFile
@@ -838,12 +830,16 @@ tasks.withType<Test>().configureEach {
     // unlike a configuration-phase log on this host, which never reaches the
     // console at all.
     doFirst {
-        if (!javaOnlyRequested && !nativeFixturesAreFresh.get()) {
-            fixtureProperties.forEach { property -> suite.systemProperty(property, "") }
+        if (!javaOnlyRequested && nativeLibraryIsStale(libraryUnderTest, newestNativeSourceTime())) {
+            fixtureProperties.forEach { property ->
+                if (!providers.systemProperty(property).isPresent) {
+                    suite.systemProperty(property, "")
+                }
+            }
             logger.warn(
                 "veltis-native: ${libraryUnderTest.absolutePath} predates the native sources in " +
                     "this tree, so no native fixture is offered to this suite and its native cases " +
-                    "skip. This run says nothing about the current C/C++ code. Rebuild with " +
+                    "skip. This run says nothing about the current C11 code. Rebuild with " +
                     "./gradlew :veltis-native:test -PveltisNativeTest=true."
             )
         }
@@ -855,7 +851,7 @@ tasks.withType<Test>().configureEach {
     // of leaving it UP-TO-DATE against a stale library. Files are resolved at
     // execution time so a checkout with no library yet is still valid input.
     //
-    // The native sources are inputs too. Without them an edit to a .cpp leaves
+    // The native sources are inputs too. Without them an edit to a .c file leaves
     // this task UP-TO-DATE and the suite never runs, so the previous result —
     // measured against a library that no longer matches this tree — keeps being
     // reported. With them the task re-runs, the guard above withholds the
@@ -990,6 +986,7 @@ val packageNative by tasks.registering {
 
         val manifest = LinkedHashMap<String, Any?>()
         manifest["schemaVersion"] = 1
+        manifest["module"] = nativeModuleName
         manifest["library"] = library.name
         manifest["sha256"] = checksum
         manifest["sizeBytes"] = library.length()
@@ -1023,7 +1020,7 @@ val packageNativeArchive by tasks.registering(Zip::class) {
     group = "native"
     description = "Creates a reproducible native distribution archive for $nativePlatform"
     dependsOn(packageNative)
-    archiveFileName.set("veltis-native-${nativePlatform}-${nativeBuildType.get().lowercase()}.zip")
+    archiveFileName.set("veltis-native-${nativeModuleName}-${nativePlatform}-${nativeBuildType.get().lowercase()}.zip")
     destinationDirectory.set(nativeDistRoot)
     from(nativeDistDir)
     isPreserveFileTimestamps = false
@@ -1037,6 +1034,128 @@ val packageNativeArchive by tasks.registering(Zip::class) {
         File(archive.parentFile, "${archive.name}.sha256")
             .writeText("$checksum  ${archive.name}\n")
         logger.lifecycle("Native archive: ${archive.absolutePath} (sha256 $checksum)")
+    }
+}
+
+val packageNativeCommitArchive by tasks.registering {
+    group = "native"
+    description = "Packages every verified module under a platform root for this exact Git commit"
+    dependsOn(buildNative, "verifyNativeRelease")
+    outputs.upToDateWhen { false }
+
+    doLast {
+        val commit = gitCommit()
+        if (!Regex("""[0-9a-f]{40}""").matches(commit)) {
+            throw GradleException("cannot package a commit-pinned native archive without a full Git SHA")
+        }
+        val workflowCommit = System.getenv("GITHUB_SHA")?.trim()?.lowercase()
+        if (!workflowCommit.isNullOrEmpty() && workflowCommit != commit) {
+            throw GradleException("checked-out Git commit $commit does not match GITHUB_SHA $workflowCommit")
+        }
+        val parts = nativePlatform.split("-", limit = 2)
+        if (parts.size != 2 || parts[0] !in setOf("windows", "linux", "macos")
+                || parts[1] !in setOf("x86_64", "aarch64")) {
+            throw GradleException("unsupported native distribution platform: $nativePlatform")
+        }
+        val abi = readHeaderAbi()
+        val buildInfoFile = nativeBuildInfoFile.get().asFile
+        if (!buildInfoFile.isFile) {
+            throw GradleException("native build metadata is missing: ${buildInfoFile.absolutePath}")
+        }
+        @Suppress("UNCHECKED_CAST")
+        val cmakeInfo = JsonSlurper().parse(buildInfoFile) as? Map<String, Any?>
+            ?: throw GradleException("native build metadata is not a JSON object")
+        @Suppress("UNCHECKED_CAST")
+        val declaredModules = (cmakeInfo["modules"] as? List<Any?>).orEmpty().map { it.toString() }.sorted()
+        val moduleDirectories = File(projectDir, "modules").listFiles()
+            ?.filter { it.isDirectory && File(it, "main.c").isFile }
+            ?.map { it.name }
+            ?.sorted()
+            .orEmpty()
+        if (moduleDirectories.isEmpty() || moduleDirectories != declaredModules) {
+            throw GradleException(
+                "CMake metadata modules $declaredModules do not match source modules $moduleDirectories"
+            )
+        }
+
+        val outputDir = nativeOutputDir.get().asFile
+        val archiveRoot = File(nativeDistRoot.get().asFile, "commit-staging/$nativePlatform")
+        if (archiveRoot.exists() && !archiveRoot.deleteRecursively()) {
+            throw GradleException("could not clear native archive staging directory ${archiveRoot.absolutePath}")
+        }
+        archiveRoot.mkdirs()
+        val moduleRecords = mutableListOf<Map<String, Any?>>()
+        for (module in moduleDirectories) {
+            val libraryName = when (parts[0]) {
+                "windows" -> "$module.dll"
+                "macos" -> "lib$module.dylib"
+                else -> "lib$module.so"
+            }
+            val source = File(outputDir, libraryName)
+            if (!source.isFile) {
+                throw GradleException("module $module did not produce $libraryName")
+            }
+            val binary = probeWithNativeLoader(source)
+            if (binary.second != setOf(parts[1])) {
+                throw GradleException(
+                    "module $module is ${binary.second.joinToString("/")}, not ${parts[1]}"
+                )
+            }
+            val moduleDir = File(archiveRoot, module)
+            moduleDir.mkdirs()
+            source.copyTo(File(moduleDir, libraryName), overwrite = true)
+            moduleRecords += linkedMapOf(
+                "name" to module,
+                "library" to libraryName,
+                "sha256" to sha256(source),
+                "abiVersion" to abi.abiVersion.toInt(),
+                "nativeVersion" to abi.version,
+            )
+        }
+        val buildInfo = linkedMapOf<String, Any?>(
+            "schemaVersion" to 1,
+            "commit" to commit,
+            "shortCommit" to commit.take(7),
+            "platform" to nativePlatform,
+            "os" to parts[0],
+            "architecture" to parts[1],
+            "modules" to moduleRecords,
+        )
+        File(archiveRoot, "native-build-info.json")
+            .writeText(JsonOutput.prettyPrint(JsonOutput.toJson(buildInfo)) + "\n")
+
+        val artifactDir = File(nativeDistRoot.get().asFile, "commit")
+        artifactDir.mkdirs()
+        val archive = File(artifactDir, "$nativePlatform-${commit.take(7)}.zip")
+        archive.delete()
+        ZipOutputStream(archive.outputStream().buffered()).use { zip ->
+            fun addDirectory(name: String) {
+                zip.putNextEntry(ZipEntry("$name/").apply { time = 0L })
+                zip.closeEntry()
+            }
+            fun addFile(name: String, file: File) {
+                zip.putNextEntry(ZipEntry(name).apply { time = 0L })
+                file.inputStream().use { it.copyTo(zip) }
+                zip.closeEntry()
+            }
+            addDirectory(nativePlatform)
+            moduleDirectories.forEach { module ->
+                addDirectory("$nativePlatform/$module")
+                val library = File(archiveRoot, "$module/" + when (parts[0]) {
+                    "windows" -> "$module.dll"
+                    "macos" -> "lib$module.dylib"
+                    else -> "lib$module.so"
+                })
+                addFile("$nativePlatform/$module/${library.name}", library)
+            }
+            addFile("$nativePlatform/native-build-info.json", File(archiveRoot, "native-build-info.json"))
+        }
+        File(archive.parentFile, "${archive.name}.sha256")
+            .writeText("${sha256(archive)}  ${archive.name}\n")
+        logger.lifecycle(
+            "Commit-pinned native archive: ${archive.absolutePath} " +
+                "(commit $commit, ${moduleRecords.size} module(s), sha256 ${sha256(archive)})"
+        )
     }
 }
 
@@ -1070,7 +1189,7 @@ val packageNativeArchive by tasks.registering(Zip::class) {
  * libraries stay out of the comparison.
  */
 /** Extensions whose untracked presence makes the source archive incomplete. */
-val nativeBuildInputExtensions = setOf("c", "h", "hpp", "hh", "cc", "cpp", "cxx", "in", "cmake", "kt", "kts", "java")
+val nativeBuildInputExtensions = setOf("c", "h", "in", "cmake", "kt", "kts", "java")
 
 /**
  * Whether an untracked path makes the source archive incomplete.
@@ -1103,10 +1222,6 @@ fun untrackedNativeBuildInputs(): List<String> {
         .map { it.trim().replace('\\', '/') }
         .filter { it.isNotEmpty() }
         .filter {
-            // The extension, not a substring: `Regex.matches` anchors the whole
-            // input, and an earlier version of this filter used it on a
-            // `\.(cpp|…)$` pattern, which only ever matched a file literally
-            // named `.cpp` — a guard that could not fire.
             isNativeReleaseInput(it)
         }
         .sorted()
@@ -1243,14 +1358,15 @@ val verifyNativeSourceArchive by tasks.registering {
             "CMakeLists.txt",
             "CMakePresets.json",
             "include/veltis/native/veltis_native.h",
-            "src/c/native_utils.c",
-            "src/cpp/native_engine.cpp",
-            "src/cpp/native_buffer_checks.hpp",
+            "include/veltis/native/veltis_module.h",
+            "include/veltis/native/veltis_module.h",
+            "modules/transform/main.c",
+            "modules/transform/transform.c",
+            "modules/transform/transform.h",
             "tests/CMakeLists.txt",
-            "tests/export_check.c",
-            "tests/abi_contract_checks.h",
-            "tests/abi_contract_c.c",
-            "tests/abi_contract_cxx.cpp",
+            "tests/module_contract.c",
+            "tests/fixtures/fixture.c",
+            "tests/fixtures/minimal.c",
             "cmake/veltis-native-build-info.json.in",
         )
         val absent = required.filter { !File(extracted, it).isFile }
@@ -1341,7 +1457,28 @@ fun readHeaderAbi(): HeaderAbi {
     fun constant(name: String, pattern: Regex): String =
         lines.firstNotNullOfOrNull { pattern.find(it)?.groupValues?.get(1) }
             ?: throw GradleException("$name is not defined in ${header.name}")
-    val abi = constant("VELTIS_NATIVE_ABI_VERSION", Regex("""^#define\s+VELTIS_NATIVE_ABI_VERSION\s+(\d+)"""))
+    val abiDefinition = constant(
+        "VELTIS_NATIVE_ABI_VERSION",
+        Regex("""^#define\s+VELTIS_NATIVE_ABI_VERSION\s+([A-Za-z_][A-Za-z0-9_]*|\d+)""")
+    )
+    val abi = if (abiDefinition.all(Char::isDigit)) {
+        abiDefinition
+    } else {
+        val moduleHeader = File(projectDir, "include/veltis/native/veltis_module.h")
+        val moduleAbi = moduleHeader.takeIf(File::isFile)
+            ?.readLines()
+            ?.firstNotNullOfOrNull {
+                Regex("""^#define\s+${Regex.escape(abiDefinition)}\s+(\d+)""")
+                    .find(it)
+                    ?.groupValues
+                    ?.get(1)
+            }
+            ?: throw GradleException(
+                "$abiDefinition, referenced by VELTIS_NATIVE_ABI_VERSION, is not defined " +
+                    "as a numeric constant in ${moduleHeader.name}"
+            )
+        moduleAbi
+    }
     val version = constant("VELTIS_NATIVE_VERSION_STRING", Regex("""^#define\s+VELTIS_NATIVE_VERSION_STRING\s+"([^"]+)""""))
     val apiLine = Regex("""^VELTIS_NATIVE_API\s+.*[ *]([A-Za-z_][A-Za-z0-9_]*)\(""")
     val exports = lines.mapNotNull { apiLine.find(it)?.groupValues?.get(1) }
@@ -1526,7 +1663,7 @@ val verifyNativeArtifact by tasks.registering {
         @Suppress("UNCHECKED_CAST")
         val compiler = manifest["compiler"] as? Map<String, Any?>
             ?: throw GradleException("the manifest records no compiler block")
-        for (language in listOf("c", "cxx")) {
+        for (language in listOf("c")) {
             @Suppress("UNCHECKED_CAST")
             val entry = compiler[language] as? Map<String, Any?>
                 ?: throw GradleException("the manifest records no $language compiler")
@@ -1601,7 +1738,7 @@ val verifyNativeArtifact by tasks.registering {
                 "$libraryName, ${library.length()} bytes, abi ${abi.abiVersion}, " +
                 "${abi.exports.size} exports, build ${nativeBuildType.get()}, " +
                 "commit ${commit!!.substring(0, 7)} tree ${manifest["sourceTreeState"]}, " +
-                "compiler ${compilerText(compiler, "c")}/${compilerText(compiler, "cxx")}, " +
+                "compiler ${compilerText(compiler, "c")}, " +
                 "triple ${compiler["targetTriple"]}, archive ${archive.name} ($archiveDigest)"
         )
     }
@@ -2151,6 +2288,10 @@ val packageNativeDistribution by tasks.registering {
                 problems += "the inner manifest of $platform is not a JSON object"
                 continue
             }
+            if (innerManifest["module"] != nativeModuleName) {
+                problems += "the inner manifest of $platform does not identify module $nativeModuleName"
+                continue
+            }
             val libraryName = innerManifest["library"] as? String
             val os = innerManifest["os"] as? String
             val architecture = innerManifest["architecture"] as? String
@@ -2179,7 +2320,10 @@ val packageNativeDistribution by tasks.registering {
                 continue
             }
             val buildType = report["buildType"] as? String ?: nativeBuildType.get()
-            val archive = File(distRoot, "veltis-native-$platform-${buildType.lowercase()}.zip")
+            val archive = File(
+                distRoot,
+                "veltis-native-$nativeModuleName-$platform-${buildType.lowercase()}.zip"
+            )
             if (!archive.isFile) {
                 problems += "no distribution archive at ${archive.absolutePath}"
                 continue
@@ -2236,11 +2380,12 @@ val packageNativeDistribution by tasks.registering {
                 // is reported below and nothing of it is staged.
                 continue
             }
-            artifacts[platform] = linkedMapOf(
+            artifacts["$nativeModuleName/$platform"] = linkedMapOf(
+                "module" to nativeModuleName,
                 "platform" to platform,
                 "os" to os,
                 "architecture" to architecture,
-                "asset" to "veltis-native-$platform.zip",
+                "asset" to "veltis-native-$nativeModuleName-$platform.zip",
                 "sha256" to archiveDigest,
                 "sizeBytes" to archive.length(),
                 "library" to libraryName,
@@ -2250,7 +2395,10 @@ val packageNativeDistribution by tasks.registering {
                 "verified" to true,
                 "verification" to "host",
             )
-            archive.copyTo(File(releaseDir, "veltis-native-$platform.zip"), overwrite = true)
+            archive.copyTo(
+                File(releaseDir, "veltis-native-$nativeModuleName-$platform.zip"),
+                overwrite = true
+            )
         }
 
         if (problems.isNotEmpty()) {
@@ -2320,7 +2468,8 @@ val packageNativeDistribution by tasks.registering {
             "tag" to tag,
             "version" to abi.version,
             "signed" to signed,
-            "platforms" to artifacts.keys.toList(),
+            "modules" to listOf(nativeModuleName),
+            "platforms" to artifacts.keys.map { it.substringAfter('/') },
             "skipped" to skipped,
         )
         File(distRoot, "native-release.json")
@@ -2390,6 +2539,311 @@ fun readBackWithRuntimeParser(manifestBytes: ByteArray, signatureFile: File?) {
         logger.lifecycle(
             "Manifest read back through NativeManifest" +
                 (if (signatureFile != null) " and its signature verified against the embedded key" else "")
+        )
+    }
+}
+
+val packageNativeCommitDistribution by tasks.registering {
+    group = "native"
+    description = "Verifies commit-pinned platform ZIPs collected from native-host CI lanes"
+    dependsOn(tasks.named("classes"))
+    outputs.upToDateWhen { false }
+
+    doLast {
+        val commit = gitCommit()
+        if (!Regex("""[0-9a-f]{40}""").matches(commit)) {
+            throw GradleException("native release packaging requires the checked-out full Git SHA")
+        }
+        val shortCommit = commit.take(7)
+        val distRoot = nativeDistRoot.get().asFile
+        val skipped = mutableListOf<Map<String, String>>()
+        val platforms = linkedMapOf<String, Map<String, Any?>>()
+        val problems = mutableListOf<String>()
+
+        for (platform in DISTRIBUTION_PLATFORM_ORDER) {
+            val archive = File(distRoot, "commit/$platform-$shortCommit.zip")
+            val report = File(distRoot, "verification-report-$platform.json")
+            if (!archive.isFile || !report.isFile) {
+                val reason = if (!archive.isFile && !report.isFile) {
+                    "no verified archive or verification report"
+                } else if (!archive.isFile) {
+                    "no commit-pinned archive"
+                } else {
+                    "no native verification report"
+                }
+                if (platform in DISTRIBUTION_MANDATORY_PLATFORMS) {
+                    problems += "mandatory platform $platform is missing: $reason"
+                } else {
+                    skipped += linkedMapOf("platform" to platform, "reason" to reason)
+                }
+                continue
+            }
+
+            @Suppress("UNCHECKED_CAST")
+            val reportJson = JsonSlurper().parse(report) as? Map<String, Any?>
+            if (reportJson == null || reportJson["platform"] != platform
+                    || reportJson["commit"] != commit) {
+                problems += "$platform verification report does not match commit $commit"
+                continue
+            }
+            val checks = (reportJson["checks"] as? List<Any?>).orEmpty().map { it.toString() }.toSet()
+            val missingChecks = DISTRIBUTION_REQUIRED_CHECKS - checks
+            if (missingChecks.isNotEmpty()) {
+                problems += "$platform verification report is missing checks: ${missingChecks.sorted()}"
+                continue
+            }
+
+            val archiveDigest = sha256(archive)
+            val archiveModules: List<Map<String, Any?>>
+            val archiveBuildInfo: Map<String, Any?>
+            try {
+                ZipFile(archive).use { zip ->
+                    val entries = zip.entries().asSequence().toList()
+                    val rootName = "$platform/"
+                    if (entries.none { it.isDirectory && it.name == rootName }) {
+                        throw GradleException("ZIP has no $rootName root directory")
+                    }
+                    val infoEntry = zip.getEntry("$platform/native-build-info.json")
+                        ?: throw GradleException("ZIP has no $platform/native-build-info.json")
+                    @Suppress("UNCHECKED_CAST")
+                    val info = JsonSlurper().parse(zip.getInputStream(infoEntry)) as? Map<String, Any?>
+                        ?: throw GradleException("native build metadata is not an object")
+                    if (info["commit"] != commit || info["shortCommit"] != shortCommit
+                            || info["platform"] != platform) {
+                        throw GradleException("native build metadata does not match commit/platform")
+                    }
+                    val parts = platform.split("-", limit = 2)
+                    if (info["os"] != parts[0] || info["architecture"] != parts[1]) {
+                        throw GradleException("native build metadata has an inconsistent OS/architecture")
+                    }
+                    @Suppress("UNCHECKED_CAST")
+                    val modules = (info["modules"] as? List<Map<String, Any?>>)
+                        ?: throw GradleException("native build metadata has no module list")
+                    if (modules.isEmpty()) {
+                        throw GradleException("native archive includes no modules")
+                    }
+                    val expectedNames = mutableSetOf("$platform/native-build-info.json", rootName)
+                    val names = mutableSetOf<String>()
+                    archiveModules = modules.map { module ->
+                        val name = module["name"] as? String
+                            ?: throw GradleException("native module entry has no name")
+                        if (!Regex("""[a-z][a-z0-9_]*""").matches(name) || !names.add(name)) {
+                            throw GradleException("invalid or duplicate native module '$name'")
+                        }
+                        val library = module["library"] as? String
+                            ?: throw GradleException("native module $name has no library")
+                        val expectedLibrary = when (parts[0]) {
+                            "windows" -> "$name.dll"
+                            "macos" -> "lib$name.dylib"
+                            else -> "lib$name.so"
+                        }
+                        if (library != expectedLibrary) {
+                            throw GradleException("native module $name names unexpected library $library")
+                        }
+                        val path = "$platform/$name/$library"
+                        expectedNames += "$platform/$name/"
+                        expectedNames += path
+                        val entry = zip.getEntry(path)
+                            ?: throw GradleException("ZIP is missing module library $path")
+                        val bytes = zip.getInputStream(entry).use { it.readBytes() }
+                        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+                            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+                        if (module["sha256"] != digest) {
+                            throw GradleException("$path checksum does not match build metadata")
+                        }
+                        val abiVersion = (module["abiVersion"] as? Number)?.toInt()
+                            ?: throw GradleException("native module $name has no ABI version")
+                        if (abiVersion != readHeaderAbi().abiVersion.toInt()) {
+                            throw GradleException("native module $name has incompatible ABI $abiVersion")
+                        }
+                        val version = module["nativeVersion"] as? String
+                            ?: throw GradleException("native module $name has no version")
+                        if (version != readHeaderAbi().version) {
+                            throw GradleException("native module $name has incompatible version $version")
+                        }
+                        val temporary = File(layout.buildDirectory.get().asFile,
+                            "native/commit-verify/$platform-$name-${System.nanoTime()}.$library")
+                        temporary.parentFile.mkdirs()
+                        temporary.writeBytes(bytes)
+                        try {
+                            val (format, architectures) = probeWithNativeLoader(temporary)
+                            val expectedFormat = when (parts[0]) {
+                                "windows" -> "PE"
+                                "macos" -> "Mach-O"
+                                else -> "ELF"
+                            }
+                            if (format != expectedFormat || architectures != setOf(parts[1])) {
+                                throw GradleException(
+                                    "$path is $format ${architectures.joinToString("/")}, not $platform"
+                                )
+                            }
+                        } finally {
+                            temporary.delete()
+                        }
+                        linkedMapOf(
+                            "name" to name,
+                            "library" to library,
+                            "sha256" to digest,
+                            "abiVersion" to abiVersion,
+                            "nativeVersion" to version,
+                        )
+                    }
+                    val packed = entries.map { it.name }.toSet()
+                    if (packed != expectedNames) {
+                        throw GradleException(
+                            "ZIP entries do not match its platform/modules: expected=$expectedNames actual=$packed"
+                        )
+                    }
+                    archiveBuildInfo = info
+                }
+            } catch (e: Exception) {
+                problems += "$platform archive failed verification: ${e.message}"
+                continue
+            }
+
+            platforms[platform] = linkedMapOf(
+                "platform" to platform,
+                "os" to archiveBuildInfo["os"],
+                "architecture" to archiveBuildInfo["architecture"],
+                "asset" to archive.name,
+                "sha256" to archiveDigest,
+                "sizeBytes" to archive.length(),
+                "verified" to true,
+                "modules" to archiveModules,
+            )
+        }
+        if (problems.isNotEmpty()) {
+            throw GradleException(
+                "commit-pinned native distribution failed verification:\n  " + problems.joinToString("\n  ")
+            )
+        }
+        if (platforms.isEmpty()) {
+            throw GradleException("no verified native platform archive is available for $commit")
+        }
+        val document = linkedMapOf<String, Any?>(
+            "schemaVersion" to 1,
+            "releaseTag" to "veltis-native-$shortCommit",
+            "commit" to commit,
+            "shortCommit" to shortCommit,
+            "platforms" to platforms,
+            "skipped" to skipped,
+        )
+        File(distRoot, "native-commit-release.json")
+            .writeText(JsonOutput.prettyPrint(JsonOutput.toJson(document)) + "\n")
+        logger.lifecycle(
+            "Verified native archives for commit $commit: ${platforms.keys.joinToString()}, " +
+                "${skipped.size} optional platform(s) skipped"
+        )
+    }
+}
+
+val signNativeCommitManifest by tasks.registering {
+    group = "native"
+    description = "Signs a commit-pinned manifest using URLs read from GitHub Release metadata"
+    dependsOn(tasks.named("classes"))
+    outputs.upToDateWhen { false }
+
+    doLast {
+        val distRoot = nativeDistRoot.get().asFile
+        val releaseFile = File(distRoot, "native-commit-release.json")
+        val apiFile = File(distRoot, "native-release-assets.json")
+        if (!releaseFile.isFile || !apiFile.isFile) {
+            throw GradleException("native commit release metadata or GitHub asset metadata is missing")
+        }
+        @Suppress("UNCHECKED_CAST")
+        val release = JsonSlurper().parse(releaseFile) as? Map<String, Any?>
+            ?: throw GradleException("native-commit-release.json is not an object")
+        @Suppress("UNCHECKED_CAST")
+        val api = JsonSlurper().parse(apiFile) as? Map<String, Any?>
+            ?: throw GradleException("native-release-assets.json is not an object")
+        val commit = release["commit"] as? String
+            ?: throw GradleException("native commit release has no full commit")
+        val shortCommit = release["shortCommit"] as? String
+            ?: throw GradleException("native commit release has no short commit")
+        val tag = release["releaseTag"] as? String
+            ?: throw GradleException("native commit release has no tag")
+        if (!Regex("""[0-9a-f]{40}""").matches(commit)
+                || shortCommit != commit.take(7) || tag != "veltis-native-$shortCommit"
+                || api["tag"] != tag || api["commit"] != commit) {
+            throw GradleException("GitHub Release metadata does not match the native commit")
+        }
+        @Suppress("UNCHECKED_CAST")
+        val apiAssets = (api["assets"] as? List<Map<String, Any?>>)
+            ?.associateBy { it["name"] as? String ?: "" }
+            ?: throw GradleException("GitHub Release metadata has no asset list")
+        @Suppress("UNCHECKED_CAST")
+        val releasePlatforms = (release["platforms"] as? Map<String, Map<String, Any?>>)
+            ?: throw GradleException("native commit release has no platform records")
+        val platforms = linkedMapOf<String, Any?>()
+        for ((key, record) in releasePlatforms) {
+            val assetName = record["asset"] as? String
+                ?: throw GradleException("$key has no asset name")
+            val asset = apiAssets[assetName]
+                ?: throw GradleException("GitHub Release metadata has no asset named $assetName")
+            val downloadUrl = asset["browser_download_url"] as? String
+                ?: throw GradleException("GitHub Release metadata has no URL for $assetName")
+            val uri = try {
+                URI.create(downloadUrl)
+            } catch (e: Exception) {
+                throw GradleException("GitHub returned an invalid URL for $assetName", e)
+            }
+            if (!"https".equals(uri.scheme, ignoreCase = true)
+                    || !uri.host.equals("github.com", ignoreCase = true)
+                    || (asset["size"] as? Number)?.toLong() != (record["sizeBytes"] as? Number)?.toLong()) {
+                throw GradleException("GitHub Release URL or size does not match $assetName")
+            }
+            val modules = record["modules"]
+                ?: throw GradleException("$key has no module metadata")
+            platforms[key] = linkedMapOf(
+                "platform" to key,
+                "os" to record["os"],
+                "architecture" to record["architecture"],
+                "asset" to assetName,
+                "downloadUrl" to downloadUrl,
+                "sha256" to record["sha256"],
+                "sizeBytes" to record["sizeBytes"],
+                "verified" to record["verified"],
+                "modules" to modules,
+            )
+        }
+        val manifest = linkedMapOf<String, Any?>(
+            "schemaVersion" to 2,
+            "kind" to "veltis-native-commit-distribution",
+            "releaseTag" to tag,
+            "commit" to commit,
+            "shortCommit" to shortCommit,
+            "platforms" to platforms,
+        )
+        val bytes = (JsonOutput.prettyPrint(JsonOutput.toJson(manifest)) + "\n").toByteArray(Charsets.UTF_8)
+        val signingKey = System.getenv("VELTIS_NATIVE_MANIFEST_KEY")
+            ?: throw GradleException("VELTIS_NATIVE_MANIFEST_KEY is required to publish a native release")
+        val signer = Signature.getInstance("Ed25519")
+        signer.initSign(decodeManifestSigningKey(signingKey))
+        signer.update(bytes)
+        val signature = Base64.getEncoder().encode(signer.sign())
+        val manifestFile = File(distRoot, "native-manifest.json")
+        val signatureFile = File(distRoot, "native-manifest.json.sig")
+        manifestFile.writeBytes(bytes)
+        signatureFile.writeText(String(signature, Charsets.US_ASCII) + "\n")
+
+        val urls = sourceSets["main"].runtimeClasspath.files.map { it.toURI().toURL() }.toTypedArray()
+        URLClassLoader(urls, null).use { loader ->
+            val reader = loader.loadClass("org.veltismc.nativeengine.NativeCommitManifest")
+            val parser = reader.getDeclaredMethod(
+                "verifyAndParse", ByteArray::class.java, ByteArray::class.java, PublicKey::class.java
+            ).apply { isAccessible = true }
+            val nativeManifest = loader.loadClass("org.veltismc.nativeengine.NativeManifest")
+            val key = nativeManifest.getDeclaredMethod("trustedPublicKey")
+                .apply { isAccessible = true }.invoke(null)
+            try {
+                parser.invoke(null, bytes, signature, key)
+            } catch (e: java.lang.reflect.InvocationTargetException) {
+                throw GradleException("the runtime rejected the signed commit manifest: "
+                    + e.targetException.message, e.targetException)
+            }
+        }
+        logger.lifecycle(
+            "Signed ${manifestFile.name} for $tag from actual GitHub Release asset URLs"
         )
     }
 }

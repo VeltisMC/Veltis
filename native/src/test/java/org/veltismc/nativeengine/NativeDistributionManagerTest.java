@@ -127,7 +127,7 @@ class NativeDistributionManagerTest {
             assertEquals(List.of(
                     "/" + NativeManifest.MANIFEST_ASSET,
                     "/" + NativeManifest.SIGNATURE_ASSET,
-                    "/veltis-native-" + platform + ".zip"),
+                    "/veltis-native-transform-" + platform + ".zip"),
                     List.copyOf(requests),
                     platform + " must fetch one manifest pair and one archive, never another platform's");
             assertTrue(Files.isRegularFile(
@@ -154,9 +154,9 @@ class NativeDistributionManagerTest {
                 policy(NativeDistributionConfig.UPDATE_POLICY_IF_MISSING));
 
         assertEquals(NativeDistributionManager.Outcome.INSTALLED, result.outcome(), result.detail());
-        assertEquals(List.of("/veltis-native-linux-x86_64.zip"),
+        assertEquals(List.of("/veltis-native-transform-linux-x86_64.zip"),
                 archiveRequests());
-        assertFalse(requests.contains("/veltis-native-linux-aarch64.zip"));
+        assertFalse(requests.contains("/veltis-native-transform-linux-aarch64.zip"));
     }
 
     @Test
@@ -263,7 +263,7 @@ class NativeDistributionManagerTest {
                 policy(NativeDistributionConfig.UPDATE_POLICY_IF_MISSING));
 
         assertEquals(NativeDistributionManager.Outcome.INSTALLED, result.outcome(), result.detail());
-        assertEquals(List.of("/veltis-native-linux-x86_64.zip"), List.copyOf(requests),
+        assertEquals(List.of("/veltis-native-transform-linux-x86_64.zip"), List.copyOf(requests),
                 "a valid cache must replace the manifest fetch, not sit beside it");
     }
 
@@ -424,7 +424,7 @@ class NativeDistributionManagerTest {
     @Test
     void aMissingArchiveIsAFailedDownloadNotAnInstall() throws Exception {
         publish(List.of("linux-x86_64"));
-        bodies.remove("/veltis-native-linux-x86_64.zip");
+        bodies.remove("/veltis-native-transform-linux-x86_64.zip");
 
         var result = run(home.resolve("gone"), "linux-x86_64",
                 policy(NativeDistributionConfig.UPDATE_POLICY_IF_MISSING));
@@ -433,17 +433,17 @@ class NativeDistributionManagerTest {
                 result.detail());
         assertTrue(result.detail().contains("404"), result.detail());
         assertFalse(Files.exists(home.resolve("gone").resolve("native").resolve("linux-x86_64")
-                .resolve("libveltis_native.so")));
+                .resolve("libtransform.so")));
     }
 
     @Test
     void anArchiveOfTheWrongSizeIsRefusedDuringDownload() throws Exception {
         publish(List.of("linux-x86_64"));
-        var zip = bodies.get("/veltis-native-linux-x86_64.zip");
+        var zip = bodies.get("/veltis-native-transform-linux-x86_64.zip");
         var manifest = JsonParser.parseString(
                 new String(bodies.get("/" + NativeManifest.MANIFEST_ASSET), StandardCharsets.UTF_8))
                 .getAsJsonObject();
-        manifest.getAsJsonObject("artifacts").getAsJsonObject("linux-x86_64")
+        manifest.getAsJsonObject("artifacts").getAsJsonObject("transform/linux-x86_64")
                 .addProperty("sizeBytes", zip.length + 5L);
         restampAndServe(manifest);
 
@@ -461,7 +461,7 @@ class NativeDistributionManagerTest {
         var manifest = JsonParser.parseString(
                 new String(bodies.get("/" + NativeManifest.MANIFEST_ASSET), StandardCharsets.UTF_8))
                 .getAsJsonObject();
-        manifest.getAsJsonObject("artifacts").getAsJsonObject("linux-x86_64")
+        manifest.getAsJsonObject("artifacts").getAsJsonObject("transform/linux-x86_64")
                 .addProperty("sha256", "c".repeat(64));
         restampAndServe(manifest);
 
@@ -472,7 +472,7 @@ class NativeDistributionManagerTest {
                 result.detail());
         assertTrue(result.detail().contains("sha256"), result.detail());
         assertFalse(Files.exists(home.resolve("liar").resolve("native").resolve("linux-x86_64")
-                .resolve("libveltis_native.so")),
+                .resolve("libtransform.so")),
                 "a library that failed verification must not be installed");
     }
 
@@ -494,7 +494,7 @@ class NativeDistributionManagerTest {
         assertTrue(result.detail().contains("unexpected entry"), result.detail());
         assertFalse(Files.exists(home.resolve("escape.txt")), "nothing may escape the install directory");
         assertFalse(Files.exists(home.resolve("slip").resolve("native").resolve("linux-x86_64")
-                .resolve("libveltis_native.so")));
+                .resolve("libtransform.so")));
     }
 
     // ------------------------------------------------------------------
@@ -538,7 +538,7 @@ class NativeDistributionManagerTest {
         assertTrue(result.detail().contains("downgrade"), result.detail());
         assertTrue(archiveRequests().isEmpty(), "a refused downgrade must not fetch the older archive");
         assertArrayEquals(newerLibrary, Files.readAllBytes(
-                runHome.resolve("native").resolve("linux-x86_64").resolve("libveltis_native.so")));
+                runHome                .resolve("native").resolve("linux-x86_64").resolve("libtransform.so")));
     }
 
     @Test
@@ -550,7 +550,7 @@ class NativeDistributionManagerTest {
         // Present, byte-identical to the release, but unrecorded — an
         // operator's manual copy. It must be trusted and recorded, not
         // re-downloaded over itself.
-        Files.write(installDir.resolve("libveltis_native.so"), libraryFor("linux-x86_64"));
+        Files.write(installDir.resolve("libtransform.so"), libraryFor("linux-x86_64"));
 
         var result = run(runHome, "linux-x86_64",
                 policy(NativeDistributionConfig.UPDATE_POLICY_IF_MISSING));
@@ -573,7 +573,7 @@ class NativeDistributionManagerTest {
         Files.createDirectories(installDir);
         // Right file name, wrong bytes, no trustworthy record: the
         // distribution's job is to replace exactly this.
-        Files.write(installDir.resolve("libveltis_native.so"),
+        Files.write(installDir.resolve("libtransform.so"),
                 "not a library".getBytes(StandardCharsets.UTF_8));
 
         var result = run(runHome, "linux-x86_64",
@@ -581,7 +581,7 @@ class NativeDistributionManagerTest {
 
         assertEquals(NativeDistributionManager.Outcome.INSTALLED, result.outcome(), result.detail());
         assertArrayEquals(libraryFor("linux-x86_64"), Files.readAllBytes(
-                installDir.resolve("libveltis_native.so")));
+                installDir.resolve("libtransform.so")));
     }
 
     // ------------------------------------------------------------------
@@ -654,12 +654,12 @@ class NativeDistributionManagerTest {
         for (var platform : platforms) {
             var library = libraryFor(platform);
             var zip = releaseZip(platform, library);
-            zips.put("veltis-native-" + platform + ".zip", zip);
+            zips.put("veltis-native-transform-" + platform + ".zip", zip);
             var artifact = artifactFor(platform, library, zip);
             if (artifactMutation != null) {
                 artifactMutation.accept(artifact);
             }
-            artifacts.add(platform, artifact);
+            artifacts.add("transform/" + platform, artifact);
         }
         var manifest = manifestBytes(artifacts);
         var signature = NativeManifest.sign(manifest, keyPair.getPrivate());
@@ -672,12 +672,12 @@ class NativeDistributionManagerTest {
     /** Publishes one platform from an already-built archive. */
     private void serveSinglePlatform(String platform, byte[] zip, byte[] library) throws Exception {
         var artifacts = new JsonObject();
-        artifacts.add(platform, artifactFor(platform, library, zip));
+        artifacts.add("transform/" + platform, artifactFor(platform, library, zip));
         var manifest = manifestBytes(artifacts);
         bodies.put("/" + NativeManifest.MANIFEST_ASSET, manifest);
         bodies.put("/" + NativeManifest.SIGNATURE_ASSET,
                 NativeManifest.sign(manifest, keyPair.getPrivate()));
-        bodies.put("/veltis-native-" + platform + ".zip", zip);
+        bodies.put("/veltis-native-transform-" + platform + ".zip", zip);
     }
 
     /**
@@ -694,13 +694,14 @@ class NativeDistributionManagerTest {
     private static JsonObject artifactFor(String platform, byte[] library, byte[] zip) {
         var parts = platform.split("-", 2);
         var artifact = new JsonObject();
+        artifact.addProperty("module", NativeLoader.DEFAULT_MODULE_NAME);
         artifact.addProperty("platform", platform);
         artifact.addProperty("os", parts[0]);
         artifact.addProperty("architecture", parts[1]);
-        artifact.addProperty("asset", "veltis-native-" + platform + ".zip");
+        artifact.addProperty("asset", "veltis-native-transform-" + platform + ".zip");
         artifact.addProperty("sha256", sha256(zip));
         artifact.addProperty("sizeBytes", zip.length);
-        artifact.addProperty("library", NativeLoader.libraryFileName(platform));
+        artifact.addProperty("library", NativeLoader.moduleLibraryFileName("transform", platform));
         artifact.addProperty("librarySha256", sha256(library));
         artifact.addProperty("abiVersion", NativeLoader.EXPECTED_ABI_VERSION);
         artifact.addProperty("nativeVersion", "1.0.0");
@@ -726,9 +727,9 @@ class NativeDistributionManagerTest {
     private static byte[] releaseZip(String platform, byte[] library) throws Exception {
         var inner = innerManifest(platform, library);
         var entries = new LinkedHashMap<String, byte[]>();
-        entries.put(NativeLoader.libraryFileName(platform), library);
+        entries.put(NativeLoader.moduleLibraryFileName("transform", platform), library);
         entries.put("veltis-native-manifest.json", inner);
-        entries.put("SHA256SUMS", (sha256(library) + "  " + NativeLoader.libraryFileName(platform)
+        entries.put("SHA256SUMS", (sha256(library) + "  " + NativeLoader.moduleLibraryFileName("transform", platform)
                 + "\n" + sha256(inner) + "  veltis-native-manifest.json\n")
                 .getBytes(StandardCharsets.UTF_8));
         return zipOf(entries, Map.of());
@@ -737,8 +738,9 @@ class NativeDistributionManagerTest {
     private static byte[] innerManifest(String platform, byte[] library) {
         var inner = new JsonObject();
         inner.addProperty("schemaVersion", 1);
+        inner.addProperty("module", "transform");
         inner.addProperty("platform", platform);
-        inner.addProperty("library", NativeLoader.libraryFileName(platform));
+        inner.addProperty("library", NativeLoader.moduleLibraryFileName("transform", platform));
         inner.addProperty("sha256", sha256(library));
         inner.addProperty("abiVersion", NativeLoader.EXPECTED_ABI_VERSION);
         inner.addProperty("version", "1.0.0");
@@ -775,15 +777,16 @@ class NativeDistributionManagerTest {
             throws Exception {
         var installDir = runHome.resolve("native").resolve(platform);
         Files.createDirectories(installDir);
-        Files.write(installDir.resolve(NativeLoader.libraryFileName(platform)), library);
+        Files.write(installDir.resolve(NativeLoader.moduleLibraryFileName("transform", platform)), library);
         var record = new JsonObject();
         record.addProperty("schemaVersion", 1);
+        record.addProperty("module", "transform");
         record.addProperty("platform", platform);
-        record.addProperty("library", NativeLoader.libraryFileName(platform));
+        record.addProperty("library", NativeLoader.moduleLibraryFileName("transform", platform));
         record.addProperty("sha256", sha256(library));
         record.addProperty("nativeVersion", version);
         record.addProperty("abiVersion", NativeLoader.EXPECTED_ABI_VERSION);
-        record.addProperty("asset", "veltis-native-" + platform + ".zip");
+        record.addProperty("asset", "veltis-native-transform-" + platform + ".zip");
         record.addProperty("installedAt", "2026-11-05T00:00:00Z");
         Files.writeString(installDir.resolve(NativeDistributionInstaller.INSTALL_RECORD),
                 record.toString());

@@ -28,7 +28,6 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "clang-cl",
-        "CMAKE_CXX_COMPILER": "clang-cl",
         "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/windows-x86_64",
         "VELTIS_NATIVE_BUILD_TESTS": "ON"
       }
@@ -42,7 +41,6 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "gcc",
-        "CMAKE_CXX_COMPILER": "g++",
         "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/windows-x86_64",
         "VELTIS_NATIVE_BUILD_TESTS": "ON"
       }
@@ -56,7 +54,6 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "clang",
-        "CMAKE_CXX_COMPILER": "clang++",
         "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/windows-x86_64",
         "VELTIS_NATIVE_BUILD_TESTS": "ON"
       }
@@ -82,7 +79,6 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "gcc",
-        "CMAKE_CXX_COMPILER": "g++",
         "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/linux-x86_64",
         "VELTIS_NATIVE_BUILD_TESTS": "ON"
       }
@@ -95,7 +91,6 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "clang",
-        "CMAKE_CXX_COMPILER": "clang++",
         "VELTIS_NATIVE_OUTPUT_DIR": "${sourceDir}/build/native/linux-x86_64",
         "VELTIS_NATIVE_BUILD_TESTS": "ON"
       }
