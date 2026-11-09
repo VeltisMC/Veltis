@@ -439,9 +439,7 @@ public final class UnifiedDiffPatcher {
                                             String targetKey) {
         var lines = new ArrayList<String>();
         for (var hunk : diff.hunks()) {
-            for (var line : hunk.replace) {
-                lines.add(line);
-            }
+            lines.addAll(hunk.replace);
         }
         return String.join("\n", lines) + (lines.isEmpty() ? "" : "\n");
     }

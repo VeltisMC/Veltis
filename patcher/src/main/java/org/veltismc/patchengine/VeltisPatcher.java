@@ -66,7 +66,7 @@ public final class VeltisPatcher {
      * the rebuild and any per-file tooling ask. It is a property of the set, not
      * of how the set is applied: application no longer runs these groups.
      */
-    public static Map<String, List<UnifiedDiffPatcher.ChainEntry>> groupByTarget(
+    static Map<String, List<UnifiedDiffPatcher.ChainEntry>> groupByTarget(
             List<VeltisPatch> patches) {
         var groups = new LinkedHashMap<String, List<UnifiedDiffPatcher.ChainEntry>>();
         for (var patch : patches) {

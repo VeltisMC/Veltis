@@ -35,6 +35,13 @@ import java.util.regex.Pattern;
  * these is refused as a whole: it was signed by this repository, so a malformed
  * one means corruption or a bug, not a platform to skip.
  *
+ * <p>The commit-pinned distribution does not publish the document sketched
+ * below; it reads {@code NativeCommitManifest} instead, whose release tag and
+ * asset names are derived from the build's commit. What this class still owns
+ * for both formats is the trust anchor, the Ed25519 verification, and the size
+ * limits, so the retired version-pinned shape is kept here only as the input
+ * its signature tests exercise.
+ *
  * <pre>
  * {
  *   "schemaVersion": 1,
@@ -218,8 +225,6 @@ final class NativeManifest {
             if (!verifier.verify(signature)) {
                 throw new IOException("the manifest signature does not verify against the trusted key");
             }
-        } catch (IOException e) {
-            throw e;
         } catch (java.security.GeneralSecurityException e) {
             throw new IOException("Ed25519 verification is unavailable: " + e.getMessage(), e);
         }

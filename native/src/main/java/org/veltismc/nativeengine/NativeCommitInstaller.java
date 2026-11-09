@@ -106,7 +106,6 @@ final class NativeCommitInstaller {
                 if (previousInstallationMoved) {
                     try {
                         moveAtomically(backup, platformDir);
-                        previousInstallationMoved = false;
                     } catch (IOException restoreFailure) {
                         installFailure.addSuppressed(restoreFailure);
                     }
@@ -115,7 +114,6 @@ final class NativeCommitInstaller {
             }
             if (previousInstallationMoved) {
                 deleteTree(backup);
-                previousInstallationMoved = false;
             }
         } finally {
             deleteTree(staging);

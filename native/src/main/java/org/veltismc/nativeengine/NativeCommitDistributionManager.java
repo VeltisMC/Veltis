@@ -22,6 +22,8 @@ import java.util.regex.Pattern;
 /** Resolves and installs only the signed native release built for this server commit. */
 final class NativeCommitDistributionManager {
 
+    private static final System.Logger LOG =
+            System.getLogger(NativeCommitDistributionManager.class.getName());
     private static final long MAX_RELEASE_METADATA_BYTES = 2L * 1024L * 1024L;
     private static final Pattern COMMIT = Pattern.compile("[0-9a-f]{40}");
 
@@ -75,8 +77,11 @@ final class NativeCommitDistributionManager {
             if (manifestBytes != null && signatureBytes != null) {
                 try {
                     manifest = NativeCommitManifest.verifyAndParse(manifestBytes, signatureBytes, trustedKey);
-                } catch (IOException ignored) {
-                    manifest = null;
+                } catch (IOException e) {
+                    // A cached manifest that no longer verifies is fetched again
+                    // below; the cached bytes are never trusted.
+                    var detail = "discarding the cached native manifest for " + commit + ": " + describe(e);
+                    LOG.log(System.Logger.Level.DEBUG, detail);
                 }
             }
 

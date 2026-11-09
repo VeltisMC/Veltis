@@ -128,11 +128,15 @@ public final class NativeEngine {
             }
 
             var result = NativeLoader.tryLoad(requested, moduleName, expectedAbiVersion);
-            if (result.library() == null) {
+            // Ownership moves into `modules` when the module is published and
+            // shutdown() closes it; a try-with-resources here would unload the
+            // library while the server is calling into it.
+            //noinspection resource
+            var loaded = result.library();
+            if (loaded == null) {
                 moduleStatuses.put(moduleName, result.status());
                 return result.status();
             }
-            var loaded = result.library();
             try {
                 var code = loaded.initialize();
                 if (code != 0) {
@@ -218,12 +222,14 @@ public final class NativeEngine {
 
     private NativeStatus loadLocked() {
         var result = NativeLoader.tryLoad(config);
-        if (result.library() == null) {
+        // The library is published to `library` and closed by shutdown(); it has
+        // to outlive this method, so try-with-resources is not an option.
+        //noinspection resource
+        var loaded = result.library();
+        if (loaded == null) {
             status = result.status();
             return status;
         }
-
-        var loaded = result.library();
         int rc;
         try {
             rc = loaded.initialize();

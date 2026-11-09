@@ -23,6 +23,18 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+      # The build requests JDK 26 as its Gradle toolchain (build.gradle.kts and
+      # qodana.yaml agree on it) and the build does not install a toolchain
+      # resolver. Without a matching JDK in JAVA_HOME, the Qodana Gradle import
+      # cannot resolve the toolchain, which makes every module's model and
+      # source roots unreliable and is reported as a sanity problem. Provision
+      # the same JDK here so analysis imports the project the way CI builds it.
+      - name: 'Set up the build JDK'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '26'
+          cache: gradle
       - name: 'Qodana Scan'
         uses: JetBrains/qodana-action@v2026.2
         env:

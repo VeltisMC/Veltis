@@ -96,7 +96,7 @@ public final class LightJob implements RegionJob {
         }
         while (!queue.isEmpty()) {
             int packed = queue.poll();
-            int x = (packed >>> 0) & 15;
+            int x = packed & 15;
             int y = (packed >>> 4) & 0x3FFFF;
             int z = (packed >>> 22) & 15;
             int level = (packed >>> 26) & 15;

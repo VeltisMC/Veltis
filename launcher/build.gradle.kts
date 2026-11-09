@@ -317,7 +317,7 @@ val developmentClasses = setOf(
 
 fun isDevelopmentClass(entry: String): Boolean {
     val simple = entry.substringAfterLast('/')
-    return developmentClasses.any { simple == "$it.class" || simple.startsWith("$it\$") }
+    return developmentClasses.any { simple == it + ".class" || simple.startsWith(it + "$") }
 }
 
 /**

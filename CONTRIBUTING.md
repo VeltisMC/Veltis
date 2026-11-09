@@ -94,6 +94,22 @@ For Minecraft source changes, confirm that the patch workflow completes successf
 
 For performance improvements, include profiling or benchmark results when available. Do not claim performance gains without supporting measurements.
 
+### Static analysis
+
+Qodana runs the `qodana.starter` profile on pull requests and on pushes to
+`main`, using the configuration in [`qodana.yaml`](qodana.yaml). It imports the
+Gradle project with the same JDK 26 toolchain the build requests, and
+`qodana_code_quality.yml` provisions that JDK before the scan so the import is
+not analyzed against a different Java version.
+
+Fix findings rather than hiding them: do not disable inspections, exclude source
+trees, or add a blanket baseline to make a run green. A single finding may be
+suppressed with a `//noinspection <id>` comment when the suggested fix cannot be
+applied to this project — for example, a `Process` used in a
+try-with-resources is only valid at the Java 26 API level, while the modules
+compile with `--release 25`, so the resource is reaped explicitly instead. State
+the reason in the comment; an unexplained suppression is a defect.
+
 ## Pull Requests
 
 Keep pull requests focused and provide:

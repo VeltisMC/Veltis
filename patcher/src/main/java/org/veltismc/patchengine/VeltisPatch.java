@@ -141,7 +141,6 @@ public final class VeltisPatch {
                     requireHunkComplete(current, hunkNumber, oldRemaining + newRemaining,
                         patchName, li + 1, category, revision, minecraftVersion);
                     hunks.add(current);
-                    current = null;
                 }
                 if (target == null) {
                     throw malformed(patchName, li + 1, category, revision, minecraftVersion,

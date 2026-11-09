@@ -524,13 +524,14 @@ final class RawZipWriter implements Closeable {
         }
         long centralStart = offset;
         byte[] centralBytes = central.toByteArray();
-        if (centralStart > 0xFFFFFFFEL || centralBytes.length > 0xFFFFFFFEL) {
+        long centralEnd = centralStart + centralBytes.length;
+        if (centralEnd > 0xFFFFFFFEL) {
             throw new PatchEngineException("The runtime artifact would exceed 4 GB"
                 + "\n  Reason: that needs ZIP64, which the bytecode applier does not implement"
                 + "\n  Nothing has been published; the artifact is unchanged.");
         }
         out.write(centralBytes);
-        offset += centralBytes.length;
+        offset = centralEnd;
 
         byte[] end = new byte[22];
         putU32(end, 0, END);

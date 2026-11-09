@@ -49,6 +49,10 @@ final class DeadlockWatchdog implements Runnable {
     public void run() {
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
+                // A watchdog has nothing to be notified by: it samples on a
+                // fixed interval and wakes early only to be interrupted by
+                // stop(), which the loop condition already handles.
+                //noinspection BusyWait
                 Thread.sleep(TimeUnit.NANOSECONDS.toMillis(intervalNanos));
             } catch (InterruptedException e) {
                 break;

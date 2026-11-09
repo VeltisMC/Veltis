@@ -347,7 +347,7 @@ public final class VeltisRuntime {
                     VeltisConsole.formatDuration(System.nanoTime() - started));
                 return false;
             }
-            return buildMissing(patch, sourceRevision, checkout, sourcePatches, started);
+            return buildMissing(patch.orElse(null), sourceRevision, checkout, sourcePatches, started);
         } catch (IOException e) {
             throw new PatchEngineException(
                 "[VeltisRuntime] Could not acquire the rebuild lock for "
@@ -356,7 +356,7 @@ public final class VeltisRuntime {
         }
     }
 
-    private boolean buildMissing(Optional<BytecodePatch> patch, String sourceRevision,
+    private boolean buildMissing(BytecodePatch patch, String sourceRevision,
                                  boolean checkout, List<VeltisPatch> sourcePatches,
                                  long started) {
         long phase = System.nanoTime();
@@ -380,16 +380,16 @@ public final class VeltisRuntime {
         RuntimeIdentity.invalidate(workspace);
         LOG.debug("Runtime is not built for this version and patch set; building it.");
 
-        if (patch.isPresent()) {
-            requireArtifactMatches(patch.get().metadata(), metadata);
+        if (patch != null) {
+            requireArtifactMatches(patch.metadata(), metadata);
         }
 
         phase = System.nanoTime();
         fetchArtifacts(metadata);
         report("Fetched and verified Mojang's artifacts", phase);
 
-        if (patch.isPresent()) {
-            requireBaselineMatches(patch.get().metadata());
+        if (patch != null) {
+            requireBaselineMatches(patch.metadata());
         }
 
         if (checkout) {
@@ -430,18 +430,21 @@ public final class VeltisRuntime {
             // re-use of the in-memory metadata on purpose: the applier reads
             // this file, so a file this build cannot read is a build that would
             // fail on an operator's machine and not on this one.
-            patch = Optional.of(BytecodePatch.read(generated.file()));
-            requireVersionMatches(patch.get().metadata());
-            requireArtifactMatches(patch.get().metadata(), metadata);
-            requireBaselineMatches(patch.get().metadata());
+            patch = BytecodePatch.read(generated.file());
+            requireVersionMatches(patch.metadata());
+            requireArtifactMatches(patch.metadata(), metadata);
+            requireBaselineMatches(patch.metadata());
         }
 
-        var finalPatch = patch.orElseThrow(() -> new PatchEngineException(
-            "No bytecode patch set for Minecraft " + version
-                + "\n  Reason: " + (checkout
-                    ? "the patch set was just generated and could not be read back"
-                    : "this jar carries none for this version")
-                + "\n  Fix: rebuild the jar for " + version));
+        var finalPatch = patch;
+        if (finalPatch == null) {
+            throw new PatchEngineException(
+                "No bytecode patch set for Minecraft " + version
+                    + "\n  Reason: " + (checkout
+                        ? "the patch set was just generated and could not be read back"
+                        : "this jar carries none for this version")
+                    + "\n  Fix: rebuild the jar for " + version);
+        }
         var expected = identityFor(finalPatch.metadata(), sourceRevision);
 
         if (!checkout) {
@@ -722,6 +725,10 @@ public final class VeltisRuntime {
         // sequential path, which fetched nothing when the server fetch failed.
         var serverDownloader = new MinecraftDownloader();
         var libraryDownloader = new MinecraftDownloader();
+        // A close() at the end of this block would wait for an abandoned fetch to
+        // finish; the finally below cancels it instead, which is the behaviour
+        // this method relies on when one artifact fails.
+        //noinspection resource
         var executor = Executors.newFixedThreadPool(2, runnable -> {
             var thread = new Thread(runnable, "veltis-artifact-fetch");
             thread.setDaemon(true);
@@ -1143,7 +1150,7 @@ public final class VeltisRuntime {
         // cannot copy faithfully is a bug or a tampered file, and finding that
         // out mid-copy would be later and less specific than finding it here.
         var baselineIndex = RawZipWriter.readIndex(baselineBytes, "The Minecraft classes jar");
-        ZipFile baseline = null;
+        ZipFile baseline;
         try {
             baseline = new ZipFile(baselineJar.toFile());
         } catch (IOException e) {
@@ -1155,8 +1162,8 @@ public final class VeltisRuntime {
 
         long replacement = 0L;
         long deltaNanos = 0L;
-        long copyNanos = 0L;
-        long writeNanos = 0L;
+        long copyNanos;
+        long writeNanos;
         int patchedEntries = 0;
         int copiedEntries = 0;
 
@@ -1390,13 +1397,11 @@ public final class VeltisRuntime {
             throw new PatchEngineException("Failed to create " + out + "\n  Reason: "
                 + MojangMetadata.rootMessage(e), e);
         } finally {
-            if (baseline != null) {
-                try {
-                    baseline.close();
-                } catch (IOException ignored) {
-                    // Already read to completion; closing cannot change any of
-                    // the bytes that were hashed and compared.
-                }
+            try {
+                baseline.close();
+            } catch (IOException ignored) {
+                // Already read to completion; closing cannot change any of
+                // the bytes that were hashed and compared.
             }
             try {
                 Files.deleteIfExists(staging);

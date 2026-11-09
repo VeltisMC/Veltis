@@ -1604,9 +1604,10 @@ val verifyNativeArtifact by tasks.registering {
         if (loaderAbi != abi.abiVersion) {
             problems += "NativeLoader accepts ABI $loaderAbi but the header declares ${abi.abiVersion}"
         }
-        // The download line the runtime defaults to names this version's native
-        // release tag. A header bump that leaves the repository pointing at the
-        // previous release would silently download last version's library.
+        // The runtime appends "tags/<tag>" to the configured repository, so the
+        // default has to be the release API base rather than one release. A
+        // version-pinned default would 404 for every server built from a
+        // different commit, since release tags now name the commit.
         val distributionSource = File(projectDir,
             "src/main/java/org/veltismc/nativeengine/NativeDistributionConfig.java")
         if (!distributionSource.isFile) {
@@ -1615,12 +1616,25 @@ val verifyNativeArtifact by tasks.registering {
             val repository = Regex("""DEFAULT_REPOSITORY\s*=\s*"\s*([^\s"]+)""").find(
                 distributionSource.readText()
             )?.groupValues?.get(1)
-            val expectedTag = "veltis-native-v${abi.version}"
-            if (repository == null) {
-                problems += "NativeDistributionConfig declares no DEFAULT_REPOSITORY to check"
-            } else if (!repository.endsWith(expectedTag)) {
-                problems += "DEFAULT_REPOSITORY ends with '${repository.substringAfterLast('/')}' " +
-                    "but the header's version $expectedTag needs '$expectedTag'"
+            when {
+                repository == null ->
+                    problems += "NativeDistributionConfig declares no DEFAULT_REPOSITORY to check"
+                !repository.endsWith("/releases") ->
+                    problems += "DEFAULT_REPOSITORY '$repository' is not the release API base the " +
+                        "commit-pinned manager resolves 'tags/<commit tag>' beneath"
+            }
+        }
+        // packageNativeCommitArchive publishes releaseTag "veltis-native-<short>"
+        // and the runtime refuses a manifest that spells it otherwise. Both Java
+        // sides must keep deriving the tag from the commit, or a release this
+        // build produces would be undownloadable by the server that built it.
+        for (name in listOf("NativeCommitDistributionManager.java", "NativeCommitManifest.java")) {
+            val source = File(projectDir, "src/main/java/org/veltismc/nativeengine/$name")
+            if (!source.isFile) {
+                problems += "the commit-pinned runtime source is missing: ${source.absolutePath}"
+            } else if (!Regex("""veltis-native-"\s*\+\s*shortCommit""")
+                    .containsMatchIn(source.readText())) {
+                problems += "$name no longer derives the release tag from the commit"
             }
         }
 

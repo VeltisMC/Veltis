@@ -62,7 +62,7 @@ final class RebuildLock implements AutoCloseable {
                     channel = FileChannel.open(file, StandardOpenOption.CREATE,
                         StandardOpenOption.WRITE);
                 }
-                FileLock lock = null;
+                FileLock lock;
                 try {
                     // Same-JVM holders surface as OverlappingFileLockException
                     // rather than a null from tryLock; both mean "someone else
@@ -81,6 +81,9 @@ final class RebuildLock implements AutoCloseable {
                             + "\n  Reason: another process is building this runtime and has not"
                             + " finished; it may be stuck or the network it needs may be slow");
                 }
+                // A file lock has no blocking wait with a timeout, so the only
+                // way to honour `waitFor` is to retry at a fixed interval.
+                //noinspection BusyWait
                 Thread.sleep(RETRY_MILLIS);
             }
         } catch (IOException | InterruptedException e) {

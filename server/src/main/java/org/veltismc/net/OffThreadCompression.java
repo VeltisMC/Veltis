@@ -181,7 +181,7 @@ public final class OffThreadCompression {
 
         private volatile int threshold;
         private boolean inFlight;
-        private Frame runningFrame;
+        private PendingFrame runningFrame;
         private boolean flushRequested;
         private boolean removed;
         private Deflater deflater;
@@ -220,12 +220,12 @@ public final class OffThreadCompression {
                 writeVarInt(out, 0);
                 out.writeBytes(buf);
                 buf.release();
-                queue.add(new Frame(out, promise));
+                queue.add(new InlineFrame(out, promise));
             } else {
                 byte[] input = new byte[readable];
                 buf.readBytes(input);
                 buf.release();
-                queue.add(new Frame(input, promise));
+                queue.add(new PendingFrame(input, promise));
             }
             pump(ctx);
         }
@@ -245,7 +245,7 @@ public final class OffThreadCompression {
         public void handlerRemoved(ChannelHandlerContext ctx) {
             removed = true;
             inFlight = false;
-            Frame running = runningFrame;
+            PendingFrame running = runningFrame;
             runningFrame = null;
             if (running != null) {
                 running.fail(new ClosedChannelException());
@@ -271,19 +271,19 @@ public final class OffThreadCompression {
                     break;
                 }
                 queue.poll();
-                if (head.inline != null) {
-                    ctx.write(head.inline, head.promise);
-                } else {
+                if (head instanceof InlineFrame inline) {
+                    ctx.write(inline.buffer, inline.promise);
+                } else if (head instanceof PendingFrame pending) {
                     inFlight = true;
-                    runningFrame = head;
-                    submit(ctx, head);
+                    runningFrame = pending;
+                    submit(ctx, pending);
                     break;
                 }
             }
             maybeFlush(ctx);
         }
 
-        private void submit(ChannelHandlerContext ctx, Frame frame) {
+        private void submit(ChannelHandlerContext ctx, PendingFrame frame) {
             try {
                 executor.execute(() -> {
                     byte[] compressed;
@@ -300,7 +300,8 @@ public final class OffThreadCompression {
             }
         }
 
-        private void postCompletion(ChannelHandlerContext ctx, Frame frame, byte[] compressed, Throwable failure) {
+        private void postCompletion(ChannelHandlerContext ctx, PendingFrame frame,
+                                    byte[] compressed, Throwable failure) {
             try {
                 ctx.executor().execute(() -> complete(frame, compressed, failure, ctx));
             } catch (Throwable ignored) {
@@ -311,7 +312,8 @@ public final class OffThreadCompression {
             }
         }
 
-        private void complete(Frame frame, byte[] compressed, Throwable failure, ChannelHandlerContext ctx) {
+        private void complete(PendingFrame frame, byte[] compressed, Throwable failure,
+                              ChannelHandlerContext ctx) {
             inFlight = false;
             runningFrame = null;
             if (removed || !ctx.channel().isActive()) {
@@ -368,28 +370,39 @@ public final class OffThreadCompression {
     }
 
     /** One outbound packet: an already-built buffer, or bytes to deflate. */
-    private static final class Frame {
-        final ByteBuf inline;
-        final byte[] input;
+    private abstract static class Frame {
         final ChannelPromise promise;
 
-        Frame(ByteBuf inline, ChannelPromise promise) {
-            this.inline = inline;
-            this.input = null;
-            this.promise = promise;
-        }
-
-        Frame(byte[] input, ChannelPromise promise) {
-            this.inline = null;
-            this.input = input;
+        Frame(ChannelPromise promise) {
             this.promise = promise;
         }
 
         void fail(Throwable cause) {
-            if (inline != null) {
-                ReferenceCountUtil.release(inline);
-            }
             promise.tryFailure(cause);
+        }
+    }
+
+    private static final class InlineFrame extends Frame {
+        final ByteBuf buffer;
+
+        InlineFrame(ByteBuf buffer, ChannelPromise promise) {
+            super(promise);
+            this.buffer = buffer;
+        }
+
+        @Override
+        void fail(Throwable cause) {
+            ReferenceCountUtil.release(buffer);
+            super.fail(cause);
+        }
+    }
+
+    private static final class PendingFrame extends Frame {
+        final byte[] input;
+
+        PendingFrame(byte[] input, ChannelPromise promise) {
+            super(promise);
+            this.input = input;
         }
     }
 }
