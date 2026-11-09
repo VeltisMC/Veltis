@@ -10,7 +10,6 @@ on:
   push:
     branches:
       - main
-      - add/C_C++_Module
 
 jobs:
   qodana:

@@ -741,12 +741,18 @@ jobs:
           sudo apt-get install -y --no-install-recommends cmake ninja-build binutils
           case "${{ matrix.preset }}" in
             linux-aarch64-cross)
+              # The cross libc development package has to be named explicitly:
+              # libgcc-*-dev-arm64-cross accepts `libc6-dev-arm64-cross | libc6-dev`
+              # as an alternative, and the host libc6-dev already installed on the
+              # runner satisfies that dependency, so apt never installs the cross
+              # startup files. Without them the linker cannot find Scrt1.o and
+              # CMake's own compiler check fails before the first real source.
               sudo apt-get install -y --no-install-recommends \
-                gcc-aarch64-linux-gnu
+                gcc-aarch64-linux-gnu libc6-dev-arm64-cross
               ;;
             linux-riscv64-cross)
               sudo apt-get install -y --no-install-recommends \
-                gcc-riscv64-linux-gnu
+                gcc-riscv64-linux-gnu libc6-dev-riscv64-cross
               ;;
           esac
 
@@ -776,7 +782,7 @@ jobs:
           EXPECTED=$(grep -E '^VELTIS_NATIVE_API ' native/include/veltis/native/veltis_native.h |
             sed -E 's/.*[ *]([A-Za-z_][A-Za-z0-9_]*)\(.*/\1/' | sort)
           EXPECTED_COUNT=$(printf '%s\n' "$EXPECTED" | wc -l | tr -d ' ')
-          [ "$EXPECTED_COUNT" -eq 13 ] || {
+          [ "$EXPECTED_COUNT" -eq 14 ] || {
             echo "::error::header declares $EXPECTED_COUNT exports, expected 14"
             exit 1
           }
@@ -997,6 +1003,7 @@ jobs:
           merge-multiple: true
 
       - name: Verify archives against this build commit
+        id: ready
         shell: bash
         run: |
           set -euo pipefail
@@ -1287,7 +1294,11 @@ jobs:
           RELEASE_URL: ${{ steps.release.outputs.releaseUrl }}
         run: |
           set -euo pipefail
-          SIZE=$(stat -c%s "release/$(jq -r .assetName metadata/build-metadata.json)")
+          ASSET="release/$(jq -r .assetName metadata/build-metadata.json)"
+          SIZE=$(stat -c%s "$ASSET")
+          # Digest of the exact bytes that were uploaded, so the site can show a
+          # checksum for the asset it links to rather than one for a local build.
+          SHA256=$(sha256sum "$ASSET" | cut -d' ' -f1)
           PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           # `client_payload` allows at most 10 top-level properties, and the
@@ -1300,9 +1311,10 @@ jobs:
             --arg releaseUrl "$RELEASE_URL" \
             --arg publishedAt "$PUBLISHED_AT" \
             --argjson size "$SIZE" \
+            --arg sha256 "$SHA256" \
             '{event_type: "veltis-release",
               client_payload: {
-                metadata: .,
+                metadata: (. + {sha256: $sha256}),
                 release: {downloadUrl: $url, releaseUrl: $releaseUrl,
                           publishedAt: $publishedAt, size: $size}
               }}' \

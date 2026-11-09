@@ -40,7 +40,13 @@ VELTIS_NATIVE_API const char *VELTIS_NATIVE_CALL veltis_native_status_string(int
     return "fixture";
 }
 VELTIS_NATIVE_API const char *VELTIS_NATIVE_CALL veltis_native_last_error(void) {
+#if VELTIS_FIXTURE_MODE == 1
+    return "fixture init failure";
+#elif VELTIS_FIXTURE_MODE == 2
+    return "fixture transform failure";
+#else
     return "fixture failure";
+#endif
 }
 VELTIS_NATIVE_API int32_t VELTIS_NATIVE_CALL veltis_native_init(void) {
 #if VELTIS_FIXTURE_MODE == 1
