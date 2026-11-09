@@ -21,7 +21,7 @@ import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-/** Validates and installs the complete platform directory from a signed release ZIP. */
+/** Validates and installs the complete platform directory from a release ZIP. */
 final class NativeCommitInstaller {
 
     static final String BUILD_INFO = "native-build-info.json";
@@ -67,7 +67,7 @@ final class NativeCommitInstaller {
             NativeCommitManifest.PlatformArtifact artifact) throws IOException {
         var archiveDigest = sha256(archive);
         if (!archiveDigest.equals(artifact.sha256())) {
-            throw new IOException("the cached native ZIP checksum does not match the signed manifest");
+            throw new IOException("the cached native ZIP checksum does not match the manifest");
         }
         var files = readArchive(Files.readAllBytes(archive), artifact);
         var info = parseBuildInfo(files.remove(BUILD_INFO), artifact.platform(), commit);
@@ -145,7 +145,7 @@ final class NativeCommitInstaller {
         requireString(root, "platform", platform);
         var parts = platform.split("-", 2);
         if (parts.length != 2) {
-            throw new IOException("invalid platform in signed manifest");
+            throw new IOException("invalid platform in manifest");
         }
         requireString(root, "os", parts[0]);
         requireString(root, "architecture", parts[1]);
@@ -157,7 +157,7 @@ final class NativeCommitInstaller {
         var modulesJson = info.root().get("modules");
         if (modulesJson == null || !modulesJson.isJsonArray()
                 || modulesJson.getAsJsonArray().size() != artifact.modules().size()) {
-            throw new IOException("native build metadata module list differs from the signed manifest");
+            throw new IOException("native build metadata module list differs from the manifest");
         }
         var declared = new HashMap<String, NativeCommitManifest.Module>();
         for (var value : modulesJson.getAsJsonArray()) {
@@ -178,7 +178,7 @@ final class NativeCommitInstaller {
             var claimed = declared.get(module.name());
             if (!module.equals(claimed)) {
                 throw new IOException("native build metadata for module " + module.name()
-                        + " differs from the signed manifest");
+                        + " differs from the manifest");
             }
         }
     }
@@ -246,7 +246,7 @@ final class NativeCommitInstaller {
         for (var module : artifact.modules()) {
             var library = result.get(module.name() + "/" + module.library());
             if (!module.sha256().equals(sha256(library))) {
-                throw new IOException("module " + module.name() + " checksum does not match the signed manifest");
+                throw new IOException("module " + module.name() + " checksum does not match the manifest");
             }
         }
         return result;

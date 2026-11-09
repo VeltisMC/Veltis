@@ -1,5 +1,3 @@
-import org.gradle.language.jvm.tasks.ProcessResources
-
 plugins {
     id("java-library")
 }
@@ -60,12 +58,10 @@ dependencies {
     testRuntimeOnly("org.apache.logging.log4j:log4j-jul:2.26.0")
 }
 
-tasks.named<ProcessResources>("processResources") {
-    dependsOn(rootProject.tasks.named("generateBuildMetadata"))
-    from(rootProject.layout.buildDirectory.file("metadata/build-metadata.json")) {
-        rename { "veltis-build-metadata.json" }
-    }
-}
+// The build identity now travels as `META-INF/veltis/build-info.json`, written
+// by the root build and packed by the launcher's uberJar. The server's earlier
+// root-level `veltis-build-metadata.json` resource was dropped by that jar's
+// entry allowlist, so the runtime never saw it.
 
 // `NativeBootstrapTest` exercises the same startup path a real installation
 // uses, so it reads `veltis.native.path` exactly as the server does. The

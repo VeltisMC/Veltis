@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
  *       redirects are followed manually, never by the HTTP client itself.</li>
  *   <li><b>Bounded</b>: connect and request timeouts come from configuration,
  *       bodies are capped, and an archive download must be exactly the size
- *       the signed manifest declared.</li>
+ *       the manifest declared.</li>
  * </ul>
  */
 final class NativeDistributionTransport implements AutoCloseable {
@@ -102,7 +102,7 @@ final class NativeDistributionTransport implements AutoCloseable {
     }
 
     /**
-     * Fetches one file (the manifest or its signature) into memory.
+     * Fetches one file (the manifest) into memory.
      *
      * @param maxBytes hard cap on the body; a larger response is an error,
      *                 not a truncation
@@ -131,7 +131,7 @@ final class NativeDistributionTransport implements AutoCloseable {
 
     /**
      * Downloads one archive to {@code target}, refusing anything that is not
-     * exactly the size the signed manifest declared. A failed download leaves
+     * exactly the size the manifest declared. A failed download leaves
      * no file behind.
      */
     void download(String asset, Path target, long expectedSize, long maxBytes) throws IOException {

@@ -1,7 +1,9 @@
+import groovy.json.JsonSlurper
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.jvm.toolchain.JavaLanguageVersion
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.zip.ZipFile
 
 plugins {
     java
@@ -181,8 +183,31 @@ val releaseAssetFileName: Provider<String> = providers.provider {
     githubAssetName(releaseArtifactName())
 }
 
+/**
+ * The one GitHub Release tag this build publishes under.
+ *
+ * The server JAR and every native platform archive are assets of the same
+ * release: the runtime reads this tag from the JAR's own embedded metadata and
+ * resolves it against the release API, so a server can only ever install
+ * modules built from its exact commit. The workflow reads the value from
+ * `build-metadata.json` instead of rebuilding it, which keeps the release tag,
+ * the native archives and the embedded metadata from drifting apart.
+ */
+val releaseTag: String by lazy { "veltis-$channel-$minecraftVersion-$shortSha" }
+
 /** The build's machine-readable description; the website's input. */
 val buildMetadataFile = layout.buildDirectory.file("metadata/build-metadata.json")
+
+/**
+ * The build identity the running server reads from its own JAR.
+ *
+ * <p>`META-INF/veltis/` is the only resource prefix the distributable packs
+ * from `generated-resources`, so the file has to live there: a root-level
+ * resource would be dropped by the jar's allowlist and the server would report
+ * that it has no build metadata at all.
+ */
+val embeddedBuildInfoFile =
+    layout.buildDirectory.file("generated-resources/META-INF/veltis/build-info.json")
 
 /**
  * Serializes a value as a JSON string literal.
@@ -1301,6 +1326,7 @@ val generateBuildMetadata by tasks.registering {
     inputs.property("channel", channel)
     inputs.property("gitCommit", commit)
     inputs.property("gitShortCommit", shortCommit)
+    inputs.property("releaseTag", releaseTag)
     inputs.property("artifact", releaseArtifactFileName)
     inputs.property("assetName", releaseAssetFileName)
     inputs.property("distributionArtifact", distributionArtifactName)
@@ -1321,6 +1347,7 @@ val generateBuildMetadata by tasks.registering {
             append("  \"minecraftVersion\": ").append(jsonString(minecraftVersion)).append(",\n")
             append("  \"commit\": ").append(jsonString(commit.get())).append(",\n")
             append("  \"shortCommit\": ").append(jsonString(shortCommit.get())).append(",\n")
+            append("  \"releaseTag\": ").append(jsonString(releaseTag)).append(",\n")
             append("  \"artifact\": ").append(jsonString(releaseArtifactFileName.get())).append(",\n")
             append("  \"assetName\": ").append(jsonString(releaseAssetFileName.get())).append(",\n")
             append("  \"distributionArtifact\": ").append(jsonString(distributionArtifactName)).append(",\n")
@@ -1331,6 +1358,51 @@ val generateBuildMetadata by tasks.registering {
         file.parentFile.mkdirs()
         file.writeText(metadata)
         logger.lifecycle("Wrote build metadata: {}", file)
+    }
+}
+
+/**
+ * Writes the build identity that travels inside the distributable.
+ *
+ * <p>The values come from the same declarations the release name and tag come
+ * from, so the JAR cannot claim a commit the release does not name. The
+ * runtime reads `commit.full` to resolve the release and `releaseTag` to find
+ * it; every native asset for this build is attached to that release.
+ */
+val generateEmbeddedBuildInfo by tasks.registering {
+    group = "minecraft"
+    description = "Writes META-INF/veltis/build-info.json into the distributable"
+
+    val commit = providers.provider { gitSha }
+    val shortCommit = providers.provider { shortSha }
+    val productVersion = "$minecraftVersion-$channel"
+
+    inputs.property("schemaVersion", 1)
+    inputs.property("veltisVersion", productVersion)
+    inputs.property("minecraftVersion", minecraftVersion)
+    inputs.property("channel", channel)
+    inputs.property("gitCommit", commit)
+    inputs.property("releaseTag", releaseTag)
+    outputs.file(embeddedBuildInfoFile).withPropertyName("embeddedBuildInfo")
+
+    doLast {
+        val document = buildString {
+            append("{\n")
+            append("  \"schemaVersion\": 1,\n")
+            append("  \"commit\": {\n")
+            append("    \"full\": ").append(jsonString(commit.get())).append(",\n")
+            append("    \"short\": ").append(jsonString(shortCommit.get())).append("\n")
+            append("  },\n")
+            append("  \"minecraftVersion\": ").append(jsonString(minecraftVersion)).append(",\n")
+            append("  \"veltisVersion\": ").append(jsonString(productVersion)).append(",\n")
+            append("  \"channel\": ").append(jsonString(channel)).append(",\n")
+            append("  \"releaseTag\": ").append(jsonString(releaseTag)).append("\n")
+            append("}\n")
+        }
+        val file = embeddedBuildInfoFile.get().asFile
+        file.parentFile.mkdirs()
+        file.writeText(document)
+        logger.lifecycle("Wrote embedded build info: {}", file)
     }
 }
 
@@ -1366,7 +1438,38 @@ val verifySingleDistributable by tasks.registering {
                     "  Run ./gradlew clean, or delete the stale jar and rebuild."
             )
         }
-        logger.lifecycle("Verified single distributable: {}", expected)
+        // Open the jar that is about to ship. A resource that exists in the
+        // build directory but not in the produced archive is exactly the bug
+        // this check exists for: the runtime then reports no build metadata and
+        // silently stays on Java.
+        val jar = dir.resolve(expected)
+        val embedded: Map<*, *> = ZipFile(jar).use { zip ->
+            val entry = zip.getEntry("META-INF/veltis/build-info.json")
+                ?: throw GradleException(
+                    "$expected contains no META-INF/veltis/build-info.json.\n" +
+                        "  Reason: the server cannot resolve its own commit-pinned native release" +
+                        " without it.\n" +
+                        "  Fix: :generateEmbeddedBuildInfo must be an input of the launcher's uberJar."
+                )
+            val text = zip.getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
+            @Suppress("UNCHECKED_CAST")
+            JsonSlurper().parseText(text) as? Map<*, *>
+                ?: throw GradleException("$expected has build-info.json that is not a JSON object")
+        }
+        @Suppress("UNCHECKED_CAST")
+        val commitObject = embedded["commit"] as? Map<*, *>
+            ?: throw GradleException("$expected build-info.json has no commit object")
+        if (commitObject["full"] != gitSha || commitObject["short"] != shortSha) {
+            throw GradleException(
+                "$expected embeds commit ${commitObject["full"]} but the build is $gitSha"
+            )
+        }
+        if (embedded["releaseTag"] != releaseTag) {
+            throw GradleException(
+                "$expected embeds release tag ${embedded["releaseTag"]} but this build publishes as $releaseTag"
+            )
+        }
+        logger.lifecycle("Verified single distributable: {} (embedded build info for {})", expected, gitSha)
     }
 }
 

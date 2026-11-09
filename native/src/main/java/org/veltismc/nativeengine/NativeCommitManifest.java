@@ -6,14 +6,13 @@ import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.security.PublicKey;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-/** Signed metadata for one immutable native release, tied to one Veltis commit. */
+/** Integrity metadata for one immutable native release, tied to one Veltis commit. */
 final class NativeCommitManifest {
 
     static final int SCHEMA_VERSION = 2;
@@ -64,9 +63,14 @@ final class NativeCommitManifest {
         return platforms.get(key);
     }
 
-    static NativeCommitManifest verifyAndParse(byte[] bytes, byte[] signature, PublicKey trustedKey)
-            throws IOException {
-        NativeManifest.verifySignature(bytes, signature, trustedKey);
+    static NativeCommitManifest parse(byte[] bytes) throws IOException {
+        if (bytes == null || bytes.length == 0) {
+            throw new IOException("the commit manifest is empty");
+        }
+        if (bytes.length > NativeManifest.MAX_MANIFEST_BYTES) {
+            throw new IOException("the commit manifest is " + bytes.length
+                    + " bytes, more than the " + NativeManifest.MAX_MANIFEST_BYTES + "-byte limit");
+        }
         final JsonObject root;
         try {
             var parsed = JsonParser.parseString(new String(bytes, StandardCharsets.UTF_8));
@@ -91,7 +95,10 @@ final class NativeCommitManifest {
             throw new IOException("manifest shortCommit does not match commit");
         }
         var tag = string(root, "releaseTag");
-        if (!tag.equals("veltis-native-" + shortCommit)) {
+        // The tag names the release that carries both the server JAR and this
+        // platform's archive. Its exact shape belongs to the build identity the
+        // runtime resolved; what is pinned here is the binding to this commit.
+        if (!tag.startsWith("veltis-") || !tag.endsWith("-" + shortCommit)) {
             throw new IOException("manifest releaseTag does not identify its commit");
         }
         if (!root.has("platforms") || !root.get("platforms").isJsonObject()) {

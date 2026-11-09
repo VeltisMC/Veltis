@@ -54,6 +54,7 @@ jobs:
       shortCommit: ${{ steps.metadata.outputs.shortCommit }}
       artifact: ${{ steps.metadata.outputs.artifact }}
       assetName: ${{ steps.metadata.outputs.assetName }}
+      releaseTag: ${{ steps.metadata.outputs.releaseTag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -106,6 +107,7 @@ jobs:
             and (.shortCommit == (.commit[0:7]))
             and (.minecraftVersion | length > 0)
             and (.version | length > 0)
+            and (.releaseTag == ("veltis-" + .channel + "-" + .minecraftVersion + "-" + .shortCommit))
             and (.distributionArtifact == "veltis.jar")
             and (.artifact == ("Veltis " + .minecraftVersion + " " + .channel + " " + .shortCommit + ".jar"))
             and (.assetName | length > 0)
@@ -131,6 +133,7 @@ jobs:
             echo "shortCommit=$(jq -r .shortCommit "$META")"
             echo "artifact=$ARTIFACT"
             echo "assetName=$ASSET"
+            echo "releaseTag=$(jq -r .releaseTag "$META")"
           } >> "$GITHUB_OUTPUT"
 
           # Stage the file under the name the release asset will carry, not the
@@ -1013,8 +1016,18 @@ jobs:
             echo "::error::aggregator checked out $ACTUAL, build metadata names $EXPECTED"
             exit 1
           }
-          ./gradlew :veltis-native:packageNativeCommitDistribution --stacktrace --no-daemon
+          # The archives are named for the server build's release, not for a
+          # native-only tag: the runtime reads that tag from the JAR's embedded
+          # build metadata and resolves this same release.
+          ./gradlew :veltis-native:packageNativeCommitDistribution \
+            -PveltisReleaseTag="${{ needs.build.outputs.releaseTag }}" \
+            --stacktrace --no-daemon
           jq -c . native/build/native/dist/native-commit-release.json
+          ACTUAL_TAG=$(jq -r .releaseTag native/build/native/dist/native-commit-release.json)
+          test "$ACTUAL_TAG" = "${{ needs.build.outputs.releaseTag }}" || {
+            echo "::error::native release tag '$ACTUAL_TAG' does not match the server release tag"
+            exit 1
+          }
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload the verified archives and release index
@@ -1026,17 +1039,21 @@ jobs:
             native/build/native/dist/commit/*.zip
           if-no-files-found: error
 
-  # The manifest is finalized only after uploading the ZIPs, so its signed
-  # download URLs come from GitHub Release metadata, never a constructed URL.
+  # The native archives, the SHA-256 manifest and the server JAR are assets of
+  # ONE release. `publish` creates that release and uploads the JAR; this job
+  # adds the native half, writes the manifest only after the release API
+  # supplies real download URLs, and then proves the release holds every
+  # expected asset. It never creates a second, unrelated release the runtime
+  # would not find, and it requires no signing secret.
   native-release:
-    name: Publish native release
-    needs: [build, native-package]
+    name: Publish native assets to the server release
+    needs: [build, native-package, publish]
     if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.native-package.outputs.ready == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      VELTIS_NATIVE_MANIFEST_KEY: ${{ secrets.VELTIS_NATIVE_MANIFEST_KEY }}
+      RELEASE_TAG: ${{ needs.publish.outputs.tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -1054,7 +1071,7 @@ jobs:
           name: veltis-native-commit-distribution
           path: native/build/native/dist
 
-      - name: Verify signing key and publish commit archives
+      - name: Attach native assets and manifest
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -1064,20 +1081,26 @@ jobs:
           COMMIT=$(jq -r .commit "$META")
           SHORT=$(jq -r .shortCommit "$META")
           TAG=$(jq -r .releaseTag "$META")
+          test "$(git rev-parse HEAD)" = "$COMMIT" || {
+            echo "::error::checked-out commit does not match the native archive commit"
+            exit 1
+          }
           test "$COMMIT" = "${{ needs.build.outputs.commit }}" || {
             echo "::error::native archive commit does not match server build metadata"
             exit 1
           }
-          test "$SHORT" = "${COMMIT:0:7}" && test "$TAG" = "veltis-native-$SHORT" || {
-            echo "::error::native release tag does not identify its source commit"
+          test "$SHORT" = "${COMMIT:0:7}" || {
+            echo "::error::native short commit is not derived from the full commit"
             exit 1
           }
-          test -n "$VELTIS_NATIVE_MANIFEST_KEY" || {
-            echo "::error::VELTIS_NATIVE_MANIFEST_KEY is required for signed native publication"
+          test "$TAG" = "$RELEASE_TAG" || {
+            echo "::error::native manifest tag '$TAG' is not the server release tag '$RELEASE_TAG'"
             exit 1
           }
-          ./gradlew :veltis-native:verifyNativeManifestKeyPairing --stacktrace --no-daemon
-
+          test "$TAG" = "veltis-${{ needs.build.outputs.channel }}-${{ needs.build.outputs.minecraftVersion }}-$SHORT" || {
+            echo "::error::release tag does not name this build's channel, version and commit"
+            exit 1
+          }
           EXPECTED=$(jq -r '.platforms[].asset' "$META")
           while IFS= read -r asset; do
             [ -n "$asset" ] || continue
@@ -1087,18 +1110,15 @@ jobs:
             }
           done <<< "$EXPECTED"
 
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release edit "$TAG" --title "VeltisMC native modules $SHORT"
-          else
-            gh release create "$TAG" \
-              --target "$COMMIT" \
-              --latest=false \
-              --title "VeltisMC native modules $SHORT" \
-              --notes "Commit-pinned, host-verified native modules for Veltis commit \`$COMMIT\`. Each platform archive contains separate module libraries and build metadata. Servers without an exact compatible artifact continue on Java."
-          fi
+          # The server release must already exist: this job adds assets to it
+          # rather than creating a separate native-only release.
+          gh release view "$TAG" > /dev/null 2>&1 || {
+            echo "::error::server release $TAG does not exist; native assets have nowhere to go"
+            exit 1
+          }
 
-          # A pre-existing tag must resolve to this exact commit before any
-          # assets are replaced.
+          # A release tag must resolve to this exact commit before any assets
+          # are replaced.
           REF=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG")
           TYPE=$(printf '%s' "$REF" | jq -r '.object.type')
           OBJECT=$(printf '%s' "$REF" | jq -r '.object.sha')
@@ -1112,34 +1132,41 @@ jobs:
             exit 1
           }
 
+          # Only stale *native* assets are removed. The server JAR belongs to
+          # `publish` and must survive every native re-run.
           RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")
           ACTUAL=$(printf '%s' "$RELEASE" | jq -r '.assets[].name')
           while IFS= read -r name; do
             [ -z "$name" ] && continue
-            if ! printf '%s\n' "$EXPECTED" | grep -Fxq "$name"; then
-              echo "Removing stale asset '$name' from $TAG"
-              gh release delete-asset "$TAG" "$name" --yes
-            fi
+            case "$name" in
+              native-manifest.json|*-"$SHORT".zip)
+                if ! printf '%s\n' "$EXPECTED" | grep -Fxq "$name"; then
+                  echo "Removing stale native asset '$name' from $TAG"
+                  gh release delete-asset "$TAG" "$name" --yes
+                fi
+                ;;
+            esac
           done <<< "$ACTUAL"
 
           gh release upload "$TAG" native/build/native/dist/commit/*.zip --clobber
 
-          # The manifest is signed only after the release API supplies the
-          # actual browser_download_url and size of each uploaded archive.
+          # The manifest records SHA-256 checksums only after the release API
+          # supplies the actual browser_download_url and size of each uploaded
+          # archive; the build task re-hashes the local bytes before writing it.
+          sha256sum native/build/native/dist/commit/*.zip | sed 's/^/  /'
           RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")
           printf '%s' "$RELEASE" | jq --arg tag "$TAG" --arg commit "$COMMIT" \
             '{tag:$tag, commit:$commit, assets:[.assets[] | {name,browser_download_url,size}]}' \
             > native/build/native/dist/native-release-assets.json
-          ./gradlew :veltis-native:signNativeCommitManifest --stacktrace --no-daemon
+          ./gradlew :veltis-native:generateNativeCommitManifest \
+            -PveltisReleaseTag="$TAG" --stacktrace --no-daemon
           gh release upload "$TAG" \
-            native/build/native/dist/native-manifest.json \
-            native/build/native/dist/native-manifest.json.sig --clobber
+            native/build/native/dist/native-manifest.json --clobber
 
           RELEASE=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG")
           ACTUAL=$(printf '%s' "$RELEASE" | jq -r '.assets[].name')
           EXPECTED="$EXPECTED
-          native-manifest.json
-          native-manifest.json.sig"
+          native-manifest.json"
           MISSING=0
           while IFS= read -r name; do
             [ -z "$name" ] && continue
@@ -1148,21 +1175,34 @@ jobs:
               MISSING=1
             fi
           done <<< "$EXPECTED"
+          if ! printf '%s\n' "$ACTUAL" | grep -q '\.jar$'; then
+            echo "::error::release $TAG has no server JAR; native assets and the JAR must share one release"
+            MISSING=1
+          fi
           if [ "$MISSING" -ne 0 ]; then
-            echo "::error::release assets do not match the signed manifest"
+            echo "::error::release assets do not match the manifest and server JAR"
             printf '%s\n' "$ACTUAL" | sed 's/^/    /'
             exit 1
           fi
-          echo "Published commit-pinned native release $TAG with assets:"
+          echo "Published native assets on server release $TAG:"
           printf '%s\n' "$ACTUAL" | sort | sed 's/^/  /'
 
   publish:
     name: Publish durable release & notify website
-    needs: build
+    # Native packaging runs first so the release the server JAR creates is the
+    # same release the platform archives attach to, and a packaging failure
+    # stops the run before a release exists.
+    needs: [build, native-package]
     # A pull request builds and verifies but never publishes: a failed build must
     # never leave behind metadata claiming the commit was released.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    outputs:
+      # The native-release job reads these so both kinds of asset land on the
+      # same release instead of the tag being recomputed independently.
+      tag: ${{ steps.release.outputs.tag }}
+      assetUrl: ${{ steps.release.outputs.assetUrl }}
+      releaseUrl: ${{ steps.release.outputs.releaseUrl }}
     permissions:
       # Least privilege: the only write this job needs is creating the release
       # and its asset. The website notification uses the secret below.
@@ -1199,7 +1239,14 @@ jobs:
           CHANNEL=$(jq -r .channel "$META")
           MC=$(jq -r .minecraftVersion "$META")
           SHORT=$(jq -r .shortCommit "$META")
-          TAG="veltis-$CHANNEL-$MC-$SHORT"
+          # The tag is the one the build recorded, not one recomputed here: the
+          # native archives were packaged against that exact string, and a
+          # mismatch would put the server and its natives on different releases.
+          TAG=$(jq -r .releaseTag "$META")
+          test "$TAG" = "veltis-$CHANNEL-$MC-$SHORT" || {
+            echo "::error::build metadata releaseTag '$TAG' does not match veltis-$CHANNEL-$MC-$SHORT"
+            exit 1
+          }
           FILE="release/$ASSET"
 
           test -s "$FILE" || {

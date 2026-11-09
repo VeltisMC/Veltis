@@ -12,20 +12,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.security.PublicKey;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
 
-/** Resolves and installs only the signed native release built for this server commit. */
+/** Resolves and installs only the native release built for this server commit. */
 final class NativeCommitDistributionManager {
 
     private static final System.Logger LOG =
             System.getLogger(NativeCommitDistributionManager.class.getName());
     private static final long MAX_RELEASE_METADATA_BYTES = 2L * 1024L * 1024L;
-    private static final Pattern COMMIT = Pattern.compile("[0-9a-f]{40}");
 
     record Result(NativeDistributionManager.Outcome outcome, String platform,
             String detail, List<String> modules) {
@@ -39,7 +36,8 @@ final class NativeCommitDistributionManager {
     private NativeCommitDistributionManager() {}
 
     static Result ensureInstalled(Path home, NativeConfig nativeConfig,
-            NativeDistributionConfig distribution, PublicKey trustedKey, String commit, String platform) {
+            NativeDistributionConfig distribution,
+            NativeBuildMetadata.Identity identity, String platform) {
         if (!nativeConfig.enabled() || nativeConfig.hasLibraryPath() || !distribution.autoDownload()) {
             return new Result(NativeDistributionManager.Outcome.DISABLED, platform,
                     "native distribution is disabled or an explicit library path is configured", List.of());
@@ -48,13 +46,18 @@ final class NativeCommitDistributionManager {
             return new Result(NativeDistributionManager.Outcome.UNSUPPORTED_PLATFORM, platform,
                     platform + " is not a supported native platform", List.of());
         }
-        if (commit == null || !COMMIT.matcher(commit).matches()) {
+        if (identity == null || !identity.pinned()) {
             return new Result(NativeDistributionManager.Outcome.PLATFORM_ABSENT, platform,
-                    "the server build has no valid full Git commit; native downloads are disabled", List.of());
+                    "the server build embeds no usable commit metadata; native downloads are disabled", List.of());
         }
 
-        var shortCommit = commit.substring(0, 7);
-        var tag = "veltis-native-" + shortCommit;
+        var commit = identity.fullCommit();
+        var shortCommit = identity.shortCommit();
+        // The release tag comes from the embedded build metadata, which is
+        // written by the same build that produced the server JAR. The server
+        // release carries both the JAR and every native archive, so resolving
+        // this tag is what makes "the native ZIP is on the same release" true.
+        var tag = identity.releaseTag();
         var installDir = home.resolve("native").resolve(platform);
         var cacheDir = home.resolve("cache").resolve("native");
         var manifestDir = cacheDir.resolve("manifests").resolve(commit);
@@ -71,18 +74,14 @@ final class NativeCommitDistributionManager {
                         "another server process is installing native modules for " + platform);
             }
 
-            var manifestBytes = readManifestCache(manifestDir, trustedKey, commit, tag);
-            var signatureBytes = readSignatureCache(manifestDir);
             NativeCommitManifest manifest = null;
-            if (manifestBytes != null && signatureBytes != null) {
-                try {
-                    manifest = NativeCommitManifest.verifyAndParse(manifestBytes, signatureBytes, trustedKey);
-                } catch (IOException e) {
-                    // A cached manifest that no longer verifies is fetched again
-                    // below; the cached bytes are never trusted.
-                    var detail = "discarding the cached native manifest for " + commit + ": " + describe(e);
-                    LOG.log(System.Logger.Level.DEBUG, detail);
-                }
+            try {
+                manifest = readManifestCache(manifestDir, commit, tag);
+            } catch (IOException e) {
+                // A cached manifest that no longer parses is fetched again
+                // below; the cached bytes are never trusted.
+                var detail = "discarding the cached native manifest for " + commit + ": " + describe(e);
+                LOG.log(System.Logger.Level.DEBUG, detail);
             }
 
             var artifact = manifest == null ? null : manifest.platform(platform);
@@ -133,31 +132,28 @@ final class NativeCommitDistributionManager {
                 releaseAssets = parseReleaseAssets(release);
 
                 var manifestAsset = requireAsset(releaseAssets, NativeManifest.MANIFEST_ASSET);
-                var signatureAsset = requireAsset(releaseAssets, NativeManifest.SIGNATURE_ASSET);
-                manifestBytes = transport.fetch(manifestAsset.browserDownloadUrl(),
+                var manifestBytes = transport.fetch(manifestAsset.browserDownloadUrl(),
                         NativeManifest.MAX_MANIFEST_BYTES);
-                signatureBytes = transport.fetch(signatureAsset.browserDownloadUrl(),
-                        NativeManifest.MAX_MANIFEST_BYTES);
-                manifest = NativeCommitManifest.verifyAndParse(manifestBytes, signatureBytes, trustedKey);
+                manifest = NativeCommitManifest.parse(manifestBytes);
                 if (!commit.equals(manifest.commit()) || !tag.equals(manifest.releaseTag())) {
-                    throw new IOException("signed manifest is for commit " + manifest.commit()
+                    throw new IOException("manifest is for commit " + manifest.commit()
                             + " and tag " + manifest.releaseTag() + ", not " + commit + " / " + tag);
                 }
-                writeManifestCache(manifestDir, manifestBytes, signatureBytes);
+                writeManifestCache(manifestDir, manifestBytes);
             } catch (IOException | RuntimeException e) {
                 var missingRelease = e.getMessage() != null && e.getMessage().contains("HTTP 404");
                 return failed(missingRelease ? NativeDistributionManager.Outcome.PLATFORM_ABSENT
                                 : NativeDistributionManager.Outcome.FETCH_FAILED,
                         platform, missingRelease
                                 ? "no native release exists for exact server commit " + shortCommit
-                                : "could not resolve the signed native release for commit " + shortCommit
+                                : "could not resolve the native release for commit " + shortCommit
                                         + ": " + describe(e));
             }
 
             artifact = manifest.platform(platform);
             if (artifact == null) {
                 return failed(NativeDistributionManager.Outcome.PLATFORM_ABSENT, platform,
-                        "the signed release for commit " + shortCommit + " has no " + platform + " artifact");
+                        "the native release for commit " + shortCommit + " has no " + platform + " artifact");
             }
             if (!artifact.verified()) {
                 return failed(NativeDistributionManager.Outcome.PLATFORM_ABSENT, platform,
@@ -167,7 +163,7 @@ final class NativeCommitDistributionManager {
             if (archiveAsset == null || !archiveAsset.browserDownloadUrl().equals(artifact.downloadUrl())
                     || archiveAsset.size() != artifact.sizeBytes()) {
                 return failed(NativeDistributionManager.Outcome.FETCH_FAILED, platform,
-                        "the signed artifact URL or size does not match GitHub Release metadata");
+                        "the artifact URL or size does not match GitHub Release metadata");
             }
 
             var archive = cacheDir.resolve(artifact.asset());
@@ -179,7 +175,7 @@ final class NativeCommitDistributionManager {
                         transport.download(artifact.downloadUrl(), partial,
                                 artifact.sizeBytes(), NativeManifest.MAX_ARCHIVE_BYTES);
                         if (!sha256(partial).equals(artifact.sha256())) {
-                            throw new IOException("downloaded ZIP checksum does not match signed metadata");
+                            throw new IOException("downloaded ZIP checksum does not match manifest metadata");
                         }
                         moveAtomically(partial, archive);
                     } catch (IOException | RuntimeException e) {
@@ -266,38 +262,19 @@ final class NativeCommitDistributionManager {
         return object.get(field).getAsString();
     }
 
-    private static byte[] readManifestCache(Path directory, PublicKey trustedKey, String commit, String tag) {
+    private static NativeCommitManifest readManifestCache(Path directory, String commit, String tag)
+            throws IOException {
         var manifest = directory.resolve(NativeManifest.MANIFEST_ASSET);
-        var signature = directory.resolve(NativeManifest.SIGNATURE_ASSET);
-        try {
-            if (!Files.isRegularFile(manifest) || !Files.isRegularFile(signature)
-                    || Files.size(manifest) > NativeManifest.MAX_MANIFEST_BYTES
-                    || Files.size(signature) > NativeManifest.MAX_MANIFEST_BYTES) {
-                return null;
-            }
-            var bytes = Files.readAllBytes(manifest);
-            var signed = Files.readAllBytes(signature);
-            var parsed = NativeCommitManifest.verifyAndParse(bytes, signed, trustedKey);
-            return commit.equals(parsed.commit()) && tag.equals(parsed.releaseTag()) ? bytes : null;
-        } catch (IOException | RuntimeException e) {
+        if (!Files.isRegularFile(manifest) || Files.size(manifest) > NativeManifest.MAX_MANIFEST_BYTES) {
             return null;
         }
+        var parsed = NativeCommitManifest.parse(Files.readAllBytes(manifest));
+        return commit.equals(parsed.commit()) && tag.equals(parsed.releaseTag()) ? parsed : null;
     }
 
-    private static byte[] readSignatureCache(Path directory) {
-        try {
-            var path = directory.resolve(NativeManifest.SIGNATURE_ASSET);
-            return Files.isRegularFile(path) && Files.size(path) <= NativeManifest.MAX_MANIFEST_BYTES
-                    ? Files.readAllBytes(path) : null;
-        } catch (IOException e) {
-            return null;
-        }
-    }
-
-    private static void writeManifestCache(Path directory, byte[] manifest, byte[] signature) throws IOException {
+    private static void writeManifestCache(Path directory, byte[] manifest) throws IOException {
         Files.createDirectories(directory);
         writeAtomically(directory.resolve(NativeManifest.MANIFEST_ASSET), manifest);
-        writeAtomically(directory.resolve(NativeManifest.SIGNATURE_ASSET), signature);
     }
 
     private static void writeAtomically(Path target, byte[] bytes) throws IOException {

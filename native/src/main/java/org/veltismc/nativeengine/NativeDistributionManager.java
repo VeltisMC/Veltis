@@ -1,8 +1,6 @@
 package org.veltismc.nativeengine;
 
-import java.io.IOException;
 import java.nio.file.Path;
-import java.security.PublicKey;
 
 /**
  * The commit-pinned native distribution: fetch <em>one</em> verified artifact
@@ -28,14 +26,14 @@ import java.security.PublicKey;
  *       {@code if-missing} policy a warm installation performs zero requests,
  *       which is what keeps restarts cheap and makes
  *       {@code updatePolicy=never} / {@code offline=true} honest.</li>
- *   <li><b>Read the signed release manifest</b> for this commit (cache first
- *       when the policy allows), verify its Ed25519 signature against the
- *       embedded key, and look up <em>this</em> platform's entry. A release
+ *   <li><b>Read the release manifest</b> for this commit (cache first when the
+ *       policy allows) and look up <em>this</em> platform's entry. The manifest
+ *       is fetched over the transport's trusted HTTPS GitHub source; a release
  *       that skipped this platform has no entry — that is the graceful-skip
  *       path, not an error.</li>
- *   <li><b>Download that one archive</b>, check its digest against the signed
- *       manifest and the GitHub release metadata, and install it through
- *       {@link NativeCommitInstaller}.</li>
+ *   <li><b>Download that one archive</b>, check its SHA-256 digest against the
+ *       manifest and its size against the GitHub release metadata, and install
+ *       it through {@link NativeCommitInstaller}.</li>
  * </ol>
  *
  * <p>Nothing in this class can prevent a server from starting. Every failure
@@ -45,8 +43,6 @@ import java.security.PublicKey;
  * reports {@link Outcome#LOCKED} instead of downloading alongside the first.
  */
 public final class NativeDistributionManager {
-
-    private static final System.Logger LOG = System.getLogger(NativeDistributionManager.class.getName());
 
     private NativeDistributionManager() {}
 
@@ -68,7 +64,7 @@ public final class NativeDistributionManager {
         NO_NETWORK,
         /** Offline mode and nothing usable is installed. */
         OFFLINE,
-        /** The manifest could not be fetched or its signature verified. */
+        /** The manifest could not be fetched or did not match this commit. */
         FETCH_FAILED,
         /** The archive could not be downloaded. */
         DOWNLOAD_FAILED,
@@ -112,29 +108,17 @@ public final class NativeDistributionManager {
     /**
      * Ensures the current platform's library is installed under
      * {@code <home>/native/<platform>}, if distribution is active and the
-     * release for {@code serverCommit} publishes one.
+     * release named by {@code identity} publishes one.
      *
      * <p>Never throws: a distribution problem is reported as a {@link Result}
-     * so the caller can log it and start on the Java implementation anyway.
+     * so the caller can log it once and start on the Java implementation
+     * anyway. This method deliberately logs nothing itself; {@code
+     * VeltisBootstrap} owns the single operator-facing diagnostic.
      */
     public static Result ensureInstalled(Path home, NativeConfig nativeConfig,
-            NativeDistributionConfig distribution, String serverCommit) {
-        final PublicKey trustedKey;
-        try {
-            trustedKey = NativeManifest.trustedPublicKey();
-        } catch (IOException e) {
-            LOG.log(System.Logger.Level.WARNING,
-                    "The embedded manifest key could not be loaded; native distribution is unavailable", e);
-            return new Result(Outcome.FETCH_FAILED, NativeLoader.platformKey(),
-                    "the embedded manifest public key could not be loaded");
-        }
+            NativeDistributionConfig distribution, NativeBuildMetadata.Identity identity) {
         var result = NativeCommitDistributionManager.ensureInstalled(home, nativeConfig,
-                distribution, trustedKey, serverCommit, NativeLoader.platformKey());
-        if (result.outcome() != Outcome.REUSED && result.outcome() != Outcome.INSTALLED
-                && result.outcome() != Outcome.DISABLED) {
-            LOG.log(System.Logger.Level.INFO, "Native release for " + result.platform()
-                    + " is unavailable; Java fallback remains active: " + result.detail());
-        }
+                distribution, identity, NativeLoader.platformKey());
         return new Result(result.outcome(), result.platform(), result.detail(), result.modules());
     }
 }

@@ -60,13 +60,15 @@ and a C11 compiler:
 ./gradlew :veltis-native:testNative
 ```
 
-The loader identifies a module by name and ABI before use. If a signed
+The loader identifies a module by name and ABI before use. If a checksum-verified
 commit-pinned platform ZIP is available for the running server's exact build
 and detected OS/CPU architecture, startup installs its verified module set into
-`./native/<platform>/` and caches the ZIP under `./cache/native/`. Missing,
+`./native/<platform>/` and caches the ZIP under `./cache/native/`. The archive
+SHA-256 must match the release manifest before anything is extracted; the
+manifest and archives come from the same HTTPS GitHub Release. Missing,
 unsupported, or invalid artifacts leave Java fallback in place. Native
-publication is gated on successful manifest signing. Platform recognition does
-not itself imply that a platform has a verified artifact.
+publication requires no signing secret. Platform recognition does not itself
+imply that a platform has a verified artifact.
 
 See [`native/README.md`](native/README.md) for the module layout, build tasks,
 ABI, and distribution format.

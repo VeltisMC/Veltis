@@ -19,7 +19,7 @@ evidence.
 | `modules/<name>/main.c` | Module identity, version, lifecycle, capabilities, and operation exports. |
 | `modules/<name>/*.c` | Module-local C implementation; each CMake target compiles only its own module directory. |
 | `tests/` | C contract tests and incompatible-library fixtures. |
-| `src/main/java/org/veltismc/nativeengine/` | FFM loader, module lifecycle, Java fallback, and signed distribution handling. |
+| `src/main/java/org/veltismc/nativeengine/` | FFM loader, module lifecycle, Java fallback, and checksum-verified distribution handling. |
 | `docs/` | ABI, build, distribution, security, and testing notes. |
 
 CMake discovers module directories in sorted order. Each directory must have a
@@ -74,24 +74,28 @@ example `linux-x86_64-20421c2.zip`. Its only top-level directory is
 `native-build-info.json`. The archive contains no objects, build trees, or
 other-platform binaries.
 
-The per-commit GitHub Release uses tag `veltis-native-<short-commit>`. Its
-Ed25519-signed manifest records the full and short commit, each platform ZIP's
-actual Release asset URL and SHA-256, and the included modules and ABI versions.
-CI publishes only archives that passed the host verification gates; unavailable
-optional platforms are recorded as skipped.
+The archives are assets of the same GitHub Release as the server JAR, whose tag
+is `veltis-<channel>-<minecraftVersion>-<short-commit>`. Its manifest records
+the full and short commit, each platform ZIP's actual Release asset URL and
+SHA-256, and the included modules and ABI versions. CI publishes only archives
+that passed the host verification gates; unavailable optional platforms are
+recorded as skipped.
 
 At startup, Veltis independently detects the JVM operating system and CPU
 architecture, then requests only that platform's ZIP for the exact commit
-embedded in the server build. Verified downloads are cached in
+embedded in the server build. Downloads are cached in
 `<server home>/cache/native/`; modules are installed under
-`<server home>/native/<platform>/`. The installer validates the manifest
-signature, URL, archive checksum, ZIP root and entries, build metadata, module
-ABI, and binary architecture before loading modules independently through FFM.
-Missing, unsupported, or invalid artifacts leave Java fallback available.
+`<server home>/native/<platform>/`. The installer validates the archive
+SHA-256 against the manifest, URL, archive size, ZIP root and entries, build
+metadata, module ABI, and binary architecture before loading modules
+independently through FFM. Missing, unsupported, or invalid artifacts leave
+Java fallback available.
 
-Native publication requires the signing key whose public half is embedded in
-`NativeManifest`. The release job refuses unsigned manifests; do not generate
-or substitute release metadata locally.
+The manifest is not digitally signed. Its authenticity rests on being fetched
+over HTTPS from the official GitHub repository the runtime is configured with;
+SHA-256 proves each archive matches that manifest, not who published it. No
+signing secret is required for publication; do not generate or substitute
+release metadata locally.
 
 ## Documentation
 
