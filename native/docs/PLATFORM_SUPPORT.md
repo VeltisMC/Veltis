@@ -11,7 +11,7 @@
 Recognition means the loader can name and inspect the expected library format;
 it does not mean that a native artifact has been built, run, or published for
 that platform. Cross-compilation is not runtime verification. Check the
-workflow and signed manifest for current build and release evidence.
+workflow and release manifest for current build and release evidence.
 
 Unrecognized platforms receive an explicit unavailable status and retain the
 Java implementation.

@@ -111,7 +111,7 @@ public final class VeltisBootstrap {
         try {
             var config = NativeConfig.load(home);
             var distribution = NativeDistributionManager.ensureInstalled(
-                    home, config, NativeDistributionConfig.load(home), NativeBuildMetadata.commit());
+                    home, config, NativeDistributionConfig.load(home), NativeBuildMetadata.identity());
             reportDistribution(distribution);
             var status = NativeEngine.shared().initialize(config);
             if (status.available()) {

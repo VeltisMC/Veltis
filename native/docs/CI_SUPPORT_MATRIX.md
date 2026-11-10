@@ -15,8 +15,8 @@ workflow configuration is not evidence that a job has completed successfully.
 | Native Debug (`windows-x86_64` MSVC, `linux-x86_64` GCC) | Debug build and tests | Runtime-tested on that host | Failure fails the workflow | No |
 | Java-only fallback | Java suite with every native fixture deliberately unset | Proves the fallback path, not the C code | Failure fails the workflow | No |
 | FreeBSD investigation | Build and CTest inside a FreeBSD VM | Investigation only | Non-blocking (`continue-on-error`) | No; not a supported release platform |
-| Distribution verification | Downloads the release-flagged host archives, pins the commit, verifies archive contents, metadata, ABI, checksums, and the signed manifest | Packaging and verification | A missing mandatory platform fails the gate | Hands the verified distribution to the release job |
-| Native release | Uploads and re-reads the release assets | Publication | Skipped unless signing produced a signature and verification succeeded | Native release |
+| Distribution verification | Downloads the release-flagged host archives, pins the commit, verifies archive contents, metadata, ABI, and checksums | Packaging and verification | A missing mandatory platform fails the gate | Hands the verified distribution to the release job |
+| Native release | Generates the SHA-256 manifest, uploads, and re-reads the release assets | Publication | Skipped unless verification succeeded; no signing secret is required | Native release |
 | Server release / website | The Java distributable, independent of native availability | Publication | Server release may proceed on Java fallback | Server release |
 
 The three required release platforms are `windows-x86_64`, `linux-x86_64`, and
@@ -29,9 +29,10 @@ artifacts nor turns a cross-compiled binary into a runtime-tested one.
 - A successful host build and CTest run verifies that runner's native build.
 - A successful cross-build verifies compilation and configured artifact checks,
   not execution on the target.
-- A signed manifest records the artifacts that were packaged and verified.
-- Native release publication is skipped unless the signing step produced a
-  signature.
+- The manifest records the artifacts that were packaged and verified, with the
+  SHA-256 of each platform archive.
+- Native release publication is skipped when distribution verification did not
+  succeed; it does not depend on a signing secret.
 
 Platforms the loader does not recognize at all are listed in
 [PLATFORM_SUPPORT.md](PLATFORM_SUPPORT.md): they are unsupported at runtime and

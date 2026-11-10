@@ -4,7 +4,10 @@
 > source paths, architecture, build outputs, measurements, and run evidence do
 > not describe the current C11 modules. Use the current [native README](../README.md)
 > and the other current documents in this directory for implementation details.
-> This historical record is not evidence of a current CI run or release.
+> This historical record is not evidence of a current CI run or release. Any
+> manifest-signing keys, tasks, or secrets it mentions were part of that
+> retired design; the current pipeline verifies archives by SHA-256 and
+> requires no signing secret.
 
 Date: 2026-11-03. Host for all executed verification: Windows 11 x86-64
 (10.0.26300), JDK 25.0.5.0.3, Gradle 9.5.1, CMake 3.31.6, Ninja 1.12.1,

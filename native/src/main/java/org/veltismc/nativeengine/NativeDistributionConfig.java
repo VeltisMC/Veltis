@@ -59,11 +59,11 @@ public record NativeDistributionConfig(
 
     /**
      * The release API base this build downloads from when no repository is
-     * configured. The runtime resolves the running commit's own tag beneath it
-     * ({@code <base>/tags/veltis-native-<short-commit>}); release tags name the
-     * commit, not the engine version. It is not {@code releases/latest}, because
-     * the same repository also publishes the server distribution and "latest"
-     * would resolve to whichever of the two was created last.
+     * configured. The runtime resolves the running server's own release beneath
+     * it ({@code <base>/tags/veltis-<channel>-<minecraftVersion>-<short-commit>});
+     * release tags name the commit, and the native archives share the tag of
+     * the server JAR they were built with. It is not {@code releases/latest},
+     * because "latest" would not name this commit at all.
      * {@code verifyNativeArtifact} rejects a default that is not this base.
      */
     public static final String DEFAULT_REPOSITORY =
@@ -90,12 +90,12 @@ public record NativeDistributionConfig(
      *
      * <p>Fetching executable code without being asked is a real choice, and it
      * is made safe by what happens instead of by an operator's vigilance: only
-     * the official release line is contacted, only one platform's archive is
-     * ever fetched, the manifest must carry a signature from the key embedded in
-     * {@link NativeManifest}, and both the archive and the library inside it are
-     * digested before anything is installed. A failure at any of those points
-     * leaves the server on its Java implementations, which is also what
-     * {@code autoDownload=false} gives, just without the acceleration.
+     * the official release line is contacted over HTTPS, only one platform's
+     * archive is ever fetched, its SHA-256 digest must match the manifest, and
+     * the library inside it is digested again before anything is installed. A
+     * failure at any of those points leaves the server on its Java
+     * implementations, which is also what {@code autoDownload=false} gives,
+     * just without the acceleration.
      */
     public static NativeDistributionConfig defaults() {
         return new NativeDistributionConfig(true, false, DEFAULT_UPDATE_POLICY,

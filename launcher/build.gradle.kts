@@ -377,6 +377,10 @@ tasks.register("uberJar", Jar::class) {
         ":publishBytecodePatch",
         ":writePackagedVersion",
         ":writePackagedJavaVersion",
+        // The build identity the server reads to resolve its own commit-pinned
+        // native release. It is written under generated-resources/META-INF/veltis,
+        // the one tree this jar packs, so it survives the entry allowlist below.
+        ":generateEmbeddedBuildInfo",
         compileJavaVersionGuard,
         writeBootstrapLibraries
     )

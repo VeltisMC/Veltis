@@ -50,15 +50,8 @@ import java.net.URI
 import java.net.URLClassLoader
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.KeyFactory
-import java.security.KeyPairGenerator
 import java.security.MessageDigest
-import java.security.PrivateKey
-import java.security.PublicKey
-import java.security.Signature
-import java.security.spec.PKCS8EncodedKeySpec
 import java.time.Instant
-import java.util.Base64
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
@@ -70,7 +63,7 @@ plugins {
 description = "VeltisMC native C modules and Java FFM integration"
 
 dependencies {
-    // The signed distribution manifest is JSON. Gson is already on the server's
+    // The distribution manifest is JSON. Gson is already on the server's
     // runtime classpath (MojangMetadata parses Mojang's version document with
     // it), so this adds no new shipped library — but it does mean this module's
     // own tests can parse a manifest without a classpath trick. The dependency
@@ -945,6 +938,24 @@ fun gitCommit(): String = try {
     "unknown"
 }
 
+// The server JAR and every native platform archive are assets of one release.
+// CI passes the tag the server build recorded (`-PveltisReleaseTag`), so a
+// dispatch with a non-default channel cannot make the two disagree; a local
+// packaging run derives the same shape from the repository's own properties.
+val distributionReleaseChannel = providers.gradleProperty("channel").orElse("pre-alpha")
+val distributionMinecraftVersion = providers.gradleProperty("minecraftVersion").orElse("26.3")
+val suppliedReleaseTag = providers.gradleProperty("veltisReleaseTag")
+
+fun releaseTagFor(shortCommit: String): String {
+    val computed = "veltis-${distributionReleaseChannel.get()}-" +
+        "${distributionMinecraftVersion.get()}-$shortCommit"
+    val tag = suppliedReleaseTag.orNull?.trim()?.takeIf { it.isNotEmpty() } ?: computed
+    if (!tag.startsWith("veltis-") || !tag.endsWith("-$shortCommit")) {
+        throw GradleException("release tag '$tag' does not name commit $shortCommit")
+    }
+    return tag
+}
+
 /** A release must come from a clean checkout; record the truth, never assume. */
 fun gitTreeState(): String = try {
     val out = providers.exec { commandLine("git", "status", "--porcelain") }
@@ -1624,17 +1635,21 @@ val verifyNativeArtifact by tasks.registering {
                         "commit-pinned manager resolves 'tags/<commit tag>' beneath"
             }
         }
-        // packageNativeCommitArchive publishes releaseTag "veltis-native-<short>"
-        // and the runtime refuses a manifest that spells it otherwise. Both Java
-        // sides must keep deriving the tag from the commit, or a release this
-        // build produces would be undownloadable by the server that built it.
-        for (name in listOf("NativeCommitDistributionManager.java", "NativeCommitManifest.java")) {
+        // The runtime must take the release tag from its own embedded build
+        // metadata (the same release that carries the server JAR), and the
+        // manifest must bind that tag to the commit. If either side drifts the
+        // server would look on a release this build never published to.
+        val runtimeSources = mapOf(
+            "NativeBuildMetadata.java" to "META-INF/veltis/build-info.json",
+            "NativeCommitDistributionManager.java" to "identity.releaseTag()",
+            "NativeCommitManifest.java" to "endsWith(\"-\" + shortCommit)",
+        )
+        for ((name, required) in runtimeSources) {
             val source = File(projectDir, "src/main/java/org/veltismc/nativeengine/$name")
             if (!source.isFile) {
                 problems += "the commit-pinned runtime source is missing: ${source.absolutePath}"
-            } else if (!Regex("""veltis-native-"\s*\+\s*shortCommit""")
-                    .containsMatchIn(source.readText())) {
-                problems += "$name no longer derives the release tag from the commit"
+            } else if (!source.readText().contains(required)) {
+                problems += "$name no longer uses the embedded release identity ('$required')"
             }
         }
 
@@ -2014,11 +2029,10 @@ val verifyNativeRelease by tasks.registering {
 // ---------------------------------------------------------------------------
 // Native release packaging (commit-pinned distribution)
 //
-// The runtime downloads exactly one artifact per server, chosen from a signed
-// manifest that names the server's exact Git commit. These tasks collect the
-// platform archives CI produced for that commit and write that manifest, and
-// they refuse to write one that does not describe exactly what will be
-// published:
+// The runtime downloads exactly one artifact per server, chosen from a manifest
+// that names the server's exact Git commit. These tasks collect the platform
+// archives CI produced for that commit and write that manifest, and they refuse
+// to write one that does not describe exactly what will be published:
 //
 //   * every platform in the order below must be present — a missing mandatory
 //     platform fails the task (never a smaller manifest), a missing optional
@@ -2029,11 +2043,13 @@ val verifyNativeRelease by tasks.registering {
 //     verified;
 //   * the required verification checks must be in the report — a platform that
 //     was built but not runtime-verified is not publishable;
-//   * the manifest is signed with VELTIS_NATIVE_MANIFEST_KEY by
-//     signNativeCommitManifest and read back through the runtime's own parser,
-//     which proves the embedded public key still matches the signing key;
-//     native-release asserts the signature before anything is published, so an
-//     unsigned manifest never reaches a release.
+//   * the manifest records each archive's SHA-256 and is read back through the
+//     runtime's own parser before it is uploaded; the runtime re-computes that
+//     digest over the downloaded ZIP and refuses any mismatch.
+//
+// The manifest is deliberately not signed. Integrity is proven by SHA-256;
+// authenticity of the manifest itself rests on the HTTPS GitHub release source
+// and the official repository the runtime is configured with.
 //
 // Cross-compilation targets are not in the platform list at all: a binary the
 // producing runner could not execute is experimental by definition, and no
@@ -2073,160 +2089,6 @@ val DISTRIBUTION_REQUIRED_CHECKS = setOf(
     "manifest-vs-artifact",
     "runtime-policy",
 )
-
-// ---------------------------------------------------------------------------
-// The release signing key pair
-//
-// NativeManifest embeds one Ed25519 public key and trusts no other, so the pair
-// needs a provenance: this task generates it, the private half becomes the
-// VELTIS_NATIVE_MANIFEST_KEY repository secret and the printed base64 becomes
-// NativeManifest.TRUSTED_PUBLIC_KEY_BASE64. Without that record an embedded
-// anchor is only a claim — a constant can sit in the source for months while
-// nobody holds the key that satisfies it, and every release then dead-ends at
-// the job that refuses to publish an unsigned manifest.
-// ---------------------------------------------------------------------------
-
-/** The PKCS#8 base64 — bare or PEM-armoured — that the release secret carries. */
-fun decodeManifestSigningKey(raw: String): PrivateKey {
-    val normalized = raw.trim()
-        .replace("-----BEGIN PRIVATE KEY-----", "")
-        .replace("-----END PRIVATE KEY-----", "")
-        .replace(Regex("\\s"), "")
-    return try {
-        KeyFactory.getInstance("Ed25519")
-            .generatePrivate(PKCS8EncodedKeySpec(Base64.getDecoder().decode(normalized)))
-    } catch (e: Exception) {
-        throw GradleException(
-            "the manifest signing key is not a base64 Ed25519 PKCS#8 private key: ${e.message}", e
-        )
-    }
-}
-
-/**
- * The embedded anchor, read out of the class the server actually ships. This
- * build keeps no second copy of the constant, so a pairing check can never pass
- * against a value the runtime does not use.
- */
-fun embeddedManifestPublicKey(): PublicKey {
-    val urls = sourceSets["main"].runtimeClasspath.files.map { it.toURI().toURL() }.toTypedArray()
-    if (urls.isEmpty()) {
-        throw GradleException("this module's classes were not compiled; cannot read the embedded key")
-    }
-    URLClassLoader(urls, null).use { loader ->
-        val parser = loader.loadClass("org.veltismc.nativeengine.NativeManifest")
-        val method = parser.getDeclaredMethod("trustedPublicKey").apply { isAccessible = true }
-        return try {
-            method.invoke(null) as PublicKey
-        } catch (e: java.lang.reflect.InvocationTargetException) {
-            throw GradleException(
-                "the embedded manifest public key is unusable: ${e.targetException.message}",
-                e.targetException
-            )
-        }
-    }
-}
-
-val generateNativeManifestKey by tasks.registering {
-    group = "native"
-    description = "Generates the manifest key pair: the private half to a file outside the repository, the public constant to the console"
-    outputs.upToDateWhen { false }
-
-    doLast {
-        val keyOut = providers.gradleProperty("veltisNativeManifestKeyOut").orNull
-        if (keyOut.isNullOrBlank()) {
-            throw GradleException(
-                "generateNativeManifestKey writes a private key, so it insists on knowing where: " +
-                    "-PveltisNativeManifestKeyOut=<path outside this repository>.\n" +
-                    "  It is never printed to the console, because a key that appears in build logs " +
-                    "is a key that ends up in a build log archive."
-            )
-        }
-        val target = file(keyOut)
-        if (target.canonicalPath.startsWith(projectDir.canonicalPath + File.separator)) {
-            throw GradleException(
-                "refusing to write a signing key inside the repository: ${target.absolutePath}. " +
-                    "Only the public half belongs in the source tree; the private one belongs in the " +
-                    "secret store."
-            )
-        }
-        if (target.exists()) {
-            throw GradleException(
-                "${target.absolutePath} already exists. Overwriting it would orphan every manifest " +
-                    "signed with the key already there, so nothing was written."
-            )
-        }
-
-        val pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
-        val privateBase64 = Base64.getEncoder().encodeToString(pair.private.encoded)
-        val armoured = buildString {
-            append("-----BEGIN PRIVATE KEY-----\n")
-            privateBase64.chunked(64).forEach { append(it).append('\n') }
-            append("-----END PRIVATE KEY-----\n")
-        }
-        target.parentFile?.mkdirs()
-        target.writeText(armoured)
-        // Owner-only where the filesystem understands the request; on Windows
-        // this is a no-op, which is why the message says to move the file into
-        // the secret store rather than to leave it on disk.
-        target.setWritable(false, false)
-        target.setWritable(true, true)
-        target.setReadable(false, false)
-        target.setReadable(true, true)
-
-        logger.lifecycle("Private key written to ${target.absolutePath}")
-        logger.lifecycle("Set NativeManifest.TRUSTED_PUBLIC_KEY_BASE64 to:")
-        logger.lifecycle("    \"${Base64.getEncoder().encodeToString(pair.public.encoded)}\"")
-        logger.lifecycle(
-            "Then: put the file's contents in the VELTIS_NATIVE_MANIFEST_KEY repository secret, " +
-                "run :veltis-native:verifyNativeManifestKeyPairing with that secret in the " +
-                "environment to prove the pair, and delete this local copy. A developer machine " +
-                "never needs it; only the release job does."
-        )
-    }
-}
-
-val verifyNativeManifestKeyPairing by tasks.registering {
-    group = "verification"
-    description = "Proves VELTIS_NATIVE_MANIFEST_KEY is the private half of the key NativeManifest trusts"
-    dependsOn(tasks.named("classes"))
-    outputs.upToDateWhen { false }
-
-    doLast {
-        val raw = System.getenv("VELTIS_NATIVE_MANIFEST_KEY")
-        if (raw.isNullOrBlank()) {
-            throw GradleException(
-                "VELTIS_NATIVE_MANIFEST_KEY is not set, so there is nothing to check. Fork pull " +
-                    "requests cannot see repository secrets, which is why native-package can only " +
-                    "produce unsigned release metadata there and native-release refuses to publish " +
-                    "it; run this task where the secret exists."
-            )
-        }
-        val privateKey = decodeManifestSigningKey(raw)
-        val embedded = embeddedManifestPublicKey()
-        val probe = "veltis-native manifest key pairing probe".toByteArray(Charsets.US_ASCII)
-        val signer = Signature.getInstance("Ed25519")
-        signer.initSign(privateKey)
-        signer.update(probe)
-        val verifier = Signature.getInstance("Ed25519")
-        verifier.initVerify(embedded)
-        verifier.update(probe)
-        if (!verifier.verify(signer.sign())) {
-            throw GradleException(
-                "the configured signing key is not the private half of the embedded anchor, so every " +
-                    "server would reject a manifest it signs.\n" +
-                    "  embedded anchor: ${Base64.getEncoder().encodeToString(embedded.encoded)}\n" +
-                    "  Fix one of the two: regenerate with :veltis-native:generateNativeManifestKey " +
-                    "and paste its public constant into NativeManifest, or restore the secret that " +
-                    "matches the constant now in the source. signNativeCommitManifest fails at " +
-                    "the same point, so this cannot reach a release either way."
-            )
-        }
-        logger.lifecycle(
-            "VELTIS_NATIVE_MANIFEST_KEY pairs with the embedded anchor " +
-                "${Base64.getEncoder().encodeToString(embedded.encoded)}"
-        )
-    }
-}
 
 val packageNativeCommitDistribution by tasks.registering {
     group = "native"
@@ -2407,7 +2269,10 @@ val packageNativeCommitDistribution by tasks.registering {
         }
         val document = linkedMapOf<String, Any?>(
             "schemaVersion" to 1,
-            "releaseTag" to "veltis-native-$shortCommit",
+            // The server release tag: the JAR and these archives are uploaded
+            // to one release, and the runtime reads this exact string from its
+            // own embedded build metadata.
+            "releaseTag" to releaseTagFor(shortCommit),
             "commit" to commit,
             "shortCommit" to shortCommit,
             "platforms" to platforms,
@@ -2422,9 +2287,9 @@ val packageNativeCommitDistribution by tasks.registering {
     }
 }
 
-val signNativeCommitManifest by tasks.registering {
+val generateNativeCommitManifest by tasks.registering {
     group = "native"
-    description = "Signs a commit-pinned manifest using URLs read from GitHub Release metadata"
+    description = "Writes the commit-pinned manifest with SHA-256 checksums from local archives"
     dependsOn(tasks.named("classes"))
     outputs.upToDateWhen { false }
 
@@ -2448,7 +2313,8 @@ val signNativeCommitManifest by tasks.registering {
         val tag = release["releaseTag"] as? String
             ?: throw GradleException("native commit release has no tag")
         if (!Regex("""[0-9a-f]{40}""").matches(commit)
-                || shortCommit != commit.take(7) || tag != "veltis-native-$shortCommit"
+                || shortCommit != commit.take(7)
+                || tag != releaseTagFor(shortCommit)
                 || api["tag"] != tag || api["commit"] != commit) {
             throw GradleException("GitHub Release metadata does not match the native commit")
         }
@@ -2479,14 +2345,32 @@ val signNativeCommitManifest by tasks.registering {
             }
             val modules = record["modules"]
                 ?: throw GradleException("$key has no module metadata")
+            val claimedSha256 = record["sha256"] as? String
+                ?: throw GradleException("$key has no archive sha256")
+            val claimedSize = (record["sizeBytes"] as? Number)?.toLong()
+                ?: throw GradleException("$key has no archive size")
+            // The manifest is the only integrity record the runtime has, so it
+            // is written from bytes that are re-hashed here, not from a value
+            // carried through the metadata files.
+            val localArchive = File(distRoot, "commit/$assetName")
+            if (!localArchive.isFile) {
+                throw GradleException("the commit archive for $key is missing: ${localArchive.name}")
+            }
+            val actualSha256 = sha256(localArchive)
+            if (actualSha256 != claimedSha256 || localArchive.length() != claimedSize) {
+                throw GradleException(
+                    "$assetName does not match its recorded sha256/size " +
+                        "(actual $actualSha256, ${localArchive.length()} bytes)"
+                )
+            }
             platforms[key] = linkedMapOf(
                 "platform" to key,
                 "os" to record["os"],
                 "architecture" to record["architecture"],
                 "asset" to assetName,
                 "downloadUrl" to downloadUrl,
-                "sha256" to record["sha256"],
-                "sizeBytes" to record["sizeBytes"],
+                "sha256" to actualSha256,
+                "sizeBytes" to claimedSize,
                 "verified" to record["verified"],
                 "modules" to modules,
             )
@@ -2500,35 +2384,25 @@ val signNativeCommitManifest by tasks.registering {
             "platforms" to platforms,
         )
         val bytes = (JsonOutput.prettyPrint(JsonOutput.toJson(manifest)) + "\n").toByteArray(Charsets.UTF_8)
-        val signingKey = System.getenv("VELTIS_NATIVE_MANIFEST_KEY")
-            ?: throw GradleException("VELTIS_NATIVE_MANIFEST_KEY is required to publish a native release")
-        val signer = Signature.getInstance("Ed25519")
-        signer.initSign(decodeManifestSigningKey(signingKey))
-        signer.update(bytes)
-        val signature = Base64.getEncoder().encode(signer.sign())
         val manifestFile = File(distRoot, "native-manifest.json")
-        val signatureFile = File(distRoot, "native-manifest.json.sig")
         manifestFile.writeBytes(bytes)
-        signatureFile.writeText(String(signature, Charsets.US_ASCII) + "\n")
 
+        // Read the document back through the runtime's own parser: the release
+        // must be rejected here if the server would reject it there.
         val urls = sourceSets["main"].runtimeClasspath.files.map { it.toURI().toURL() }.toTypedArray()
         URLClassLoader(urls, null).use { loader ->
-            val reader = loader.loadClass("org.veltismc.nativeengine.NativeCommitManifest")
-            val parser = reader.getDeclaredMethod(
-                "verifyAndParse", ByteArray::class.java, ByteArray::class.java, PublicKey::class.java
-            ).apply { isAccessible = true }
-            val nativeManifest = loader.loadClass("org.veltismc.nativeengine.NativeManifest")
-            val key = nativeManifest.getDeclaredMethod("trustedPublicKey")
-                .apply { isAccessible = true }.invoke(null)
+            val parser = loader.loadClass("org.veltismc.nativeengine.NativeCommitManifest")
+                .getDeclaredMethod("parse", ByteArray::class.java)
+                .apply { isAccessible = true }
             try {
-                parser.invoke(null, bytes, signature, key)
+                parser.invoke(null, bytes)
             } catch (e: java.lang.reflect.InvocationTargetException) {
-                throw GradleException("the runtime rejected the signed commit manifest: "
+                throw GradleException("the runtime rejected the commit manifest: "
                     + e.targetException.message, e.targetException)
             }
         }
         logger.lifecycle(
-            "Signed ${manifestFile.name} for $tag from actual GitHub Release asset URLs"
+            "Wrote ${manifestFile.name} for $tag with SHA-256 checksums from local archives"
         )
     }
 }
